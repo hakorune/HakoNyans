@@ -197,7 +197,13 @@ NyANS-P（Parallel Interleaved rANS + P-Index）を中核エントロピーエ�
   - 自動モード選択: Copy → Palette → DCT の優先順位
   - ファイルフォーマット v2 対応
   - 全 15/15 テスト PASS
-- [x] ドキュメント更新（Phase 7c 完全版）
+- [x] **Task 3: ベンチマーク実施** — Screen Profile の圧縮効果を実測 ✅ 完了
+  - UI Screenshots: **-52.1%** サイズ削減（browser -56.9%, vscode -52.2%）
+  - Game Screens: 混合結果（-8.9% ～ +85.7%）
+  - Photos: 非推奨（+36.9% 平均増加）
+  - ベンチマークツール実装: `bench/bench_screen_profile.cpp`
+  - 比較画像生成: `bench_results/screen_profile_compare/` (30ファイル、63MB)
+- [x] ドキュメント更新（Phase 7c 完全版 + ベンチマーク結果）
 
 ---
 
