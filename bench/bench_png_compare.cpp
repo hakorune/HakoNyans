@@ -9,8 +9,8 @@
 
 #include "../src/codec/encode.h"
 #include "../src/codec/decode.h"
-#include "../src/codec/ppm_loader.h"
-#include "../src/codec/png_wrapper.h"
+#include "ppm_loader.h"
+#include "png_wrapper.h"
 
 using namespace hakonyans;
 

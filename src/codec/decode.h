@@ -363,48 +363,166 @@ public:
     }
 
     /**
-     * Decode a single lossless plane.
-     * Pipeline: rANS decode lo/hi -> combine uint16_t -> zigzag decode -> unfilter
+     * Decode a single lossless plane with Screen Profile support.
+     *
+     * Tile format v2 (32-byte header):
+     *   [4B filter_ids_size][4B lo_stream_size][4B hi_stream_size][4B filter_pixel_count]
+     *   [4B block_types_size][4B palette_data_size][4B copy_data_size][4B reserved]
+     *   [filter_ids][lo_stream][hi_stream][block_types][palette_data][copy_data]
      */
     static std::vector<int16_t> decode_plane_lossless(
         const uint8_t* td, size_t ts, uint32_t width, uint32_t height
     ) {
-        // Read tile header (4 x uint32_t)
-        uint32_t hdr[4];
-        std::memcpy(hdr, td, 16);
+        // Pad dimensions to multiple of 8
+        uint32_t pad_w = ((width + 7) / 8) * 8;
+        uint32_t pad_h = ((height + 7) / 8) * 8;
+        int nx = pad_w / 8, ny = pad_h / 8, nb = nx * ny;
+
+        // Read tile header (8 x uint32_t = 32 bytes)
+        uint32_t hdr[8];
+        std::memcpy(hdr, td, 32);
         uint32_t filter_ids_size = hdr[0];
         uint32_t lo_stream_size  = hdr[1];
         uint32_t hi_stream_size  = hdr[2];
-        // hdr[3] = pindex (unused)
+        uint32_t filter_pixel_count = hdr[3];
+        uint32_t block_types_size = hdr[4];
+        uint32_t palette_data_size = hdr[5];
+        uint32_t copy_data_size = hdr[6];
+        // hdr[7] = reserved
 
-        const uint8_t* ptr = td + 16;
+        const uint8_t* ptr = td + 32;
 
         // Read filter IDs
         std::vector<uint8_t> filter_ids(ptr, ptr + filter_ids_size);
         ptr += filter_ids_size;
 
-        // Decode rANS byte streams
-        size_t total = width * height;
-        auto lo_bytes = decode_byte_stream(ptr, lo_stream_size, total);
+        // Decode rANS byte streams (data-adaptive CDF)
+        std::vector<uint8_t> lo_bytes, hi_bytes;
+        if (lo_stream_size > 0 && filter_pixel_count > 0) {
+            lo_bytes = decode_byte_stream(ptr, lo_stream_size, filter_pixel_count);
+        }
         ptr += lo_stream_size;
-        auto hi_bytes = decode_byte_stream(ptr, hi_stream_size, total);
+        if (hi_stream_size > 0 && filter_pixel_count > 0) {
+            hi_bytes = decode_byte_stream(ptr, hi_stream_size, filter_pixel_count);
+        }
+        ptr += hi_stream_size;
 
-        // Combine lo/hi -> uint16_t -> zigzag decode -> int16_t
-        std::vector<int16_t> filtered(total);
-        for (size_t i = 0; i < total; i++) {
-            uint16_t zz = (uint16_t)lo_bytes[i] | ((uint16_t)hi_bytes[i] << 8);
-            filtered[i] = zigzag_decode_val(zz);
+        // Decode block types
+        std::vector<FileHeader::BlockType> block_types;
+        if (block_types_size > 0) {
+            block_types = decode_block_types(ptr, block_types_size, nb);
+            ptr += block_types_size;
+        } else {
+            block_types.assign(nb, FileHeader::BlockType::DCT);
         }
 
-        // Unfilter
-        std::vector<int16_t> reconstructed;
-        LosslessFilter::unfilter_image(filter_ids.data(), filtered.data(),
-                                       width, height, reconstructed);
-        return reconstructed;
+        // Decode palette data
+        std::vector<Palette> palettes;
+        std::vector<std::vector<uint8_t>> palette_indices;
+        if (palette_data_size > 0) {
+            int num_palette = 0;
+            for (auto t : block_types) if (t == FileHeader::BlockType::PALETTE) num_palette++;
+            PaletteCodec::decode_palette_stream(ptr, palette_data_size, palettes, palette_indices, num_palette);
+            ptr += palette_data_size;
+        }
+
+        // Decode copy data
+        std::vector<CopyParams> copy_params;
+        if (copy_data_size > 0) {
+            int num_copy = 0;
+            for (auto t : block_types) if (t == FileHeader::BlockType::COPY) num_copy++;
+            CopyCodec::decode_copy_stream(ptr, copy_data_size, copy_params, num_copy);
+            ptr += copy_data_size;
+        }
+
+        // Combine lo/hi -> uint16_t -> zigzag decode -> int16_t (filter residuals)
+        std::vector<int16_t> filter_residuals(filter_pixel_count);
+        for (size_t i = 0; i < filter_pixel_count; i++) {
+            uint16_t zz = (uint16_t)lo_bytes[i] | ((uint16_t)hi_bytes[i] << 8);
+            filter_residuals[i] = zigzag_decode_val(zz);
+        }
+
+        // --- Custom unfilter with block-type awareness ---
+        // 1. Pre-fill Palette blocks (no dependencies)
+        // 2. Process in raster order: Palette already filled, Copy from earlier data, Filter via unfilter
+        std::vector<int16_t> padded(pad_w * pad_h, 0);
+
+        // Build per-block lookup for palette and copy
+        std::vector<int> block_palette_idx(nb, -1);
+        std::vector<int> block_copy_idx(nb, -1);
+        int pi = 0, ci = 0;
+        for (int i = 0; i < nb; i++) {
+            if (block_types[i] == FileHeader::BlockType::PALETTE) block_palette_idx[i] = pi++;
+            else if (block_types[i] == FileHeader::BlockType::COPY) block_copy_idx[i] = ci++;
+        }
+
+        // Pre-fill all Palette blocks
+        for (int i = 0; i < nb; i++) {
+            if (block_types[i] != FileHeader::BlockType::PALETTE) continue;
+            int pidx = block_palette_idx[i];
+            if (pidx < 0 || pidx >= (int)palettes.size()) continue;
+            int bx = i % nx, by = i / nx;
+            const auto& p = palettes[pidx];
+            const auto& idx = palette_indices[pidx];
+            for (int py = 0; py < 8; py++)
+                for (int px = 0; px < 8; px++)
+                    padded[(by * 8 + py) * pad_w + (bx * 8 + px)] =
+                        (int16_t)p.colors[idx[py * 8 + px]] - 128;
+        }
+
+        // Process rows in raster order: Copy and Filter blocks
+        size_t residual_idx = 0;
+        for (uint32_t y = 0; y < pad_h; y++) {
+            uint8_t ftype = (y < filter_ids.size()) ? filter_ids[y] : 0;
+            for (uint32_t x = 0; x < pad_w; x++) {
+                int bx_col = x / 8, by_row = y / 8;
+                int block_idx = by_row * nx + bx_col;
+
+                if (block_types[block_idx] == FileHeader::BlockType::PALETTE) {
+                    // Already filled
+                    continue;
+                } else if (block_types[block_idx] == FileHeader::BlockType::COPY) {
+                    int cidx = block_copy_idx[block_idx];
+                    if (cidx >= 0 && cidx < (int)copy_params.size()) {
+                        int src_x = (int)x + copy_params[cidx].dx;
+                        int src_y = (int)y + copy_params[cidx].dy;
+                        src_x = std::clamp(src_x, 0, (int)pad_w - 1);
+                        src_y = std::clamp(src_y, 0, (int)pad_h - 1);
+                        padded[y * pad_w + x] = padded[src_y * pad_w + src_x];
+                    }
+                } else {
+                    // Filter block: unfilter using prediction + residual
+                    int16_t a = (x > 0) ? padded[y * pad_w + x - 1] : 0;
+                    int16_t b = (y > 0) ? padded[(y - 1) * pad_w + x] : 0;
+                    int16_t c = (x > 0 && y > 0) ? padded[(y - 1) * pad_w + x - 1] : 0;
+                    int16_t pred;
+                    switch (ftype) {
+                        case 0: pred = 0; break;
+                        case 1: pred = a; break;
+                        case 2: pred = b; break;
+                        case 3: pred = (int16_t)(((int)a + (int)b) / 2); break;
+                        case 4: pred = LosslessFilter::paeth_predictor(a, b, c); break;
+                        default: pred = 0; break;
+                    }
+                    if (residual_idx < filter_residuals.size()) {
+                        padded[y * pad_w + x] = filter_residuals[residual_idx++] + pred;
+                    }
+                }
+            }
+        }
+
+        // Crop to original dimensions
+        std::vector<int16_t> result(width * height);
+        for (uint32_t y = 0; y < height; y++) {
+            std::memcpy(&result[y * width], &padded[y * pad_w], width * sizeof(int16_t));
+        }
+
+        return result;
     }
 
+
     /**
-     * Decode a rANS-encoded byte stream (for lossless mode).
+     * Decode a rANS-encoded byte stream with data-adaptive CDF.
      * Format: [4B cdf_size][cdf_data][4B count][4B rans_size][rans_data]
      */
     static std::vector<uint8_t> decode_byte_stream(

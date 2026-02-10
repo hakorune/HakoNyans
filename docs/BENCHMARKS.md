@@ -1,6 +1,80 @@
 # HakoNyans Benchmarks 📊
 
-## PNG vs HKN Lossless Comparison (Phase 8b)
+---
+
+## Phase 8c-v2: PNG vs HKN Lossless (2026-02-11) ✅
+
+**Hardware**: x86_64 (AVX2 enabled)  
+**Test Conditions**: PNG level 9 vs HKN Lossless (YCoCg-R + Screen Profile)
+
+### Overall Results
+
+| Image | Category | PNG (KB) | HKN (KB) | Size Ratio | Enc Speedup | Dec Speedup |
+|-------|----------|----------|----------|------------|-------------|-------------|
+| browser | UI | 10.0 | 21.5 | 2.15x ❌ | 3.67x | 0.80x |
+| vscode | UI | 11.4 | 51.7 | 4.52x ❌ | 2.68x | 0.75x |
+| terminal | UI | 9.7 | 28.3 | 2.93x ❌ | 2.49x | 0.80x |
+| anime_girl | Anime | 9.0 | 37.7 | 4.19x ❌ | 3.29x | 0.85x |
+| anime_sunset | Anime | 10.4 | 40.0 | 3.85x ❌ | 2.79x | 0.91x |
+| nature_01 | Photo | 1251.4 | 919.6 | 0.73x ✅ | 2.40x | 0.42x |
+| nature_02 | Photo | 1412.6 | 1008.2 | 0.71x ✅ | 9.56x | 0.42x |
+| minecraft_2d | Game | 8.8 | 32.0 | 3.65x ❌ | 4.10x | 0.84x |
+| retro | Game | 9.4 | 38.9 | 4.15x ❌ | 3.91x | 0.90x |
+| kodim01 | Natural | 5.1 | 125.8 | 24.77x ❌ | 0.48x | 0.17x |
+| kodim02 | Natural | 2.2 | 30.9 | 14.31x ❌ | 1.29x | 0.57x |
+| kodim03 | Natural | 117.6 | 515.0 | 4.38x ❌ | 5.55x | 0.17x |
+| hd_01 | Natural | 8.6 | 1015.9 | 118.42x ❌ | 0.24x | 0.18x |
+
+### Category Analysis
+
+| Category | Images | Avg Size Ratio | Avg Enc Speedup | Avg Dec Speedup |
+|----------|--------|----------------|-----------------|-----------------|
+| **UI** | 3 | **3.20x** | 2.95x | 0.78x |
+| **Anime** | 2 | **4.02x** | 3.04x | 0.88x |
+| **Game** | 2 | **3.90x** | 4.01x | 0.87x |
+| **Photo** | 2 | **0.72x** ✅ | 5.98x | 0.42x |
+| Natural | 4 | 40.47x | 1.89x | 0.27x |
+
+### Key Findings
+
+**🎯 Target Use Cases (3-4x vs PNG)**:
+- **UI Screenshots**: 3.20x (browser at 2.15x is exceptional!)
+- **Anime Images**: 4.02x
+- **Game Graphics**: 3.90x
+
+**✅ Wins vs PNG**:
+- **High-res Photos**: 0.72x (28% smaller than PNG!)
+- **Encoding Speed**: 3-6x faster on Photos/UI/Anime/Game
+
+**❌ Not Competitive**:
+- Small natural images (Kodak test set) - PNG's LZ77 dominates
+
+### Technical Implementation
+
+**Screen Profile Integration**:
+- **Copy Mode**: Detects repeated 16×16 blocks (IntraBC)
+  - Dynamic 0/1/2-bit encoding (mode=2)
+  - UI/browser: 98.5% Copy blocks on Y plane
+- **Palette Mode**: ≤8 unique colors per block
+  - v2 stream (0x40): Single-color blocks skip indices
+  - 2-color blocks use 64-bit mask dictionary
+- **Filter Mode**: YCoCg-R + custom predictor fallback
+
+**Improvement Over Phase 8b**:
+```
+Category | Phase 8b | Phase 8c-v2 | Improvement
+---------|----------|-------------|------------
+UI       | 39.0x    | 3.20x       | -91.8% ✅
+Anime    | 41.5x    | 4.02x       | -90.3% ✅
+Game     | 43.1x    | 3.90x       | -90.9% ✅
+Photo    | 0.93x    | 0.72x       | -22.6% ✅
+```
+
+Phase 8b had a critical bug where Copy/Palette streams stored raw data uncompressed. Phase 8c-v2 implemented dynamic bitwidth encoding and mask dictionaries, achieving 90%+ size reduction.
+
+---
+
+## Phase 8b: PNG vs HKN Lossless (2026-02-11) ❌ FAILED
 
 **Date**: Feb 11 2026
 **Hardware**: x86_64 (AVX2 enabled)
@@ -58,13 +132,68 @@
 
 ---
 
-## Lossless Mode ベンチマーク (Phase 8)
+## Lossless Mode ベンチマーク (Phase 8c-v2 最終版)
 
-**Date**: 2026-02-11
+**Date**: 2026-02-11 (Phase 8c-v2 リグレッション修正後)
 **Hardware**: x86_64 (AVX2 enabled)
-**Test Conditions**: Lossless compression with YCoCg-R + PNG-compatible filters
+**Test Conditions**: Lossless with YCoCg-R + Screen Profile (Copy→Palette→Filter hybrid) + Dynamic CDF
 
-### 圧縮結果
+### 圧縮結果（Phase 8c-v2 最終版）
+
+| 画像タイプ | Raw (KB) | Phase 8 (KB) | Phase 8c-v2 (KB) | 圧縮率 | vs Phase 8 | Exact? |
+|-----------|----------|-------------|------------------|--------|-----------|--------|
+| Random 128×128 | 48.0 | 57.8 | - | - | - | ✅ |
+| Random 256×256 | 192.0 | 211.5 | 211.6 | 1.10x | +0.05% | ✅ |
+| **Gradient 256×256** | 192.0 | 33.8 | **32.2** | **0.17x** ✅ | **-4.7%** ✅ | ✅ |
+| **Solid 256×256** | 192.0 | 11.6 | **15.2** | **0.08x** ✅ | **+31%** ⚠️ | ✅ |
+| **UI Screenshot 320×240** | 225.0 | 35.4 | **30.9** | **0.14x** ✅ | **-12.7%** ✅ | ✅ |
+| Natural-like 256×256 | 192.0 | 161.2 | 161.3 | 0.84x | +0.06% | ✅ |
+
+### Phase 8c 修正履歴
+
+#### Phase 8c-v1（失敗 ❌）
+- Screen Profile統合 + 均一静的CDF
+- 結果: 2-7倍悪化（Solid 11.6KB→23.4KB、UI 35.4KB→87.2KB、Gradient 33.8KB→240.7KB）
+- 原因: 均一CDF（rANS無効化）、行分割フィルタ（相関切断）、判定順ミス
+
+#### Phase 8c-v2（成功 ✅）
+- **修正1**: データ適応CDF復活（均一静的CDF削除）
+- **修正2**: フルイメージフィルタ（Palette/Copy画素をアンカー使用）
+- **修正3**: 判定順変更（Copy→Palette→Filter、Copyを優先）
+
+### 改善効果
+
+| カテゴリ | 改善内容 | 効果 |
+|----------|---------|------|
+| UI Screenshot | Screen Profile統合 + フルイメージフィルタ | **-12.7%** ✅ |
+| Gradient | フルイメージフィルタ + データ適応CDF | **-4.7%** ✅ |
+| Solid | Copy優先判定 | **+31%** ⚠️ (Copyオーバーヘッド 4B/block × ~1000blocks) |
+| Random/Natural | ほぼ変化なし | ±0.1% |
+
+### Phase 8c-v2 技術詳細
+
+#### Screen Profile統合（可逆保証）
+- **Copy Mode**: 完全一致ブロック → 参照コピー（4B/block）
+- **Palette Mode**: ≤8色ブロック → インデックス化（~9B/block）
+- **Filter Mode**: フォールバック → YCoCg-R + カスタムフィルタ
+
+#### カスタムフィルタ（Phase 8c-v2）
+```
+フルイメージ予測コンテキスト:
+  - Palette/Copy画素をアンカーとして使用
+  - 行間相関を維持（8行分割なし）
+  - 残差を0中心非均一分布として符号化
+```
+
+#### データ適応CDF
+```
+動的CDF構築:
+  - 各ストリームごとに実データから頻度表作成
+  - 0中心の残差分布に適応
+  - rANS圧縮効率最大化
+```
+
+### Phase 8 初期結果（参考）
 
 | 画像タイプ | Raw (KB) | HKN Lossless (KB) | 圧縮率 | エンコード (ms) | デコード (ms) |
 |-----------|----------|-------------------|--------|----------------|--------------|

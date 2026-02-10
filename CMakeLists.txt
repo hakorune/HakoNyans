@@ -135,6 +135,11 @@ if(HAKONYANS_BUILD_BENCH)
   add_executable(bench_png_compare bench/bench_png_compare.cpp)
   target_compile_options(bench_png_compare PRIVATE -O3 -march=native)
   target_link_libraries(bench_png_compare PRIVATE ${PNG_LIBRARIES} pthread)
+
+  # Anime quality verification tool (Phase 8d)
+  add_executable(bench_anime_quality bench/bench_anime_quality.cpp)
+  target_compile_options(bench_anime_quality PRIVATE -O3 -march=native)
+  target_link_libraries(bench_anime_quality PRIVATE ${PNG_LIBRARIES} pthread)
 endif()
 
 # === Tools ===

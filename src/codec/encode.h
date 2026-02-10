@@ -402,50 +402,224 @@ public:
     }
 
     /**
-     * Encode a single int16_t plane losslessly.
-     * Pipeline: filter -> zigzag -> split lo/hi bytes -> rANS encode each stream.
+     * Encode a single int16_t plane losslessly with Screen Profile support.
+     * 
+     * Hybrid block-based pipeline:
+     *   1. Classify each 8x8 block: Palette -> Copy -> Filter
+     *   2. Custom row-level filtering (full image context, Palette/Copy as anchors)
+     *   3. Filter block residuals -> zigzag -> split lo/hi -> rANS (data-adaptive CDF)
+     *
+     * Tile format v2 (32-byte header):
+     *   [4B filter_ids_size][4B lo_stream_size][4B hi_stream_size][4B filter_pixel_count]
+     *   [4B block_types_size][4B palette_data_size][4B copy_data_size][4B reserved]
+     *   [filter_ids][lo_stream][hi_stream][block_types][palette_data][copy_data]
      */
     static std::vector<uint8_t> encode_plane_lossless(
         const int16_t* data, uint32_t width, uint32_t height
     ) {
-        // Step 1: Apply prediction filter
-        std::vector<uint8_t> filter_ids;
-        std::vector<int16_t> filtered;
-        LosslessFilter::filter_image(data, width, height, filter_ids, filtered);
+        // Pad dimensions to multiple of 8
+        uint32_t pad_w = ((width + 7) / 8) * 8;
+        uint32_t pad_h = ((height + 7) / 8) * 8;
+        int nx = pad_w / 8, ny = pad_h / 8, nb = nx * ny;
 
-        // Step 2: ZigZag encode residuals (int16_t -> uint16_t)
-        size_t total = width * height;
-        std::vector<uint8_t> lo_bytes(total), hi_bytes(total);
-        for (size_t i = 0; i < total; i++) {
-            uint16_t zz = zigzag_encode_val(filtered[i]);
-            lo_bytes[i] = (uint8_t)(zz & 0xFF);
-            hi_bytes[i] = (uint8_t)((zz >> 8) & 0xFF);
+        // Pad the int16_t image
+        std::vector<int16_t> padded(pad_w * pad_h, 0);
+        for (uint32_t y = 0; y < pad_h; y++) {
+            for (uint32_t x = 0; x < pad_w; x++) {
+                padded[y * pad_w + x] = data[std::min(y, height - 1) * width + std::min(x, width - 1)];
+            }
         }
 
-        // Step 3: rANS encode each byte stream
-        auto lo_stream = encode_byte_stream(lo_bytes);
-        auto hi_stream = encode_byte_stream(hi_bytes);
+        // --- Step 1: Block classification ---
+        std::vector<FileHeader::BlockType> block_types(nb, FileHeader::BlockType::DCT); // DCT = Filter for lossless
+        std::vector<Palette> palettes;
+        std::vector<std::vector<uint8_t>> palette_indices;
+        std::vector<CopyParams> copy_ops;
+        const CopyParams kLosslessCopyCandidates[4] = {
+            CopyParams(-8, 0), CopyParams(0, -8), CopyParams(-8, -8), CopyParams(8, -8)
+        };
 
-        // Step 4: Pack tile data
-        // Header: 4 x uint32_t = 16 bytes
-        uint32_t hdr[4] = {
+        for (int i = 0; i < nb; i++) {
+            int bx = i % nx, by = i / nx;
+            int16_t block[64];
+            for (int y = 0; y < 8; y++)
+                for (int x = 0; x < 8; x++)
+                    block[y * 8 + x] = padded[(by * 8 + y) * pad_w + (bx * 8 + x)];
+
+            // A. Try local Copy first (compact-code vectors only).
+            if (i > 0) {
+                bool found_copy = false;
+                int cur_x = bx * 8;
+                int cur_y = by * 8;
+                for (const auto& cand : kLosslessCopyCandidates) {
+                    int src_x = cur_x + cand.dx;
+                    int src_y = cur_y + cand.dy;
+                    if (src_x < 0 || src_y < 0) continue;
+                    if (src_x + 7 >= (int)pad_w || src_y + 7 >= (int)pad_h) continue;
+                    // Causal dependency only (must be already reconstructed at decode time).
+                    if (!(src_y < cur_y || (src_y == cur_y && src_x < cur_x))) continue;
+
+                    bool match = true;
+                    for (int y = 0; y < 8 && match; y++) {
+                        for (int x = 0; x < 8; x++) {
+                            if (padded[(cur_y + y) * pad_w + (cur_x + x)] !=
+                                padded[(src_y + y) * pad_w + (src_x + x)]) {
+                                match = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (match) {
+                        block_types[i] = FileHeader::BlockType::COPY;
+                        copy_ops.push_back(cand);
+                        found_copy = true;
+                        break;
+                    }
+                }
+                if (found_copy) continue;
+            }
+
+            // B. Try Palette (cost-effective only for ≤2 unique values)
+            {
+                bool palette_ok = true;
+                for (int k = 0; k < 64; k++) {
+                    if (block[k] < -128 || block[k] > 127) {
+                        palette_ok = false;
+                        break;
+                    }
+                }
+                if (palette_ok) {
+                    Palette p = PaletteExtractor::extract(block, 2);
+                    if (p.size > 0 && p.size <= 2) {
+                        block_types[i] = FileHeader::BlockType::PALETTE;
+                        palettes.push_back(p);
+                        palette_indices.push_back(PaletteExtractor::map_indices(block, p));
+                        continue;
+                    }
+                }
+            }
+            // C. Filter (default) — block_types[i] stays DCT
+        }
+
+        // --- Step 2: Custom filtering (block-type aware, full image context) ---
+        // For each row: select best filter (considering Filter-block pixels only),
+        // compute residuals for Filter-block pixels only.
+        // Prediction context uses original pixel values — Palette/Copy pixels
+        // serve as perfect anchors for prediction.
+        std::vector<uint8_t> filter_ids(pad_h);
+        std::vector<int16_t> filter_residuals;
+
+        for (uint32_t y = 0; y < pad_h; y++) {
+            int by_row = y / 8;
+
+            // Check if this row has any filter blocks
+            bool has_filter = false;
+            for (int bx = 0; bx < nx; bx++) {
+                if (block_types[by_row * nx + bx] == FileHeader::BlockType::DCT) {
+                    has_filter = true;
+                    break;
+                }
+            }
+            if (!has_filter) {
+                filter_ids[y] = 0;
+                continue;
+            }
+
+            // Try all 5 filters, pick one minimizing sum(|residual|) for filter-block pixels
+            int best_f = 0;
+            int64_t best_sum = INT64_MAX;
+            for (int f = 0; f < 5; f++) {
+                int64_t sum = 0;
+                for (uint32_t x = 0; x < pad_w; x++) {
+                    int bx_col = x / 8;
+                    if (block_types[by_row * nx + bx_col] != FileHeader::BlockType::DCT) continue;
+                    int16_t orig = padded[y * pad_w + x];
+                    int16_t a = (x > 0) ? padded[y * pad_w + x - 1] : 0;
+                    int16_t b = (y > 0) ? padded[(y - 1) * pad_w + x] : 0;
+                    int16_t c = (x > 0 && y > 0) ? padded[(y - 1) * pad_w + x - 1] : 0;
+                    int16_t pred;
+                    switch (f) {
+                        case 0: pred = 0; break;
+                        case 1: pred = a; break;
+                        case 2: pred = b; break;
+                        case 3: pred = (int16_t)(((int)a + (int)b) / 2); break;
+                        case 4: pred = LosslessFilter::paeth_predictor(a, b, c); break;
+                        default: pred = 0; break;
+                    }
+                    sum += std::abs((int)(orig - pred));
+                }
+                if (sum < best_sum) { best_sum = sum; best_f = f; }
+            }
+            filter_ids[y] = (uint8_t)best_f;
+
+            // Emit residuals for filter-block pixels only
+            for (uint32_t x = 0; x < pad_w; x++) {
+                int bx_col = x / 8;
+                if (block_types[by_row * nx + bx_col] != FileHeader::BlockType::DCT) continue;
+                int16_t orig = padded[y * pad_w + x];
+                int16_t a = (x > 0) ? padded[y * pad_w + x - 1] : 0;
+                int16_t b = (y > 0) ? padded[(y - 1) * pad_w + x] : 0;
+                int16_t c = (x > 0 && y > 0) ? padded[(y - 1) * pad_w + x - 1] : 0;
+                int16_t pred;
+                switch (best_f) {
+                    case 0: pred = 0; break;
+                    case 1: pred = a; break;
+                    case 2: pred = b; break;
+                    case 3: pred = (int16_t)(((int)a + (int)b) / 2); break;
+                    case 4: pred = LosslessFilter::paeth_predictor(a, b, c); break;
+                    default: pred = 0; break;
+                }
+                filter_residuals.push_back(orig - pred);
+            }
+        }
+
+        // --- Step 3: ZigZag + rANS encode filter residuals (data-adaptive CDF) ---
+        std::vector<uint8_t> lo_stream, hi_stream;
+        uint32_t filter_pixel_count = (uint32_t)filter_residuals.size();
+
+        if (!filter_residuals.empty()) {
+            std::vector<uint8_t> lo_bytes(filter_pixel_count), hi_bytes(filter_pixel_count);
+            for (size_t i = 0; i < filter_pixel_count; i++) {
+                uint16_t zz = zigzag_encode_val(filter_residuals[i]);
+                lo_bytes[i] = (uint8_t)(zz & 0xFF);
+                hi_bytes[i] = (uint8_t)((zz >> 8) & 0xFF);
+            }
+            lo_stream = encode_byte_stream(lo_bytes);
+            hi_stream = encode_byte_stream(hi_bytes);
+        }
+
+        // --- Step 4: Encode block types, palette, copy ---
+        std::vector<uint8_t> bt_data = encode_block_types(block_types);
+        std::vector<uint8_t> pal_data = PaletteCodec::encode_palette_stream(palettes, palette_indices);
+        std::vector<uint8_t> cpy_data = CopyCodec::encode_copy_stream(copy_ops);
+
+        // --- Step 5: Pack tile data (32-byte header) ---
+        uint32_t hdr[8] = {
             (uint32_t)filter_ids.size(),
             (uint32_t)lo_stream.size(),
             (uint32_t)hi_stream.size(),
-            0  // pindex (reserved)
+            filter_pixel_count,
+            (uint32_t)bt_data.size(),
+            (uint32_t)pal_data.size(),
+            (uint32_t)cpy_data.size(),
+            0  // reserved
         };
 
         std::vector<uint8_t> tile_data;
-        tile_data.resize(16);
-        std::memcpy(tile_data.data(), hdr, 16);
+        tile_data.resize(32);
+        std::memcpy(tile_data.data(), hdr, 32);
         tile_data.insert(tile_data.end(), filter_ids.begin(), filter_ids.end());
         tile_data.insert(tile_data.end(), lo_stream.begin(), lo_stream.end());
         tile_data.insert(tile_data.end(), hi_stream.begin(), hi_stream.end());
+        if (!bt_data.empty()) tile_data.insert(tile_data.end(), bt_data.begin(), bt_data.end());
+        if (!pal_data.empty()) tile_data.insert(tile_data.end(), pal_data.begin(), pal_data.end());
+        if (!cpy_data.empty()) tile_data.insert(tile_data.end(), cpy_data.begin(), cpy_data.end());
         return tile_data;
     }
 
+
     /**
-     * Encode a byte stream using rANS (for lossless mode).
+     * Encode a byte stream using rANS with data-adaptive CDF.
      * Format: [4B cdf_size][cdf_data][4B count][4B rans_size][rans_data]
      */
     static std::vector<uint8_t> encode_byte_stream(const std::vector<uint8_t>& bytes) {
@@ -487,4 +661,3 @@ public:
 };
 
 } // namespace hakonyans
-

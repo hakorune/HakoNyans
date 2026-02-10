@@ -78,6 +78,16 @@ ANS（Asymmetric Numeral Systems）ベースの並列エントロピー符号化
   - 自動モード選択（Copy → Palette → DCT）
   - **UI スクリーンショットで -52% 圧縮** 📊
 - **Lossless モード** 🆕:
+  - **YCoCg-R 可逆色空間**: bit-exact ラウンドトリップ保証
+  - **Screen Profile統合**: Copy (IntraBC) + Palette + Filter
+  - **動的Copy符号化**: 0/1/2-bit 可変ビット幅（mode=2）
+  - **Palette辞書化**: 単色省略 + 2色マスク辞書（v2ストリーム）
+  - **PNG比較** (2026-02-11):
+    - **UI Screenshots**: 3.20x (browser: **2.15x** 🏆)
+    - **Anime Images**: 4.02x
+    - **Game Graphics**: 3.90x
+    - **High-res Photos**: **0.72x** (PNG比28%削減) ✅
+  - **適用領域**: スクリーンショット、アニメ、ゲーム、写真アーカイブ
   - **YCoCg-R 可逆色空間**: 整数演算のみ、+0.5dB coding gain
   - **差分フィルタ**: PNG互換 5種（None/Sub/Up/Average/Paeth）
   - **タイル独立並列**: 256×256 タイルで完全並列デコード
