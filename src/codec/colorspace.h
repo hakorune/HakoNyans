@@ -123,4 +123,52 @@ inline CfLParams compute_cfl_params(
     return params;
 }
 
+/**
+ * YCoCg-R: Reversible (lossless) color transform
+ * 
+ * RGB → Y, Co, Cg conversion with NO information loss.
+ * Co, Cg range: [-255, 255] (9 bits, stored as int16_t)
+ * Y range: [0, 255]
+ * 
+ * Reference: Malvar & Sullivan, "YCoCg-R: A Color Space with RGB Reversibility
+ * and Low Dynamic Range" (2003)
+ */
+inline void rgb_to_ycocg_r(uint8_t r, uint8_t g, uint8_t b,
+                            int16_t& y, int16_t& co, int16_t& cg) {
+    co = (int16_t)r - (int16_t)b;             // [-255, 255]
+    int16_t tmp = (int16_t)b + (co >> 1);      // floor division
+    cg = (int16_t)g - tmp;                     // [-255, 255]
+    y  = tmp + (cg >> 1);                      // [0, 255]
+}
+
+/**
+ * YCoCg-R inverse: Y, Co, Cg → RGB
+ * Exact inverse of rgb_to_ycocg_r (bit-exact)
+ */
+inline void ycocg_r_to_rgb(int16_t y, int16_t co, int16_t cg,
+                            uint8_t& r, uint8_t& g, uint8_t& b) {
+    int16_t tmp = y - (cg >> 1);
+    int16_t g16 = tmp + cg;
+    int16_t b16 = tmp - (co >> 1);
+    int16_t r16 = b16 + co;
+    r = (uint8_t)std::clamp((int)r16, 0, 255);
+    g = (uint8_t)std::clamp((int)g16, 0, 255);
+    b = (uint8_t)std::clamp((int)b16, 0, 255);
+}
+
+/**
+ * ZigZag encode: signed → unsigned (for entropy coding)
+ * Maps: 0→0, -1→1, 1→2, -2→3, 2→4, ...
+ */
+inline uint16_t zigzag_encode_val(int16_t val) {
+    return (uint16_t)((val << 1) ^ (val >> 15));
+}
+
+/**
+ * ZigZag decode: unsigned → signed
+ */
+inline int16_t zigzag_decode_val(uint16_t val) {
+    return (int16_t)((val >> 1) ^ -(int16_t)(val & 1));
+}
+
 } // namespace hakonyans

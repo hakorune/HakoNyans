@@ -11,6 +11,7 @@
 #include "../entropy/nyans_p/pindex.h"
 #include "palette.h"
 #include "copy.h"
+#include "lossless_filter.h"
 #include <vector>
 #include <cstring>
 #include <stdexcept>
@@ -18,6 +19,18 @@
 #include <cmath>
 
 namespace hakonyans {
+
+/**
+ * Lossless tile data layout:
+ *   [4 bytes] filter_ids_size
+ *   [4 bytes] lo_stream_size    (rANS-encoded low bytes)
+ *   [4 bytes] hi_stream_size    (rANS-encoded high bytes)
+ *   [4 bytes] pindex_size
+ *   [filter_ids_size bytes] filter IDs (1 per row, per plane)
+ *   [lo_stream_size bytes]  rANS stream for low bytes
+ *   [hi_stream_size bytes]  rANS stream for high bytes
+ *   [pindex_size bytes]     P-Index data (optional)
+ */
 
 class GrayscaleEncoder {
 public:
@@ -43,7 +56,7 @@ public:
         return output;
     }
 
-    static std::vector<uint8_t> encode_color(const uint8_t* rgb_data, uint32_t width, uint32_t height, uint8_t quality = 75, bool use_420 = true, bool use_cfl = true) {
+    static std::vector<uint8_t> encode_color(const uint8_t* rgb_data, uint32_t width, uint32_t height, uint8_t quality = 75, bool use_420 = true, bool use_cfl = true, bool enable_screen_profile = false) {
         std::vector<uint8_t> y_plane(width * height), cb_plane(width * height), cr_plane(width * height);
         for (uint32_t i = 0; i < width * height; i++) rgb_to_ycbcr(rgb_data[i*3], rgb_data[i*3+1], rgb_data[i*3+2], y_plane[i], cb_plane[i], cr_plane[i]);
         FileHeader header; header.width = width; header.height = height; header.bit_depth = 8;
@@ -52,7 +65,7 @@ public:
         if (use_cfl) header.flags |= 2;
         uint16_t quant[64]; QuantTable::build_quant_table(quality, quant);
         uint32_t pad_w_y = header.padded_width(), pad_h_y = header.padded_height();
-        auto tile_y = encode_plane(y_plane.data(), width, height, pad_w_y, pad_h_y, quant, true, true);
+        auto tile_y = encode_plane(y_plane.data(), width, height, pad_w_y, pad_h_y, quant, true, true, nullptr, 0, nullptr, nullptr, enable_screen_profile);
         std::vector<uint8_t> tile_cb, tile_cr;
         if (use_420) {
             int cb_w, cb_h; std::vector<uint8_t> cb_420, cr_420, y_ds;
@@ -60,11 +73,11 @@ public:
             downsample_420(cr_plane.data(), width, height, cr_420, cb_w, cb_h);
             uint32_t pad_w_c = ((cb_w + 7) / 8) * 8, pad_h_c = ((cb_h + 7) / 8) * 8;
             if (use_cfl) { downsample_420(y_plane.data(), width, height, y_ds, cb_w, cb_h); }
-            tile_cb = encode_plane(cb_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, quant, true, true, use_cfl ? &y_ds : nullptr, 0);
-            tile_cr = encode_plane(cr_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, quant, true, true, use_cfl ? &y_ds : nullptr, 1);
+            tile_cb = encode_plane(cb_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, quant, true, true, use_cfl ? &y_ds : nullptr, 0, nullptr, nullptr, enable_screen_profile);
+            tile_cr = encode_plane(cr_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, quant, true, true, use_cfl ? &y_ds : nullptr, 1, nullptr, nullptr, enable_screen_profile);
         } else {
-            tile_cb = encode_plane(cb_plane.data(), width, height, pad_w_y, pad_h_y, quant, true, true, use_cfl ? &y_plane : nullptr, 0);
-            tile_cr = encode_plane(cr_plane.data(), width, height, pad_w_y, pad_h_y, quant, true, true, use_cfl ? &y_plane : nullptr, 1);
+            tile_cb = encode_plane(cb_plane.data(), width, height, pad_w_y, pad_h_y, quant, true, true, use_cfl ? &y_plane : nullptr, 0, nullptr, nullptr, enable_screen_profile);
+            tile_cr = encode_plane(cr_plane.data(), width, height, pad_w_y, pad_h_y, quant, true, true, use_cfl ? &y_plane : nullptr, 1, nullptr, nullptr, enable_screen_profile);
         }
         QMATChunk qmat; qmat.quality = quality; std::memcpy(qmat.quant_y, quant, 128); auto qmat_data = qmat.serialize();
         ChunkDirectory dir; dir.add("QMAT", 0, qmat_data.size()); dir.add("TIL0", 0, tile_y.size()); dir.add("TIL1", 0, tile_cb.size()); dir.add("TIL2", 0, tile_cr.size());
@@ -298,6 +311,180 @@ public:
         }
         return out;
     }
+
+    // ========================================================================
+    // Lossless encoding
+    // ========================================================================
+
+    /**
+     * Encode a grayscale image losslessly.
+     */
+    static std::vector<uint8_t> encode_lossless(const uint8_t* pixels, uint32_t width, uint32_t height) {
+        FileHeader header;
+        header.width = width; header.height = height;
+        header.bit_depth = 8; header.num_channels = 1;
+        header.colorspace = 2; // RGB (grayscale)
+        header.subsampling = 0; header.tile_cols = 1; header.tile_rows = 1;
+        header.quality = 0;    // 0 = lossless
+        header.flags |= 1;    // bit0 = lossless
+        header.pindex_density = 0;
+
+        // Convert to int16_t plane
+        std::vector<int16_t> plane(width * height);
+        for (uint32_t i = 0; i < width * height; i++) {
+            plane[i] = (int16_t)pixels[i];
+        }
+
+        auto tile_data = encode_plane_lossless(plane.data(), width, height);
+
+        // Build file: Header + ChunkDir + Tile
+        ChunkDirectory dir;
+        dir.add("TIL0", 0, tile_data.size());
+        auto dir_data = dir.serialize();
+        size_t tile_offset = 48 + dir_data.size();
+        dir.entries[0].offset = tile_offset;
+        dir_data = dir.serialize();
+
+        std::vector<uint8_t> output;
+        output.resize(48); header.write(output.data());
+        output.insert(output.end(), dir_data.begin(), dir_data.end());
+        output.insert(output.end(), tile_data.begin(), tile_data.end());
+        return output;
+    }
+
+    /**
+     * Encode a color image losslessly using YCoCg-R.
+     */
+    static std::vector<uint8_t> encode_color_lossless(const uint8_t* rgb_data, uint32_t width, uint32_t height) {
+        // RGB -> YCoCg-R
+        std::vector<int16_t> y_plane(width * height);
+        std::vector<int16_t> co_plane(width * height);
+        std::vector<int16_t> cg_plane(width * height);
+
+        for (uint32_t i = 0; i < width * height; i++) {
+            rgb_to_ycocg_r(rgb_data[i * 3], rgb_data[i * 3 + 1], rgb_data[i * 3 + 2],
+                            y_plane[i], co_plane[i], cg_plane[i]);
+        }
+
+        auto tile_y  = encode_plane_lossless(y_plane.data(), width, height);
+        auto tile_co = encode_plane_lossless(co_plane.data(), width, height);
+        auto tile_cg = encode_plane_lossless(cg_plane.data(), width, height);
+
+        FileHeader header;
+        header.width = width; header.height = height;
+        header.bit_depth = 8; header.num_channels = 3;
+        header.colorspace = 1; // YCoCg-R
+        header.subsampling = 0; // 4:4:4 (no subsampling for lossless)
+        header.tile_cols = 1; header.tile_rows = 1;
+        header.quality = 0;
+        header.flags |= 1;
+        header.pindex_density = 0;
+
+        ChunkDirectory dir;
+        dir.add("TIL0", 0, tile_y.size());
+        dir.add("TIL1", 0, tile_co.size());
+        dir.add("TIL2", 0, tile_cg.size());
+        auto dir_data = dir.serialize();
+
+        size_t offset = 48 + dir_data.size();
+        dir.entries[0].offset = offset; offset += tile_y.size();
+        dir.entries[1].offset = offset; offset += tile_co.size();
+        dir.entries[2].offset = offset;
+        dir_data = dir.serialize();
+
+        std::vector<uint8_t> output;
+        output.resize(48); header.write(output.data());
+        output.insert(output.end(), dir_data.begin(), dir_data.end());
+        output.insert(output.end(), tile_y.begin(), tile_y.end());
+        output.insert(output.end(), tile_co.begin(), tile_co.end());
+        output.insert(output.end(), tile_cg.begin(), tile_cg.end());
+        return output;
+    }
+
+    /**
+     * Encode a single int16_t plane losslessly.
+     * Pipeline: filter -> zigzag -> split lo/hi bytes -> rANS encode each stream.
+     */
+    static std::vector<uint8_t> encode_plane_lossless(
+        const int16_t* data, uint32_t width, uint32_t height
+    ) {
+        // Step 1: Apply prediction filter
+        std::vector<uint8_t> filter_ids;
+        std::vector<int16_t> filtered;
+        LosslessFilter::filter_image(data, width, height, filter_ids, filtered);
+
+        // Step 2: ZigZag encode residuals (int16_t -> uint16_t)
+        size_t total = width * height;
+        std::vector<uint8_t> lo_bytes(total), hi_bytes(total);
+        for (size_t i = 0; i < total; i++) {
+            uint16_t zz = zigzag_encode_val(filtered[i]);
+            lo_bytes[i] = (uint8_t)(zz & 0xFF);
+            hi_bytes[i] = (uint8_t)((zz >> 8) & 0xFF);
+        }
+
+        // Step 3: rANS encode each byte stream
+        auto lo_stream = encode_byte_stream(lo_bytes);
+        auto hi_stream = encode_byte_stream(hi_bytes);
+
+        // Step 4: Pack tile data
+        // Header: 4 x uint32_t = 16 bytes
+        uint32_t hdr[4] = {
+            (uint32_t)filter_ids.size(),
+            (uint32_t)lo_stream.size(),
+            (uint32_t)hi_stream.size(),
+            0  // pindex (reserved)
+        };
+
+        std::vector<uint8_t> tile_data;
+        tile_data.resize(16);
+        std::memcpy(tile_data.data(), hdr, 16);
+        tile_data.insert(tile_data.end(), filter_ids.begin(), filter_ids.end());
+        tile_data.insert(tile_data.end(), lo_stream.begin(), lo_stream.end());
+        tile_data.insert(tile_data.end(), hi_stream.begin(), hi_stream.end());
+        return tile_data;
+    }
+
+    /**
+     * Encode a byte stream using rANS (for lossless mode).
+     * Format: [4B cdf_size][cdf_data][4B count][4B rans_size][rans_data]
+     */
+    static std::vector<uint8_t> encode_byte_stream(const std::vector<uint8_t>& bytes) {
+        // Build frequency table (alphabet = 256)
+        std::vector<uint32_t> freq(256, 1);  // Laplace smoothing
+        for (uint8_t b : bytes) freq[b]++;
+
+        CDFTable cdf = CDFBuilder().build_from_freq(freq);
+
+        // Serialize CDF
+        std::vector<uint8_t> cdf_data(256 * 4);
+        for (int i = 0; i < 256; i++) {
+            uint32_t f = cdf.freq[i];
+            std::memcpy(&cdf_data[i * 4], &f, 4);
+        }
+
+        // Encode symbols
+        FlatInterleavedEncoder encoder;
+        for (uint8_t b : bytes) {
+            encoder.encode_symbol(cdf, b);
+        }
+        auto rans_bytes = encoder.finish();
+
+        // Pack: cdf_size + cdf + count + rans_size + rans
+        std::vector<uint8_t> output;
+        uint32_t cdf_size = (uint32_t)cdf_data.size();
+        uint32_t count = (uint32_t)bytes.size();
+        uint32_t rans_size = (uint32_t)rans_bytes.size();
+
+        output.resize(4); std::memcpy(output.data(), &cdf_size, 4);
+        output.insert(output.end(), cdf_data.begin(), cdf_data.end());
+        size_t off = output.size();
+        output.resize(off + 4); std::memcpy(&output[off], &count, 4);
+        off = output.size();
+        output.resize(off + 4); std::memcpy(&output[off], &rans_size, 4);
+        output.insert(output.end(), rans_bytes.begin(), rans_bytes.end());
+        return output;
+    }
 };
 
 } // namespace hakonyans
+

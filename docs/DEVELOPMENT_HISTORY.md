@@ -478,12 +478,87 @@ Stage 4: 最終合成
 - [x] **AAN butterfly IDCT** ✅ 27.8ms→19.5ms (ChatGPT実装)
 - [x] **Screen Profile (Palette + 2D Copy)** ✅ UI/スクショ特化圧縮 (実装完了)
 
-### Phase 8 候補 (設計済み、未実装)
-1. **Super-resolution + Restore** — 低ビットレート用プロファイル
-2. **Film Grain Synthesis** — 質感復元でのっぺり感を軽減
-3. **Lossless mode** — YCoCg-R + Paeth予測 + rANS
-4. **ROI decode** — P-Indexで部分復号（サムネイル即表示）
-5. **Advanced Band CDF** — チャンクごとCDF適応
+**最終性能**:
+- デコード速度: **19.5 ms** (Full HD)、305 MiB/s
+- PSNR: **42.6 dB** (color 4:2:0+CfL)
+- 圧縮率: JPEG比 **2.88x**（484KB）
+- Screen Profile: UI **-52%** 削減
+
+---
+
+### Phase 8: ロスレス圧縮モード ✅ (2026-02-11)
+
+**目標**: PNG代替となる完全可逆圧縮モードの実装
+
+**設計決定**:
+1. **色空間**: YCoCg-R（可逆整数変換、+0.5dB coding gain）
+2. **並列化**: 256×256 タイル独立（L2キャッシュ最適、並列デコード）
+3. **フィルタ**: 行ごと5種（None/Sub/Up/Average/Paeth、PNG互換）
+4. **CDF**: MAGC+REM トークン化（既存NyANS-P流用）
+5. **Screen統合**: Copy → Palette → Filter の3段自動選択
+
+**実装内容**:
+- `src/codec/colorspace.h` — YCoCg-R 可逆変換追加（RGB ↔ YCoCg-R）
+- `src/codec/lossless_filter.h` (新規) — 差分フィルタ5種実装（190行）
+  - PNG互換フィルタ（ただし int16 差分、mod なし）
+  - 行ごと最適フィルタ自動選択（残差最小化ヒューリスティック）
+- `src/codec/encode.h` — `encode_lossless()` / `encode_color_lossless()` 追加
+- `src/codec/decode.h` — `decode_lossless()` / `decode_color_lossless()` 追加
+- `tests/test_lossless_round1.cpp` (新規) — 基盤テスト7件（303行）
+- `tests/test_lossless_round2.cpp` (新規) — コーデックテスト7件（249行）
+- `bench/bench_lossless.cpp` (新規) — 圧縮ベンチマーク（195行）
+
+**テスト結果**:
+- **Round 1** (基盤テスト): 7/7 PASS
+  - YCoCg-R 全16M色 bit-exact ラウンドトリップ
+  - 値域チェック（Y: [0,255], Co/Cg: [-255,255]）
+  - ZigZag 符号化/復号
+  - フィルタ5種の個別・自動ラウンドトリップ
+  - フルパイプライン RGB→YCoCg-R→Filter→Unfilter→RGB
+
+- **Round 2** (コーデックテスト): 7/7 PASS
+  - グレースケール・カラー bit-exact ラウンドトリップ
+  - グラデーション、ランダム 128×128、非8倍幅（7×9, 1×1, 13×5）
+  - 単色画像、ヘッダフラグ検証
+
+- **回帰テスト**: 17/17 全テスト PASS（既存 lossy テスト含む）
+
+**ベンチマーク結果**:
+
+| 画像タイプ | Raw (KB) | HKN (KB) | 圧縮率 | エンコード (ms) | デコード (ms) |
+|-----------|----------|----------|--------|----------------|--------------|
+| Random 128×128 | 48.0 | 57.8 | 1.20x | 0.74 | 1.60 |
+| Random 256×256 | 192.0 | 211.5 | 1.10x | 2.58 | 6.55 |
+| Gradient 256×256 | 192.0 | 33.8 | **0.18x** ✅ | 2.79 | 1.09 |
+| Solid 256×256 | 192.0 | 11.6 | **0.06x** ✅ | 2.49 | 0.76 |
+| UI Screenshot 320×240 | 225.0 | 35.4 | **0.16x** ✅ | 3.25 | 1.63 |
+| Natural-like 256×256 | 192.0 | 161.2 | 0.84x | 2.36 | 3.57 |
+
+**分析**:
+- ランダムデータの膨張（ratio > 1.0）は理論的に圧縮不可能なデータに対する正常挙動
+- UI/グラデーション/単色画像で **84-94% 圧縮達成**
+- PNG との直接比較は Phase 8b で実施予定
+
+**技術ハイライト**:
+- **YCoCg-R**: Co/Cg が 9bit 相当（-255..255）、int16_t で扱う
+- **タイル独立**: 256×256 タイルごとにフィルタ状態をリセット → 完全並列デコード可能
+- **Screen Profile 流用**: 既存の Palette/Copy モードをロスレスに統合
+- **MAGC+REM**: 既存のトークン化方式を残差に適用（ZigZag変換経由）
+
+**コード統計**:
+- 新規: 937行（lossless_filter.h + テスト + ベンチ）
+- 変更: colorspace.h, encode.h, decode.h に追加
+- 合計: 約1,100行
+
+**実装者**: Claude Opus 4.6
+
+---
+
+### Phase 8 残り候補 (設計済み、未実装)
+1. **ROI decode** — P-Indexで部分復号（サムネイル即表示）
+2. **Super-resolution + Restore** — 低ビットレート用プロファイル
+3. **Film Grain Synthesis** — 質感復元でのっぺり感を軽減
+4. **Advanced Band CDF** — チャンクごとCDF適応
 
 ### 長期目標
 - **AVX-512 対応** — 16状態並列デコード
@@ -538,6 +613,6 @@ MIT License (予定)
 
 ---
 
-**最終更新**: 2026-02-10
-**バージョン**: Phase 7c (進行中)
-**ステータス**: 🚧 Active Development
+**最終更新**: 2026-02-11
+**バージョン**: Phase 8 (Lossless完了)
+**ステータス**: 🚀 Active Development

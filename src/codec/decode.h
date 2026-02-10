@@ -18,6 +18,7 @@
 #include <cmath>
 #include "palette.h"
 #include "copy.h"
+#include "lossless_filter.h"
 
 namespace hakonyans {
 
@@ -42,6 +43,8 @@ public:
 
     static std::vector<uint8_t> decode(const std::vector<uint8_t>& hkn) {
         FileHeader hdr = FileHeader::read(hkn.data());
+        // Dispatch to lossless if flags bit0 is set
+        if (hdr.flags & 1) return decode_lossless(hkn);
         ChunkDirectory dir = ChunkDirectory::deserialize(&hkn[48], hkn.size() - 48);
         const ChunkEntry* qm_e = dir.find("QMAT"); QMATChunk qm = QMATChunk::deserialize(&hkn[qm_e->offset], qm_e->size);
         uint16_t deq[64]; std::memcpy(deq, qm.quant_y, 128);
@@ -54,6 +57,8 @@ public:
 
     static std::vector<uint8_t> decode_color(const std::vector<uint8_t>& hkn, int& w, int& h) {
         FileHeader hdr = FileHeader::read(hkn.data()); w = hdr.width; h = hdr.height;
+        // Dispatch to lossless if flags bit0 is set
+        if (hdr.flags & 1) return decode_color_lossless(hkn, w, h);
         ChunkDirectory dir = ChunkDirectory::deserialize(&hkn[48], hkn.size() - 48);
         const ChunkEntry* qm_e = dir.find("QMAT"); QMATChunk qm = QMATChunk::deserialize(&hkn[qm_e->offset], qm_e->size);
         uint16_t deq[64]; std::memcpy(deq, qm.quant_y, 128);
@@ -310,6 +315,124 @@ public:
         uint32_t rc; size_t off = 12+cs+rs; std::memcpy(&rc, s+off, 4); off += 4;
         size_t ri = 0; for (auto& x : t) if ((int)x.type >= 64 && (int)x.type > 64) { if (ri < rc) { x.raw_bits_count = s[off]; x.raw_bits = s[off+1] | (s[off+2]<<8); off += 3; ri++; } }
         return t;
+    }
+
+    // ========================================================================
+    // Lossless decoding
+    // ========================================================================
+
+    /**
+     * Decode a lossless grayscale .hkn file.
+     */
+    static std::vector<uint8_t> decode_lossless(const std::vector<uint8_t>& hkn) {
+        FileHeader hdr = FileHeader::read(hkn.data());
+        ChunkDirectory dir = ChunkDirectory::deserialize(&hkn[48], hkn.size() - 48);
+        const ChunkEntry* t0 = dir.find("TIL0");
+        auto plane = decode_plane_lossless(&hkn[t0->offset], t0->size, hdr.width, hdr.height);
+
+        // int16_t -> uint8_t
+        std::vector<uint8_t> out(hdr.width * hdr.height);
+        for (size_t i = 0; i < out.size(); i++) {
+            out[i] = (uint8_t)std::clamp((int)plane[i], 0, 255);
+        }
+        return out;
+    }
+
+    /**
+     * Decode a lossless color .hkn file (YCoCg-R).
+     */
+    static std::vector<uint8_t> decode_color_lossless(const std::vector<uint8_t>& hkn, int& w, int& h) {
+        FileHeader hdr = FileHeader::read(hkn.data());
+        w = hdr.width; h = hdr.height;
+        ChunkDirectory dir = ChunkDirectory::deserialize(&hkn[48], hkn.size() - 48);
+        const ChunkEntry* t0 = dir.find("TIL0");
+        const ChunkEntry* t1 = dir.find("TIL1");
+        const ChunkEntry* t2 = dir.find("TIL2");
+
+        auto y_plane  = decode_plane_lossless(&hkn[t0->offset], t0->size, w, h);
+        auto co_plane = decode_plane_lossless(&hkn[t1->offset], t1->size, w, h);
+        auto cg_plane = decode_plane_lossless(&hkn[t2->offset], t2->size, w, h);
+
+        // YCoCg-R -> RGB
+        std::vector<uint8_t> rgb(w * h * 3);
+        for (int i = 0; i < w * h; i++) {
+            ycocg_r_to_rgb(y_plane[i], co_plane[i], cg_plane[i],
+                           rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
+        }
+        return rgb;
+    }
+
+    /**
+     * Decode a single lossless plane.
+     * Pipeline: rANS decode lo/hi -> combine uint16_t -> zigzag decode -> unfilter
+     */
+    static std::vector<int16_t> decode_plane_lossless(
+        const uint8_t* td, size_t ts, uint32_t width, uint32_t height
+    ) {
+        // Read tile header (4 x uint32_t)
+        uint32_t hdr[4];
+        std::memcpy(hdr, td, 16);
+        uint32_t filter_ids_size = hdr[0];
+        uint32_t lo_stream_size  = hdr[1];
+        uint32_t hi_stream_size  = hdr[2];
+        // hdr[3] = pindex (unused)
+
+        const uint8_t* ptr = td + 16;
+
+        // Read filter IDs
+        std::vector<uint8_t> filter_ids(ptr, ptr + filter_ids_size);
+        ptr += filter_ids_size;
+
+        // Decode rANS byte streams
+        size_t total = width * height;
+        auto lo_bytes = decode_byte_stream(ptr, lo_stream_size, total);
+        ptr += lo_stream_size;
+        auto hi_bytes = decode_byte_stream(ptr, hi_stream_size, total);
+
+        // Combine lo/hi -> uint16_t -> zigzag decode -> int16_t
+        std::vector<int16_t> filtered(total);
+        for (size_t i = 0; i < total; i++) {
+            uint16_t zz = (uint16_t)lo_bytes[i] | ((uint16_t)hi_bytes[i] << 8);
+            filtered[i] = zigzag_decode_val(zz);
+        }
+
+        // Unfilter
+        std::vector<int16_t> reconstructed;
+        LosslessFilter::unfilter_image(filter_ids.data(), filtered.data(),
+                                       width, height, reconstructed);
+        return reconstructed;
+    }
+
+    /**
+     * Decode a rANS-encoded byte stream (for lossless mode).
+     * Format: [4B cdf_size][cdf_data][4B count][4B rans_size][rans_data]
+     */
+    static std::vector<uint8_t> decode_byte_stream(
+        const uint8_t* data, size_t size, size_t expected_count
+    ) {
+        if (size < 12) return std::vector<uint8_t>(expected_count, 0);
+
+        uint32_t cdf_size;
+        std::memcpy(&cdf_size, data, 4);
+
+        std::vector<uint32_t> freq(cdf_size / 4);
+        std::memcpy(freq.data(), data + 4, cdf_size);
+        CDFTable cdf = CDFBuilder().build_from_freq(freq);
+
+        uint32_t count;
+        std::memcpy(&count, data + 4 + cdf_size, 4);
+
+        uint32_t rans_size;
+        std::memcpy(&rans_size, data + 8 + cdf_size, 4);
+
+        FlatInterleavedDecoder dec(std::span<const uint8_t>(data + 12 + cdf_size, rans_size));
+
+        std::vector<uint8_t> result;
+        result.reserve(count);
+        for (uint32_t i = 0; i < count; i++) {
+            result.push_back((uint8_t)dec.decode_symbol(cdf));
+        }
+        return result;
     }
 };
 

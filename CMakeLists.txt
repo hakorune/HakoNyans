@@ -92,6 +92,14 @@ if(HAKONYANS_BUILD_TESTS)
   add_executable(test_screen_profile_step4 tests/test_screen_profile_step4.cpp)
   target_link_libraries(test_screen_profile_step4 PRIVATE pthread)
   add_test(NAME screen_profile_step4 COMMAND test_screen_profile_step4)
+  # Phase 8: Lossless Round 1
+  add_executable(test_lossless_round1 tests/test_lossless_round1.cpp)
+  target_link_libraries(test_lossless_round1 PRIVATE pthread)
+  add_test(NAME lossless_round1 COMMAND test_lossless_round1)
+  # Phase 8: Lossless Round 2
+  add_executable(test_lossless_round2 tests/test_lossless_round2.cpp)
+  target_link_libraries(test_lossless_round2 PRIVATE pthread)
+  add_test(NAME lossless_round2 COMMAND test_lossless_round2)
 endif()
 
 # === Benchmarks ===
@@ -108,6 +116,16 @@ if(HAKONYANS_BUILD_BENCH)
   add_executable(bench_decode bench/bench_decode.cpp)
   target_compile_options(bench_decode PRIVATE -O3 -march=native)
   target_link_libraries(bench_decode PRIVATE pthread)
+
+  # Screen Profile benchmark
+  add_executable(bench_screen_profile bench/bench_screen_profile.cpp)
+  target_compile_options(bench_screen_profile PRIVATE -O3 -march=native)
+  target_link_libraries(bench_screen_profile PRIVATE pthread)
+
+  # Lossless benchmark (Phase 8)
+  add_executable(bench_lossless bench/bench_lossless.cpp)
+  target_compile_options(bench_lossless PRIVATE -O3 -march=native)
+  target_link_libraries(bench_lossless PRIVATE pthread)
 endif()
 
 # === Tools ===
