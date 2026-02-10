@@ -14,280 +14,150 @@
 #include <stdexcept>
 #include <future>
 #include <thread>
+#include <cmath>
 
 namespace hakonyans {
 
-/**
- * Grayscale image decoder
- */
 class GrayscaleDecoder {
 public:
-    /**
-     * Decode .hkn to grayscale image
-     */
-    static std::vector<uint8_t> decode(const std::vector<uint8_t>& hkn_data) {
-        if (hkn_data.size() < 48) throw std::runtime_error("File too small");
-        FileHeader header = FileHeader::read(hkn_data.data());
-        if (!header.is_valid()) throw std::runtime_error("Invalid header");
-        
-        ChunkDirectory dir = ChunkDirectory::deserialize(&hkn_data[48], hkn_data.size() - 48);
-        const ChunkEntry* qmat_entry = dir.find("QMAT");
-        if (!qmat_entry) throw std::runtime_error("QMAT chunk not found");
-        QMATChunk qmat = QMATChunk::deserialize(&hkn_data[qmat_entry->offset], qmat_entry->size);
-        
-        uint16_t deq[64];
-        std::memcpy(deq, qmat.quant_y, 128);
-        
-        const ChunkEntry* tile_entry = dir.find("TIL0");
-        if (!tile_entry) tile_entry = dir.find("TILE");
-        if (!tile_entry) throw std::runtime_error("TIL0 chunk not found");
-        
-        uint32_t pad_w = header.padded_width();
-        uint32_t pad_h = header.padded_height();
-        auto padded = decode_plane(&hkn_data[tile_entry->offset], tile_entry->size, pad_w, pad_h, deq);
-        
-        std::vector<uint8_t> output(header.width * header.height);
-        for (uint32_t y = 0; y < header.height; y++) {
-            std::memcpy(&output[y * header.width], &padded[y * pad_w], header.width);
-        }
-        return output;
+    static std::vector<uint8_t> decode(const std::vector<uint8_t>& hkn) {
+        FileHeader hdr = FileHeader::read(hkn.data());
+        ChunkDirectory dir = ChunkDirectory::deserialize(&hkn[48], hkn.size() - 48);
+        const ChunkEntry* qm_e = dir.find("QMAT"); QMATChunk qm = QMATChunk::deserialize(&hkn[qm_e->offset], qm_e->size);
+        uint16_t deq[64]; std::memcpy(deq, qm.quant_y, 128);
+        const ChunkEntry* t_e = dir.find("TIL0"); if (!t_e) t_e = dir.find("TILE");
+        auto pad = decode_plane(&hkn[t_e->offset], t_e->size, hdr.padded_width(), hdr.padded_height(), deq);
+        std::vector<uint8_t> out(hdr.width * hdr.height);
+        for (uint32_t y = 0; y < hdr.height; y++) std::memcpy(&out[y * hdr.width], &pad[y * hdr.padded_width()], hdr.width);
+        return out;
     }
 
-    /**
-     * Decode .hkn to color image (RGB)
-     */
-    static std::vector<uint8_t> decode_color(
-        const std::vector<uint8_t>& hkn_data,
-        int& out_width,
-        int& out_height
-    ) {
-        if (hkn_data.size() < 48) throw std::runtime_error("File too small");
-        FileHeader header = FileHeader::read(hkn_data.data());
-        if (!header.is_valid()) throw std::runtime_error("Invalid header");
-        
-        out_width = header.width;
-        out_height = header.height;
-        
-        ChunkDirectory dir = ChunkDirectory::deserialize(&hkn_data[48], hkn_data.size() - 48);
-        const ChunkEntry* qmat_entry = dir.find("QMAT");
-        if (!qmat_entry) throw std::runtime_error("QMAT chunk not found");
-        QMATChunk qmat = QMATChunk::deserialize(&hkn_data[qmat_entry->offset], qmat_entry->size);
-        
-        uint16_t deq[64];
-        std::memcpy(deq, qmat.quant_y, 128);
-        
-        uint32_t pad_w = header.padded_width();
-        uint32_t pad_h = header.padded_height();
-        
-        const ChunkEntry* til0 = dir.find("TIL0");
-        const ChunkEntry* til1 = dir.find("TIL1");
-        const ChunkEntry* til2 = dir.find("TIL2");
-        if (!til0 || !til1 || !til2) throw std::runtime_error("Missing color tile chunks");
-        
-        // Decode planes in parallel
-        auto f0 = std::async(std::launch::async, [&]() { return decode_plane(&hkn_data[til0->offset], til0->size, pad_w, pad_h, deq); });
-        auto f1 = std::async(std::launch::async, [&]() { return decode_plane(&hkn_data[til1->offset], til1->size, pad_w, pad_h, deq); });
-        auto f2 = std::async(std::launch::async, [&]() { return decode_plane(&hkn_data[til2->offset], til2->size, pad_w, pad_h, deq); });
-        
-        auto y_padded  = f0.get();
-        auto cb_padded = f1.get();
-        auto cr_padded = f2.get();
-        
-        std::vector<uint8_t> rgb(header.width * header.height * 3);
-        unsigned int num_threads = std::thread::hardware_concurrency();
-        if (num_threads == 0) num_threads = 4;
-        
-        std::vector<std::future<void>> futures;
-        int rows_per_thread = header.height / num_threads;
-        for (unsigned int t = 0; t < num_threads; t++) {
-            int start_y = t * rows_per_thread;
-            int end_y = (t == num_threads - 1) ? header.height : (t + 1) * rows_per_thread;
-            futures.push_back(std::async(std::launch::async, [=, &y_padded, &cb_padded, &cr_padded, &rgb]() {
-                for (int y = start_y; y < end_y; y++) {
-                    for (uint32_t x = 0; x < header.width; x++) {
-                        uint32_t src_idx = y * pad_w + x;
-                        uint32_t dst_idx = (y * header.width + x) * 3;
-                        ycbcr_to_rgb(y_padded[src_idx], cb_padded[src_idx], cr_padded[src_idx],
-                                     rgb[dst_idx], rgb[dst_idx+1], rgb[dst_idx+2]);
-                    }
-                }
+    static std::vector<uint8_t> decode_color(const std::vector<uint8_t>& hkn, int& w, int& h) {
+        FileHeader hdr = FileHeader::read(hkn.data()); w = hdr.width; h = hdr.height;
+        ChunkDirectory dir = ChunkDirectory::deserialize(&hkn[48], hkn.size() - 48);
+        const ChunkEntry* qm_e = dir.find("QMAT"); QMATChunk qm = QMATChunk::deserialize(&hkn[qm_e->offset], qm_e->size);
+        uint16_t deq[64]; std::memcpy(deq, qm.quant_y, 128);
+        const ChunkEntry* t0 = dir.find("TIL0"), *t1 = dir.find("TIL1"), *t2 = dir.find("TIL2");
+        bool is_420 = (hdr.subsampling == 1), is_cfl = (hdr.flags & 2);
+        int cw = is_420 ? (w + 1) / 2 : w, ch = is_420 ? (h + 1) / 2 : h;
+        uint32_t pyw = hdr.padded_width(), pyh = hdr.padded_height();
+        uint32_t pcw = ((cw + 7) / 8) * 8, pch = ((ch + 7) / 8) * 8;
+        auto yp_v = decode_plane(&hkn[t0->offset], t0->size, pyw, pyh, deq);
+        std::vector<uint8_t> y_ref;
+        if (is_cfl) {
+            if (is_420) {
+                std::vector<uint8_t> y_full(w * h), y_ds; int ydw, ydh;
+                for (int y = 0; y < h; y++) std::memcpy(&y_full[y * w], &yp_v[y * pyw], w);
+                downsample_420(y_full.data(), w, h, y_ds, ydw, ydh);
+                y_ref = pad_image(y_ds.data(), ydw, ydh, pcw, pch);
+            } else y_ref = yp_v;
+        }
+        auto f1 = std::async(std::launch::async, [=, &hkn, &y_ref]() { return decode_plane(&hkn[t1->offset], t1->size, pcw, pch, deq, is_cfl ? &y_ref : nullptr); });
+        auto f2 = std::async(std::launch::async, [=, &hkn, &y_ref]() { return decode_plane(&hkn[t2->offset], t2->size, pcw, pch, deq, is_cfl ? &y_ref : nullptr); });
+        auto cb_raw = f1.get(); auto cr_raw = f2.get();
+        std::vector<uint8_t> y_p(w * h), cb_p(w * h), cr_p(w * h);
+        for (int y = 0; y < h; y++) std::memcpy(&y_p[y * w], &yp_v[y * pyw], w);
+        if (is_420) {
+            std::vector<uint8_t> cbc(cw * ch), crc(cw * ch);
+            for (int y = 0; y < ch; y++) { std::memcpy(&cbc[y * cw], &cb_raw[y * pcw], cw); std::memcpy(&crc[y * cw], &cr_raw[y * pcw], cw); }
+            upsample_420_bilinear(cbc.data(), cw, ch, cb_p, w, h); upsample_420_bilinear(crc.data(), cw, ch, cr_p, w, h);
+        } else {
+            for (int y = 0; y < h; y++) { std::memcpy(&cb_p[y * w], &cb_raw[y * pyw], w); std::memcpy(&cr_p[y * w], &cr_raw[y * pyw], w); }
+        }
+        std::vector<uint8_t> rgb(w * h * 3); unsigned int nt = std::thread::hardware_concurrency(); if (nt == 0) nt = 4;
+        std::vector<std::future<void>> futs; int rpt = h / nt;
+        for (unsigned int t = 0; t < nt; t++) {
+            int sy = t * rpt, ey = (t == nt - 1) ? h : (t + 1) * rpt;
+            futs.push_back(std::async(std::launch::async, [=, &y_p, &cb_p, &cr_p, &rgb]() {
+                for (int y = sy; y < ey; y++) for (int x = 0; x < w; x++) { int i = y * w + x; ycbcr_to_rgb(y_p[i], cb_p[i], cr_p[i], rgb[i*3], rgb[i*3+1], rgb[i*3+2]); }
             }));
         }
-        for (auto& f : futures) f.get();
-        return rgb;
+        for (auto& f : futs) f.get(); return rgb;
+    }
+
+    static std::vector<uint8_t> pad_image(const uint8_t* p, uint32_t w, uint32_t h, uint32_t pw, uint32_t ph) {
+        std::vector<uint8_t> out(pw * ph); for (uint32_t y = 0; y < ph; y++) for (uint32_t x = 0; x < pw; x++) out[y * pw + x] = p[std::min(y, h-1) * w + std::min(x, w-1)]; return out;
+    }
+
+    static void upsample_420_bilinear(const uint8_t* s, int w, int h, std::vector<uint8_t>& d, int dw, int dh) {
+        d.resize(dw * dh);
+        for (int y = 0; y < dh; y++) {
+            for (int x = 0; x < dw; x++) {
+                float sx = (float)x * (w - 1) / (dw - 1), sy = (float)y * (h - 1) / (dh - 1);
+                int x0 = (int)sx, y0 = (int)sy, x1 = std::min(x0+1, w-1), y1 = std::min(y0+1, h-1);
+                float fx = sx - x0, fy = sy - y0;
+                float v = (s[y0*w+x0]*(1-fx) + s[y0*w+x1]*fx)*(1-fy) + (s[y1*w+x0]*(1-fx) + s[y1*w+x1]*fx)*fy;
+                d[y*dw+x] = (uint8_t)(v + 0.5f);
+            }
+        }
     }
 
 private:
-    static std::vector<uint8_t> decode_plane(
-        const uint8_t* tile_data, size_t tile_size,
-        uint32_t pad_w, uint32_t pad_h,
-        const uint16_t deq[64]
-    ) {
-        uint32_t dc_size, ac_size, pindex_size;
-        std::memcpy(&dc_size, &tile_data[0], 4);
-        std::memcpy(&ac_size, &tile_data[4], 4);
-        std::memcpy(&pindex_size, &tile_data[8], 4);
-        
-        const uint8_t* dc_stream_ptr = &tile_data[12];
-        const uint8_t* ac_stream_ptr = &tile_data[12 + dc_size];
-        const uint8_t* pindex_ptr = (pindex_size > 0) ? &tile_data[12 + dc_size + ac_size] : nullptr;
-        
-        auto dc_tokens = decode_stream(dc_stream_ptr, dc_size);
-        std::vector<Token> ac_tokens;
-        if (pindex_ptr) {
-            PIndex pindex = PIndexCodec::deserialize(std::span<const uint8_t>(pindex_ptr, pindex_size));
-            ac_tokens = decode_stream_parallel(ac_stream_ptr, ac_size, pindex);
-        } else {
-            ac_tokens = decode_stream(ac_stream_ptr, ac_size);
+    static std::vector<uint8_t> decode_plane(const uint8_t* td, size_t ts, uint32_t pw, uint32_t ph, const uint16_t deq[64], const std::vector<uint8_t>* y_ref = nullptr) {
+        uint32_t sz[7]; std::memcpy(sz, td, 28); const uint8_t* ptr = td + 28;
+        auto dcs = decode_stream(ptr, sz[0]); ptr += sz[0];
+        std::vector<Token> acs[3];
+        for (int b=0; b<3; b++) {
+            if (b==0 && sz[4]>0) { PIndex pi = PIndexCodec::deserialize(std::span<const uint8_t>(td + 28 + sz[0] + sz[1] + sz[2] + sz[3], sz[4])); acs[b] = decode_stream_parallel(ptr, sz[b+1], pi); }
+            else acs[b] = decode_stream(ptr, sz[b+1]);
+            ptr += sz[b+1];
         }
+        ptr += sz[4]; // Skip pindex
+        std::vector<int8_t> qds; if (sz[5]>0) { qds.resize(sz[5]); std::memcpy(qds.data(), ptr, sz[5]); ptr += sz[5]; }
+        std::vector<CfLParams> cfls; if (sz[6]>0) { for (uint32_t i=0; i<sz[6]/2; i++) { float a = (int8_t)ptr[i*2]/64.0f, b = ptr[i*2+1]; cfls.push_back({a, b, a, b}); } }
         
-        int num_blocks_x = pad_w / 8;
-        int num_blocks_y = pad_h / 8;
-        std::vector<uint8_t> padded(pad_w * pad_h);
-        
-        // Block boundaries are expensive to find from token streams without more indices,
-        // so we'll first find block boundaries in ac_tokens to allow parallel processing.
-        std::vector<size_t> block_ac_starts;
-        block_ac_starts.reserve(num_blocks_x * num_blocks_y);
-        size_t current_ac = 0;
-        for (int i = 0; i < num_blocks_x * num_blocks_y; i++) {
-            block_ac_starts.push_back(current_ac);
-            while (current_ac < ac_tokens.size()) {
-                Token tok = ac_tokens[current_ac++];
-                if (static_cast<int>(tok.type) == 63) break; // EOB
-                if (static_cast<int>(tok.type) < 64) {
-                    if (current_ac < ac_tokens.size()) current_ac++; // Skip MAGC
-                }
+        int nx = pw/8, nb = nx*(ph/8); std::vector<uint8_t> pad(pw*ph);
+        std::vector<std::vector<Token>> b_acs(nb); size_t cur[3] = {0,0,0};
+        for (int i=0; i<nb; i++) {
+            int pos = 0; while (pos < 63) {
+                int b = (pos < 15 ? 0 : (pos < 31 ? 1 : 2)); if (cur[b] >= acs[b].size()) break;
+                Token t = acs[b][cur[b]++]; b_acs[i].push_back(t);
+                if (t.type == TokenType::ZRUN_63) break;
+                if ((int)t.type < 64) { pos += (int)t.type; if (pos < 63 && cur[b] < acs[b].size()) { b_acs[i].push_back(acs[b][cur[b]++]); pos++; } }
             }
         }
-
-        unsigned int num_threads = std::thread::hardware_concurrency();
-        if (num_threads == 0) num_threads = 4;
-        std::vector<std::future<void>> futures;
-        int blocks_per_thread = (num_blocks_x * num_blocks_y) / num_threads;
         
-        for (unsigned int t = 0; t < num_threads; t++) {
-            int start_block = t * blocks_per_thread;
-            int end_block = (t == num_threads - 1) ? (num_blocks_x * num_blocks_y) : (t + 1) * blocks_per_thread;
-            
-            futures.push_back(std::async(std::launch::async, [=, &dc_tokens, &ac_tokens, &block_ac_starts, &padded, deq]() {
-                // We need to re-calculate prev_dc for each thread segment
-                int16_t current_prev_dc = 0;
-                for (int i = 0; i < start_block; i++) {
-                    current_prev_dc += Tokenizer::detokenize_dc(dc_tokens[i]);
-                }
-                
-                for (int i = start_block; i < end_block; i++) {
-                    int bx = i % num_blocks_x;
-                    int by = i / num_blocks_x;
-                    
-                    int16_t dc_diff = Tokenizer::detokenize_dc(dc_tokens[i]);
-                    int16_t dc = current_prev_dc + dc_diff;
-                    current_prev_dc = dc;
-                    
-                    int16_t ac[63];
-                    size_t ac_start = block_ac_starts[i];
-                    size_t ac_end = (i == (num_blocks_x * num_blocks_y - 1)) ? ac_tokens.size() : block_ac_starts[i+1];
-                    
-                    std::vector<Token> block_ac_toks;
-                    for (size_t k = ac_start; k < ac_end; k++) {
-                        block_ac_toks.push_back(ac_tokens[k]);
-                    }
-                    Tokenizer::detokenize_ac(block_ac_toks, ac);
-                    
-                    int16_t quantized[64];
-                    quantized[0] = dc;
-                    std::memcpy(&quantized[1], ac, 63 * sizeof(int16_t));
-                    
-                    int16_t dequantized[64];
-                    QuantTable::dequantize(quantized, deq, dequantized);
-                    int16_t coeffs[64];
-                    Zigzag::inverse_scan(dequantized, coeffs);
-                    int16_t block[64];
-                    DCT::inverse(coeffs, block);
-                    
-                    for (int y = 0; y < 8; y++) {
-                        for (int x = 0; x < 8; x++) {
-                            int16_t val = block[y * 8 + x] + 128;
-                            val = (val < 0) ? 0 : (val > 255) ? 255 : val;
-                            padded[(by * 8 + y) * pad_w + (bx * 8 + x)] = static_cast<uint8_t>(val);
-                        }
-                    }
+        unsigned int nt = std::thread::hardware_concurrency(); if (nt == 0) nt = 4;
+        std::vector<std::future<void>> futs; int bpt = nb / nt;
+        for (unsigned int t = 0; t < nt; t++) {
+            int sb = t * bpt, eb = (t == nt - 1) ? nb : (t + 1) * bpt;
+            futs.push_back(std::async(std::launch::async, [=, &dcs, &b_acs, &qds, &cfls, &pad, deq, y_ref]() {
+                int16_t pdc = 0; for (int i = 0; i < sb; i++) pdc += Tokenizer::detokenize_dc(dcs[i]);
+                for (int i = sb; i < eb; i++) {
+                    int bx = i % nx, by = i / nx; int16_t dc = pdc + Tokenizer::detokenize_dc(dcs[i]); pdc = dc;
+                    int16_t ac[63]; Tokenizer::detokenize_ac(b_acs[i], ac);
+                    float s = 1.0f; if (!qds.empty()) s = 1.0f + qds[i] / 50.0f;
+                    int16_t dq[64]; dq[0] = dc * (uint16_t)std::max(1.0f, std::round(deq[0]*s));
+                    for (int k = 1; k < 64; k++) dq[k] = ac[k-1] * (uint16_t)std::max(1.0f, std::round(deq[k]*s));
+                    int16_t co[64], bl[64]; Zigzag::inverse_scan(dq, co); DCT::inverse(co, bl);
+                    if (y_ref && !cfls.empty()) {
+                        float a = cfls[i].alpha_cb, b = cfls[i].beta_cb;
+                        for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) { int py = (*y_ref)[(by*8+y)*pw+(bx*8+x)]; pad[(by*8+y)*pw+(bx*8+x)] = std::clamp((int)bl[y*8+x] + (int)std::round(a*py+b), 0, 255); }
+                    } else { for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) pad[(by*8+y)*pw+(bx*8+x)] = (uint8_t)std::clamp(bl[y*8+x]+128, 0, 255); }
                 }
             }));
         }
-        for (auto& f : futures) f.get();
-        return padded;
+        for (auto& f : futs) f.get(); return pad;
     }
 
-    static std::vector<Token> decode_stream(const uint8_t* stream, size_t size) {
-        uint32_t cdf_size;
-        std::memcpy(&cdf_size, &stream[0], 4);
-        std::vector<uint32_t> freq_vec(cdf_size / 4);
-        std::memcpy(freq_vec.data(), &stream[4], cdf_size);
-        CDFBuilder builder;
-        CDFTable cdf = builder.build_from_freq(freq_vec);
-        uint32_t token_count;
-        std::memcpy(&token_count, &stream[4 + cdf_size], 4);
-        uint32_t rans_size;
-        std::memcpy(&rans_size, &stream[8 + cdf_size], 4);
-        FlatInterleavedDecoder decoder(std::span<const uint8_t>(&stream[12 + cdf_size], rans_size));
-        std::vector<Token> tokens;
-        tokens.reserve(token_count);
-        for (uint32_t i = 0; i < token_count; i++) {
-            tokens.emplace_back(static_cast<TokenType>(decoder.decode_symbol(cdf)), 0, 0);
-        }
-        uint32_t raw_count;
-        size_t offset = 12 + cdf_size + rans_size;
-        std::memcpy(&raw_count, &stream[offset], 4);
-        offset += 4;
-        size_t raw_idx = 0;
-        for (auto& tok : tokens) {
-            if (tok.type >= TokenType::MAGC_0 && tok.type <= TokenType::MAGC_11) {
-                int magc = static_cast<int>(tok.type) - static_cast<int>(TokenType::MAGC_0);
-                if (magc > 0 && raw_idx < raw_count) {
-                    tok.raw_bits_count = stream[offset];
-                    tok.raw_bits = stream[offset + 1] | (stream[offset + 2] << 8);
-                    offset += 3;
-                    raw_idx++;
-                }
-            }
-        }
-        return tokens;
+    static std::vector<Token> decode_stream(const uint8_t* s, size_t sz) {
+        if (sz < 8) return {}; uint32_t cs; std::memcpy(&cs, s, 4); std::vector<uint32_t> f(cs/4); std::memcpy(f.data(), s+4, cs);
+        uint32_t tc; std::memcpy(&tc, s+4+cs, 4); uint32_t rs; std::memcpy(&rs, s+8+cs, 4);
+        FlatInterleavedDecoder dec(std::span<const uint8_t>(s+12+cs, rs)); std::vector<Token> t; t.reserve(tc);
+        for (uint32_t i=0; i<tc; i++) t.emplace_back((TokenType)dec.decode_symbol(CDFBuilder().build_from_freq(f)), 0, 0);
+        uint32_t rc; size_t off = 12+cs+rs; std::memcpy(&rc, s+off, 4); off += 4;
+        size_t ri = 0; for (auto& x : t) if ((int)x.type >= 64 && (int)x.type > 64) { if (ri < rc) { x.raw_bits_count = s[off]; x.raw_bits = s[off+1] | (s[off+2]<<8); off += 3; ri++; } }
+        return t;
     }
 
-    static std::vector<Token> decode_stream_parallel(const uint8_t* stream, size_t size, const PIndex& pindex) {
-        uint32_t cdf_size;
-        std::memcpy(&cdf_size, &stream[0], 4);
-        std::vector<uint32_t> freq_vec(cdf_size / 4);
-        std::memcpy(freq_vec.data(), &stream[4], cdf_size);
-        CDFBuilder builder;
-        CDFTable cdf = builder.build_from_freq(freq_vec);
-        uint32_t token_count;
-        std::memcpy(&token_count, &stream[4 + cdf_size], 4);
-        uint32_t rans_size;
-        std::memcpy(&rans_size, &stream[8 + cdf_size], 4);
-        auto symbols = ParallelDecoder::decode(std::span<const uint8_t>(&stream[12 + cdf_size], rans_size), pindex, cdf, std::thread::hardware_concurrency());
-        std::vector<Token> tokens;
-        tokens.reserve(token_count);
-        for (int sym : symbols) tokens.emplace_back(static_cast<TokenType>(sym), 0, 0);
-        uint32_t raw_count;
-        size_t offset = 12 + cdf_size + rans_size;
-        std::memcpy(&raw_count, &stream[offset], 4);
-        offset += 4;
-        size_t raw_idx = 0;
-        for (auto& tok : tokens) {
-            if (tok.type >= TokenType::MAGC_0 && tok.type <= TokenType::MAGC_11) {
-                int magc = static_cast<int>(tok.type) - static_cast<int>(TokenType::MAGC_0);
-                if (magc > 0 && raw_idx < raw_count) {
-                    tok.raw_bits_count = stream[offset];
-                    tok.raw_bits = stream[offset + 1] | (stream[offset + 2] << 8);
-                    offset += 3;
-                    raw_idx++;
-                }
-            }
-        }
-        return tokens;
+    static std::vector<Token> decode_stream_parallel(const uint8_t* s, size_t sz, const PIndex& pi) {
+        if (sz < 8) return {}; uint32_t cs; std::memcpy(&cs, s, 4); std::vector<uint32_t> f(cs/4); std::memcpy(f.data(), s+4, cs);
+        uint32_t tc; std::memcpy(&tc, s+4+cs, 4); uint32_t rs; std::memcpy(&rs, s+8+cs, 4);
+        auto syms = ParallelDecoder::decode(std::span<const uint8_t>(s+12+cs, rs), pi, CDFBuilder().build_from_freq(f), std::thread::hardware_concurrency());
+        std::vector<Token> t; t.reserve(tc); for (int x : syms) t.emplace_back((TokenType)x, 0, 0);
+        uint32_t rc; size_t off = 12+cs+rs; std::memcpy(&rc, s+off, 4); off += 4;
+        size_t ri = 0; for (auto& x : t) if ((int)x.type >= 64 && (int)x.type > 64) { if (ri < rc) { x.raw_bits_count = s[off]; x.raw_bits = s[off+1] | (s[off+2]<<8); off += 3; ri++; } }
+        return t;
     }
 };
 

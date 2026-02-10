@@ -56,6 +56,22 @@ if(HAKONYANS_BUILD_TESTS)
 
   add_executable(test_codec_color tests/test_codec_color.cpp)
   add_test(NAME codec_color COMMAND test_codec_color)
+
+  add_executable(test_adaptive_quant tests/test_adaptive_quant.cpp)
+  target_link_libraries(test_adaptive_quant PRIVATE pthread)
+  add_test(NAME adaptive_quant COMMAND test_adaptive_quant)
+
+  add_executable(test_420_subsampling tests/test_420_subsampling.cpp)
+  target_link_libraries(test_420_subsampling PRIVATE pthread)
+  add_test(NAME subsampling_420 COMMAND test_420_subsampling)
+
+  add_executable(test_cfl tests/test_cfl.cpp)
+  target_link_libraries(test_cfl PRIVATE pthread)
+  add_test(NAME cfl COMMAND test_cfl)
+
+  add_executable(test_band_cdf tests/test_band_cdf.cpp)
+  target_link_libraries(test_band_cdf PRIVATE pthread)
+  add_test(NAME band_cdf COMMAND test_band_cdf)
 endif()
 
 # === Benchmarks ===

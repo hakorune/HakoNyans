@@ -88,6 +88,31 @@ public:
             output[i] = quantized[i] * deq[i];
         }
     }
+
+    /**
+     * Calculate block activity based on AC coefficients
+     */
+    static inline float calc_activity(const int16_t ac_coeffs[63]) {
+        float activity = 0.0f;
+        for (int i = 0; i < 63; i++) {
+            activity += std::abs(ac_coeffs[i]);
+        }
+        return activity;
+    }
+
+    /**
+     * Get adaptive quantization scale
+     */
+    static inline float get_adaptive_scale(
+        float activity,
+        float avg_activity,
+        float base_scale = 1.0f,
+        float mask_strength = 0.5f
+    ) {
+        if (avg_activity < 1e-6) return base_scale;
+        float ratio = activity / avg_activity;
+        return base_scale * std::pow(ratio, mask_strength);
+    }
 };
 
 } // namespace hakonyans
