@@ -96,15 +96,36 @@ NyANS-P（Parallel Interleaved rANS + P-Index）を中核エントロピーエ�
 
 ### Phase 5: コーデック統合（画像エンコード/デコード）
 **目標**: .hkn ファイルの encode/decode が動く
+**設計書**: [docs/PHASE5_DESIGN.md](docs/PHASE5_DESIGN.md)
 
-- [ ] `src/codec/headers.cpp` — FileHeader / TileTable
-- [ ] `src/codec/transform_dct.cpp` — DCT 正/逆変換
-- [ ] `src/codec/quant.cpp` — 量子化/逆量子化
-- [ ] `src/codec/colorspace.cpp` — YCbCr ↔ RGB
-- [ ] `src/codec/encode.cpp` — エンコードパイプライン
-- [ ] `src/codec/decode.cpp` — デコードパイプライン
-- [ ] `tools/hakonyans_cli.cpp` — CLI (encode/decode/info)
-- [ ] エンドツーエンド往復テスト（画像 → .hkn → 画像）
+#### Step 5.1: Grayscale end-to-end（最小動作確認）← 次ここから
+- [ ] `src/codec/transform_dct.h` — 8×8 DCT/IDCT（スカラー、分離可能 1D×2）
+- [ ] `src/codec/quant.h` — 量子化/逆量子化 + JPEG-like quant matrix
+- [ ] `src/codec/zigzag.h` — Zigzag scan LUT
+- [ ] `src/entropy/nyans_p/tokenization.h` — ZRUN 統合版に更新
+- [ ] `src/codec/headers.h` — FileHeader(48B) + ChunkDirectory
+- [ ] `src/codec/encode.cpp` — Grayscale エンコーダ（DCT→量子化→ZRUN→rANS→.hkn）
+- [ ] `src/codec/decode.cpp` — Grayscale デコーダ（.hkn→rANS→ZRUN→逆量子化→IDCT）
+- [ ] `tests/test_codec_gray.cpp` — 8×8 / 16×16 / 32×32 グレースケール往復テスト
+- [ ] PSNR 計測（quality 別）
+
+#### Step 5.2: Color（YCbCr 4:4:4）
+- [ ] `src/codec/colorspace.h` — RGB ↔ YCbCr 整数近似
+- [ ] 3チャンネル独立エンコード/デコード
+- [ ] `tests/test_codec_color.cpp` — カラー往復テスト
+- [ ] PPM/BMP の簡易読み書き（外部ライブラリなし）
+
+#### Step 5.3: DC DPCM + P-Index 統合
+- [ ] DC 係数チャンク内 DPCM（チャンク境界でリセット）
+- [ ] Phase 4 の P-Index を codec に統合
+- [ ] タイル分割（大画像対応）
+- [ ] マルチスレッドデコード統合テスト
+
+#### Step 5.4: CLI + ベンチマーク
+- [ ] `tools/hakonyans_cli.cpp` — `hakonyans encode/decode/info`
+- [ ] `bench/bench_decode.cpp` — Full HD end-to-end
+- [ ] libjpeg-turbo との速度比較（同 quality）
+- [ ] PSNR vs bpp カーブ（quality 1-100）
 
 ---
 
