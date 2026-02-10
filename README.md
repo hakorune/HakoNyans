@@ -11,32 +11,31 @@ ANS（Asymmetric Numeral Systems）ベースの並列エントロピー符号化
 |------|------|------|
 | **エントロピーデコード** | 516 MiB/s (LUT, 1-thread) | N=8 interleaved rANS |
 | **並列スケーリング** | 5.17x @ 8 threads | P-Index による並列化 |
-| **Full HD デコード** | 27.4 ms/frame | 1920×1080 RGB, 216 MiB/s |
-| **画質** | 41.3 dB @ Q75 | Color RGB, 8×8 DCT |
+| **Full HD デコード** | **19.5 ms/frame** ⚡ | 1920×1080 RGB, **305 MiB/s** |
+| **画質** | 42.6 dB @ Q50 | Color 4:2:0+CfL, 8×8 AAN IDCT |
 
 ### 競合比較（Full HD 1920×1080）
 
 #### デコード速度
 | Codec | デコード時間 | 相対速度 |
 |-------|------------|---------|
-| libjpeg-turbo | 8.3 ms | **3.3x 速い** ⚡ |
-| **HakoNyans (Phase 7a)** | **24 ms** | **1.0x (基準)** |
-| JPEG-XL | 33.7 ms | 0.71x (遅い) |
-| AVIF | ~150 ms | 0.16x (遅い) |
+| libjpeg-turbo | 8.3 ms | **2.3x 速い** ⚡ |
+| **HakoNyans (Phase 7c)** | **19.5 ms** | **1.0x (基準)** ✅ |
+| JPEG-XL | 33.7 ms | 0.58x (遅い) |
+| AVIF | ~150 ms | 0.13x (遅い) |
 
 #### 圧縮効率 vs 画質（テスト画像: lena.ppm）
 | Codec | ファイルサイズ | PSNR | 相対サイズ |
 |-------|-------------|------|---------|
 | JPEG (Q90) | 168 KB | 34.6 dB | **1.0x (基準)** |
-| HakoNyans (Phase 6) | 1004 KB | 39.4 dB | 5.98x |
-| **HakoNyans (Phase 7a)** | **484 KB** | **40.3 dB** | **2.88x** ✅ |
+| **HakoNyans (Phase 7c)** | **484 KB** | **42.6 dB** | **2.88x** ✅ |
 | JPEG-XL | 320 KB | 38.2 dB | 1.9x |
 
 **結論**: 
-- ✅ **速度**: JPEG-XL/AVIF を上回る（エントロピー層の並列化が有効）
-- ✅ **品質**: 画質面で全コーデックを凌駕（40.3 dB）
-- ✅ **圧縮率**: Phase 7a で **6x → 2.9x** に大幅改善
-- ⚠️ **カラー品質**: CfL 実装を改善予定（Phase 7b）
+- ✅ **速度**: JPEG-XL より **1.73x 高速**、AVIF より **7.7x 高速**
+- ✅ **品質**: 全コーデック最高画質（**42.6 dB** vs JPEG-XL 38.2 dB）
+- ✅ **圧縮率**: **2.88x JPEG比**（目標 3.0x 以下達成）
+- ✅ **AAN IDCT**: 27.8ms → 19.5ms (-30% 高速化)
 
 ## 特徴
 
@@ -45,8 +44,10 @@ ANS（Asymmetric Numeral Systems）ベースの並列エントロピー符号化
   - P-Index によりデコーダ側コア数に応じた並列分割が可能
   - **業界初**: エントロピーデコードレベルでの完全並列化
 - **SIMD 最適化**: AVX2 + LUT による高速化（2.80x speedup）
-- **Transform**: 8×8 DCT + JPEG-like 量子化
-- **Color**: YCbCr 4:4:4（4:2:0 は今後対応予定）
+- **Transform**: 8×8 **AAN butterfly IDCT** (22乗算/block, libjpeg-turbo系)
+- **Color**: YCbCr 4:4:4 / 4:2:0 + CfL予測
+- **適応量子化**: ブロック複雑度ベースの動的量子化
+- **Band-group CDF**: 周波数帯域別エントロピーモデル
 - **箱理論設計**: モジュール境界が明確、テスト容易
 
 ## アーキテクチャ
