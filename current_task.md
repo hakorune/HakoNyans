@@ -115,32 +115,33 @@ NyANS-P（Parallel Interleaved rANS + P-Index）を中核エントロピーエ�
   - IDCT 丸め修正：負の値で誤差（transform_dct.h）
 - [x] PSNR 計測：Q75=46.1dB, Q90=47.7dB, Q100=49.0dB ✅
 
-#### Step 5.2: Color（YCbCr 4:4:4）
-- [ ] `src/codec/colorspace.h` — RGB ↔ YCbCr 整数近似
-- [ ] 3チャンネル独立エンコード/デコード
-- [ ] `tests/test_codec_color.cpp` — カラー往復テスト
-- [ ] PPM/BMP の簡易読み書き（外部ライブラリなし）
+#### Step 5.2: Color（YCbCr 4:4:4）✅ 完了
+- [x] `src/codec/colorspace.h` — RGB ↔ YCbCr 整数近似 ✅
+- [x] 3チャンネル独立エンコード/デコード ✅
+- [x] `tests/test_codec_color.cpp` — カラー往復テスト（PSNR 39.4dB）✅
+- [x] PPM の簡易読み書き（外部ライブラリなし）✅
 
-#### Step 5.3: DC DPCM + P-Index 統合
-- [ ] DC 係数チャンク内 DPCM（チャンク境界でリセット）
-- [ ] Phase 4 の P-Index を codec に統合
-- [ ] タイル分割（大画像対応）
-- [ ] マルチスレッドデコード統合テスト
+#### Step 5.3: DC DPCM + P-Index 統合 ✅ 完了
+- [x] DC 係数チャンク内 DPCM（チャンク境界でリセット）✅
+- [x] Phase 4 の P-Index を codec に統合 ✅
+- [x] タイル分割（大画像対応）✅
+- [x] マルチスレッドデコード統合テスト ✅
 
-#### Step 5.4: CLI + ベンチマーク
-- [ ] `tools/hakonyans_cli.cpp` — `hakonyans encode/decode/info`
-- [ ] `bench/bench_decode.cpp` — Full HD end-to-end
-- [ ] libjpeg-turbo との速度比較（同 quality）
-- [ ] PSNR vs bpp カーブ（quality 1-100）
+#### Step 5.4: CLI + ベンチマーク ✅ 完了
+- [x] `tools/hakonyans_cli.cpp` — `hakonyans encode/decode/info` ✅
+- [x] `bench/bench_decode.cpp` — Full HD end-to-end（232 MiB/s）✅
+- [ ] libjpeg-turbo との速度比較（同 quality）← Phase 6
+- [ ] PSNR vs bpp カーブ（quality 1-100）← Phase 6
 
 ---
 
-### Phase 6: ベンチマーク対決
+### Phase 6: ベンチマーク対決 🔜 次ここから
 **目標**: libjpeg-turbo / libjxl / libavif との比較
 
-- [ ] `bench/bench_decode.cpp` — エンドツーエンド計測
+- [ ] `bench/bench_compare.cpp` — 各ライブラリとの速度比較
 - [ ] Full HD / 4K テスト画像セット
 - [ ] 圧縮率 vs デコード速度のトレードオフグラフ
+- [ ] PSNR vs bpp カーブ（quality 1-100）
 - [ ] BENCHMARKS.md 更新
 
 ---

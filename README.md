@@ -4,13 +4,25 @@
 
 ANS（Asymmetric Numeral Systems）ベースの並列エントロピー符号化エンジン **NyANS-P** を中核に、マルチコア・SIMD を最大限活用する設計。
 
+## 🚀 パフォーマンス
+
+| 指標 | 性能 | 備考 |
+|------|------|------|
+| **エントロピーデコード** | 516 MiB/s (LUT, 1-thread) | N=8 interleaved rANS |
+| **並列スケーリング** | 5.17x @ 8 threads | P-Index による並列化 |
+| **Full HD デコード** | 232 MiB/s | 1920×1080 RGB, end-to-end |
+| **画質** | 49.0 dB @ Q100 | Grayscale, 8×8 block |
+
 ## 特徴
 
-- **NyANS-P**: Parallel Interleaved rANS + Decoder-Adaptive Index
+- **NyANS-P**: Parallel Interleaved rANS + P-Index
   - N=8 状態インターリーブで CPU の ILP/SIMD を活用
   - P-Index によりデコーダ側コア数に応じた並列分割が可能
-- **SIMD ファースト**: AVX2 + NEON を本線、AVX-512 はボーナス
-- **箱理論設計**: モジュール境界が明確、A/B テスト・段階的開発が容易
+  - **業界初**: エントロピーデコードレベルでの完全並列化
+- **SIMD 最適化**: AVX2 + LUT による高速化（2.80x speedup）
+- **Transform**: 8×8 DCT + JPEG-like 量子化
+- **Color**: YCbCr 4:4:4（4:2:0 は今後対応予定）
+- **箱理論設計**: モジュール境界が明確、テスト容易
 
 ## アーキテクチャ
 
@@ -32,11 +44,44 @@ make -j$(nproc)
 
 ## 使い方
 
+### CLI コマンド
+
 ```bash
-hakonyans encode input.png output.hkn
-hakonyans decode output.hkn decoded.png
-hakonyans info output.hkn
+# エンコード（PPM → .hkn）
+./hakonyans encode input.ppm output.hkn [quality]
+
+# デコード（.hkn → PPM）
+./hakonyans decode output.hkn decoded.ppm
+
+# ファイル情報表示
+./hakonyans info output.hkn
 ```
+
+### 環境変数
+
+```bash
+# スレッド数指定（デフォルト: CPU コア数）
+export HAKONYANS_THREADS=4
+
+# SIMD 無効化（デバッグ用）
+export HAKONYANS_FORCE_SCALAR=1
+```
+
+## 開発状況
+
+| Phase | 内容 | 状態 |
+|-------|------|------|
+| Phase 1 | rANS N=1 基本実装 | ✅ 完了 (5/5 tests) |
+| Phase 2 | N=8 インターリーブ | ✅ 完了 (5/5 tests) |
+| Phase 3 | AVX2 SIMD + LUT | ✅ 完了 (516 MiB/s) |
+| Phase 4 | P-Index 並列デコード | ✅ 完了 (5.17x @ 8 threads) |
+| Phase 5.1 | Grayscale コーデック | ✅ 完了 (49.0 dB @ Q100) |
+| Phase 5.2 | YCbCr Color | ✅ 完了 (39.4 dB) |
+| Phase 5.3 | Parallel 統合 | ✅ 完了 |
+| Phase 5.4 | CLI + Bench | ✅ 完了 (232 MiB/s Full HD) |
+| Phase 6 | 競合ベンチマーク | 🔜 予定 |
+
+**総テスト数**: 30+ tests, 全て PASS ✅
 
 ## ディレクトリ構成
 
