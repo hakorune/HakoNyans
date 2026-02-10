@@ -6,6 +6,7 @@
 #include <cstring>
 #include <cmath>
 #include <map>
+#include <unordered_map>
 
 namespace hakonyans {
 
@@ -135,37 +136,119 @@ class PaletteCodec {
         }
     };
 
+    static constexpr uint8_t kStreamV2Magic = 0x40;
+
+    static uint64_t indices_to_mask64(const std::vector<uint8_t>& idx) {
+        uint64_t mask = 0;
+        size_t n = std::min<size_t>(64, idx.size());
+        for (size_t i = 0; i < n; i++) {
+            if (idx[i] & 1u) mask |= (1ULL << i);
+        }
+        return mask;
+    }
+
+    static std::vector<uint8_t> mask64_to_indices(uint64_t mask) {
+        std::vector<uint8_t> idx(64, 0);
+        for (int i = 0; i < 64; i++) {
+            idx[i] = (uint8_t)((mask >> i) & 1u);
+        }
+        return idx;
+    }
+
+    static int bits_for_palette_size(int p_size) {
+        if (p_size <= 1) return 0;
+        if (p_size <= 2) return 1;
+        if (p_size <= 4) return 2;
+        return 3;
+    }
+
 public:
     static std::vector<uint8_t> encode_palette_stream(
         const std::vector<Palette>& palettes,
         const std::vector<std::vector<uint8_t>>& indices_list
     ) {
         std::vector<uint8_t> out;
+        if (palettes.empty()) return out;
+
+        // v2 format:
+        // [magic=0x40][flags]
+        //   if flags&1: [dict_count:u8][dict masks: dict_count * 8 bytes]
+        // Then per block:
+        //   [head][palette colors?][indices payload]
+        // indices payload:
+        //   size=1 : omitted
+        //   size=2 : [dict_index:u8] if flags&1 else [mask64:8B]
+        //   size>2 : legacy bit-packed 64 indices
+        uint8_t flags = 0;
+        std::vector<uint64_t> mask_dict;
+        std::unordered_map<uint64_t, uint8_t> mask_to_id;
+
+        int two_color_blocks = 0;
+        for (size_t i = 0; i < palettes.size() && i < indices_list.size(); i++) {
+            const Palette& p = palettes[i];
+            if (p.size != 2) continue;
+            two_color_blocks++;
+            uint64_t mask = indices_to_mask64(indices_list[i]);
+            if (mask_to_id.find(mask) == mask_to_id.end() && mask_dict.size() < 255) {
+                uint8_t id = (uint8_t)mask_dict.size();
+                mask_to_id[mask] = id;
+                mask_dict.push_back(mask);
+            }
+        }
+
+        // Enable dictionary when it is materially smaller than raw 8B per size-2 block.
+        if (two_color_blocks > 0 && !mask_dict.empty()) {
+            size_t raw_size = (size_t)two_color_blocks * 8;
+            size_t dict_size = 1 + mask_dict.size() * 8 + (size_t)two_color_blocks; // count + dict + 1B refs
+            if (dict_size < raw_size) flags |= 0x01;
+        }
+
+        out.push_back(kStreamV2Magic);
+        out.push_back(flags);
+        if (flags & 0x01) {
+            out.push_back((uint8_t)mask_dict.size());
+            for (uint64_t mask : mask_dict) {
+                for (int b = 0; b < 8; b++) {
+                    out.push_back((uint8_t)((mask >> (8 * b)) & 0xFF));
+                }
+            }
+        }
+
         Palette prev_pal;
-        
         for (size_t i = 0; i < palettes.size(); i++) {
             const Palette& p = palettes[i];
             const auto& idx = indices_list[i];
-            
+
             bool use_prev = (p == prev_pal && p.size > 0);
             uint8_t head = (use_prev ? 0x80 : 0) | ((p.size - 1) & 0x07);
             out.push_back(head);
-            
+
             if (!use_prev) {
-                for (int k = 0; k < p.size; k++) {
-                    out.push_back(p.colors[k]);
-                }
+                for (int k = 0; k < p.size; k++) out.push_back(p.colors[k]);
                 prev_pal = p;
             }
-            
-            int bits = 1;
-            if (p.size > 4) bits = 3;
-            else if (p.size > 2) bits = 2;
-            
-            BitWriter bw;
-            for (uint8_t v : idx) {
-                bw.write(v, bits);
+
+            if (p.size <= 1) {
+                // Solid-color palette block: indices are implicitly all zero.
+                continue;
             }
+
+            if (p.size == 2) {
+                uint64_t mask = indices_to_mask64(idx);
+                if (flags & 0x01) {
+                    auto it = mask_to_id.find(mask);
+                    out.push_back((it != mask_to_id.end()) ? it->second : 0);
+                } else {
+                    for (int b = 0; b < 8; b++) {
+                        out.push_back((uint8_t)((mask >> (8 * b)) & 0xFF));
+                    }
+                }
+                continue;
+            }
+
+            int bits = bits_for_palette_size(p.size);
+            BitWriter bw;
+            for (uint8_t v : idx) bw.write(v, bits);
             auto packed = bw.flush();
             out.insert(out.end(), packed.begin(), packed.end());
         }
@@ -178,7 +261,33 @@ public:
         std::vector<std::vector<uint8_t>>& out_indices_list,
         int num_blocks
     ) {
+        if (size == 0 || num_blocks <= 0) return;
+
         size_t pos = 0;
+        bool is_v2 = false;
+        uint8_t flags = 0;
+        std::vector<uint64_t> mask_dict;
+
+        if (data[0] == kStreamV2Magic) {
+            is_v2 = true;
+            pos = 1;
+            if (pos < size) flags = data[pos++];
+
+            if (flags & 0x01) {
+                if (pos >= size) return;
+                uint8_t dict_count = data[pos++];
+                mask_dict.reserve(dict_count);
+                for (uint8_t i = 0; i < dict_count; i++) {
+                    if (pos + 8 > size) return;
+                    uint64_t mask = 0;
+                    for (int b = 0; b < 8; b++) {
+                        mask |= ((uint64_t)data[pos++] << (8 * b));
+                    }
+                    mask_dict.push_back(mask);
+                }
+            }
+        }
+
         Palette prev_pal;
         
         for (int i = 0; i < num_blocks; i++) {
@@ -200,18 +309,32 @@ public:
                 prev_pal = p;
             }
             out_palettes.push_back(p);
-            
-            int bits = 1;
-            if (p.size > 4) bits = 3;
-            else if (p.size > 2) bits = 2;
-            
-            BitReader br(data + pos, size - pos);
-            std::vector<uint8_t> idx(64);
-            for (int k = 0; k < 64; k++) {
-                idx[k] = (uint8_t)br.read(bits);
+
+            if (is_v2 && p.size <= 1) {
+                out_indices_list.push_back(std::vector<uint8_t>(64, 0));
+                continue;
             }
+
+            if (is_v2 && p.size == 2) {
+                uint64_t mask = 0;
+                if (flags & 0x01) {
+                    uint8_t idx_id = (pos < size) ? data[pos++] : 0;
+                    if (idx_id < mask_dict.size()) mask = mask_dict[idx_id];
+                } else {
+                    if (pos + 8 > size) break;
+                    for (int b = 0; b < 8; b++) {
+                        mask |= ((uint64_t)data[pos++] << (8 * b));
+                    }
+                }
+                out_indices_list.push_back(mask64_to_indices(mask));
+                continue;
+            }
+
+            int bits = bits_for_palette_size(p.size);
+            BitReader br(data + pos, size - pos);
+            std::vector<uint8_t> idx(64, 0);
+            for (int k = 0; k < 64; k++) idx[k] = (uint8_t)br.read(bits);
             out_indices_list.push_back(idx);
-            
             pos += br.bytes_consumed();
         }
     }

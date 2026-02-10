@@ -75,28 +75,107 @@ class CopyCodec {
     };
 
 public:
+    static int small_vector_bits(int symbol_count) {
+        if (symbol_count <= 1) return 0;
+        if (symbol_count <= 2) return 1;
+        return 2;
+    }
+
+    static int popcount4(uint8_t v) {
+        int c = 0;
+        for (int i = 0; i < 4; i++) c += (v >> i) & 1;
+        return c;
+    }
+
+    static CopyParams small_vector_from_index(uint32_t idx) {
+        switch (idx) {
+            case 0: return CopyParams(-8, 0);   // left
+            case 1: return CopyParams(0, -8);   // up
+            case 2: return CopyParams(-8, -8);  // up-left
+            case 3: return CopyParams(8, -8);   // up-right
+            default: return CopyParams(0, 0);
+        }
+    }
+
+    static int small_vector_index(const CopyParams& p) {
+        if (p.dx == -8 && p.dy == 0) return 0;
+        if (p.dx == 0 && p.dy == -8) return 1;
+        if (p.dx == -8 && p.dy == -8) return 2;
+        if (p.dx == 8 && p.dy == -8) return 3;
+        return -1;
+    }
+
     static std::vector<uint8_t> encode_copy_stream(const std::vector<CopyParams>& params) {
         std::vector<uint8_t> out;
         if (params.empty()) return out;
 
-        // Simple predictive coding?
-        // diff = curr - prev
-        // For now, raw encoding or simple delta.
-        // Screen Profile Guide Step 3 doesn't specify heavy entropy coding yet.
-        // Let's use simple variable length or just raw 16-bit for simplicity and update later if needed.
-        // Actually, let's use a simple bit-packing:
-        // Most offsets are small.
-        // But for "Full Implementation", let's separate fields:
-        // One stream for DX, one for DY?
-        // For now: interleaved raw 16-bit (Little Endian)
-        
+        // Prefer compact modes when all vectors are in the small table.
+        bool use_small = true;
+        uint8_t used_mask = 0;
         for (const auto& p : params) {
-            // Write dx (16-bit)
+            int si = small_vector_index(p);
+            if (si < 0) {
+                use_small = false;
+                break;
+            }
+            used_mask |= (uint8_t)(1u << si);
+        }
+
+        if (use_small) {
+            int used_count = popcount4(used_mask);
+            int bits_dyn = small_vector_bits(used_count);
+
+            // Mode 1 (legacy): [mode=1][2-bit codes...]
+            size_t mode1_size = 1 + ((params.size() * 2 + 7) >> 3);
+            // Mode 2 (dynamic): [mode=2][used_mask][N-bit codes...]
+            size_t mode2_size = 2 + ((params.size() * bits_dyn + 7) >> 3);
+
+            if (mode2_size <= mode1_size) {
+                out.push_back(2);  // mode=2 (dynamic small-vector codebook)
+                out.push_back(used_mask);
+
+                if (bits_dyn == 0) return out;
+
+                uint8_t small_to_code[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+                uint8_t code_to_small[4] = {0, 0, 0, 0};
+                uint8_t code = 0;
+                for (uint8_t si = 0; si < 4; si++) {
+                    if ((used_mask >> si) & 1u) {
+                        small_to_code[si] = code;
+                        code_to_small[code] = si;
+                        code++;
+                    }
+                }
+
+                BitWriter bw;
+                for (const auto& p : params) {
+                    int si = small_vector_index(p);
+                    uint8_t sc = small_to_code[si < 0 ? 0 : si];
+                    bw.write((uint32_t)sc, bits_dyn);
+                }
+                auto packed = bw.flush();
+                out.insert(out.end(), packed.begin(), packed.end());
+                return out;
+            }
+
+            // mode=1 kept for backward compatibility and for tie-break cases.
+            out.push_back(1);
+            BitWriter bw;
+            for (const auto& p : params) {
+                bw.write((uint32_t)small_vector_index(p), 2);
+            }
+            auto packed = bw.flush();
+            out.insert(out.end(), packed.begin(), packed.end());
+            return out;
+        }
+
+        // Mode 0: raw 16-bit dx/dy pairs (legacy-compatible payload).
+        out.push_back(0); // mode=0
+        for (const auto& p : params) {
             uint16_t ux = (uint16_t)p.dx;
             out.push_back(ux & 0xFF);
             out.push_back((ux >> 8) & 0xFF);
-            
-            // Write dy (16-bit)
+
             uint16_t uy = (uint16_t)p.dy;
             out.push_back(uy & 0xFF);
             out.push_back((uy >> 8) & 0xFF);
@@ -105,15 +184,66 @@ public:
     }
 
     static void decode_copy_stream(const uint8_t* data, size_t size, std::vector<CopyParams>& out_params, int num_blocks) {
+        if (size == 0 || num_blocks <= 0) return;
+
         size_t pos = 0;
-        for(int i=0; i<num_blocks; i++) {
+        uint8_t mode = 0;
+
+        // Backward compatibility:
+        // Old streams had no mode byte and were exactly 4*num_blocks bytes.
+        if (size == (size_t)num_blocks * 4) {
+            mode = 0;
+        } else {
+            mode = data[0];
+            pos = 1;
+        }
+
+        if (mode == 2) {
+            if (pos >= size) return;
+            uint8_t used_mask = data[pos++];
+
+            uint8_t code_to_small[4] = {0, 0, 0, 0};
+            int used_count = 0;
+            for (uint8_t si = 0; si < 4; si++) {
+                if ((used_mask >> si) & 1u) {
+                    code_to_small[used_count++] = si;
+                }
+            }
+            if (used_count <= 0) return;
+
+            int bits_dyn = small_vector_bits(used_count);
+            if (bits_dyn == 0) {
+                CopyParams p = small_vector_from_index(code_to_small[0]);
+                out_params.insert(out_params.end(), num_blocks, p);
+                return;
+            }
+
+            BitReader br(data + pos, size - pos);
+            for (int i = 0; i < num_blocks; i++) {
+                uint32_t code = br.read(bits_dyn);
+                if ((int)code >= used_count) code = 0;
+                out_params.push_back(small_vector_from_index(code_to_small[code]));
+            }
+            return;
+        }
+
+        if (mode == 1) {
+            BitReader br(data + pos, size - pos);
+            for (int i = 0; i < num_blocks; i++) {
+                uint32_t idx = br.read(2);
+                out_params.push_back(small_vector_from_index(idx));
+            }
+            return;
+        }
+
+        for (int i = 0; i < num_blocks; i++) {
             if (pos + 4 > size) break;
-            
-            int16_t dx = (int16_t)(data[pos] | (data[pos+1] << 8));
+
+            int16_t dx = (int16_t)(data[pos] | (data[pos + 1] << 8));
             pos += 2;
-            int16_t dy = (int16_t)(data[pos] | (data[pos+1] << 8));
+            int16_t dy = (int16_t)(data[pos] | (data[pos + 1] << 8));
             pos += 2;
-            
+
             out_params.emplace_back(dx, dy);
         }
     }
