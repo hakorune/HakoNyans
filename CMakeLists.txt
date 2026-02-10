@@ -104,6 +104,10 @@ endif()
 
 # === Benchmarks ===
 if(HAKONYANS_BUILD_BENCH)
+  # Find libpng for PNG comparison benchmark
+  find_package(PNG REQUIRED)
+  include_directories(${PNG_INCLUDE_DIRS})
+
   # Entropy benchmark (Phase 2)
   add_executable(bench_entropy bench/bench_entropy.cpp)
   target_compile_options(bench_entropy PRIVATE -O3 -march=native)
@@ -126,6 +130,11 @@ if(HAKONYANS_BUILD_BENCH)
   add_executable(bench_lossless bench/bench_lossless.cpp)
   target_compile_options(bench_lossless PRIVATE -O3 -march=native)
   target_link_libraries(bench_lossless PRIVATE pthread)
+
+  # PNG vs HKN Lossless comparison benchmark (Phase 8b)
+  add_executable(bench_png_compare bench/bench_png_compare.cpp)
+  target_compile_options(bench_png_compare PRIVATE -O3 -march=native)
+  target_link_libraries(bench_png_compare PRIVATE ${PNG_LIBRARIES} pthread)
 endif()
 
 # === Tools ===

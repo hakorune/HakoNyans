@@ -10,3 +10,4 @@ perf.data.old
 compile_commands.json
 bench_results/
 Testing/
+test_images/anime/*.png

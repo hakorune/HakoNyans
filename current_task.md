@@ -233,6 +233,42 @@ NyANS-P（Parallel Interleaved rANS + P-Index）を中核エントロピーエ�
 
 ---
 
+### Phase 8b: PNG対決ベンチマーク ✅ 完了
+**目標**: HakoNyans Lossless の実力を PNG と直接比較
+
+- [x] **ベンチマークツール作成** — `bench/bench_png_compare.cpp`
+  - libpng でエンコード/デコード
+  - png_wrapper.h / ppm_loader.h 実装
+  - 比較項目：ファイルサイズ、エンコード時間、デコード時間
+- [x] **テスト画像準備** — カテゴリ別に分類（15枚）
+  - UI Screenshots（3枚）
+  - Natural Photos（4枚、Kodak dataset）
+  - Anime（4枚、5K高解像度含む）
+  - Game（2枚）
+  - Synthetic（2枚、合成画像）
+- [x] **ベンチマーク実行** — 全15枚で測定完了
+- [x] **結果分析** — **深刻なバグ発見**
+  - UI/Anime/Game: PNG圧勝（15-120倍差）
+  - Photo: HKN勝利（-8~-10%）
+  - 原因: CDFヘッダー or タイルサイズ問題
+- [x] **ドキュメント更新** — `docs/BENCHMARKS.md` に結果追加
+
+**結果**: Phase 8 Lossless にバグ発見 → Phase 8c で修正
+
+---
+
+### Phase 8c: Lossless バグ修正 🚧 準備中
+**目標**: 150KB固定サイズ問題を修正
+
+- [ ] **原因調査** — CDF/タイルサイズのデバッグ出力
+- [ ] **修正実装** — CDFヘッダー削減 or タイルサイズ調整
+- [ ] **再ベンチマーク** — PNG比較を再実行
+- [ ] **ドキュメント更新** — 修正結果を反映
+
+**目標**: UI画像で PNG と同等（10-30KB）
+
+---
+
 ## 技術メモ
 
 ### rANS 基本操作（覚書）

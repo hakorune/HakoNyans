@@ -1,5 +1,63 @@
 # HakoNyans Benchmarks 📊
 
+## PNG vs HKN Lossless Comparison (Phase 8b)
+
+**Date**: Feb 11 2026
+**Hardware**: x86_64 (AVX2 enabled)
+**Test Conditions**: PNG level 9 vs HKN Lossless (YCoCg-R + filters)
+
+### Overall Results
+
+| Image | Category | PNG (KB) | HKN (KB) | Size Ratio | Enc Speedup | Dec Speedup |
+|-------|----------|----------|----------|------------|-------------|-------------|
+| browser | UI | 10.0 | 150.5 | 15.10x ❌ | 0.33x | 0.49x |
+| vscode | UI | 11.4 | 155.2 | 13.60x ❌ | 0.37x | 0.47x |
+| terminal | UI | 9.7 | 151.0 | 15.64x ❌ | 0.32x | 0.48x |
+| anime_girl | Anime | 9.0 | 150.8 | 16.78x ❌ | 0.34x | 0.47x |
+| anime_sunset | Anime | 10.4 | 153.0 | 14.73x ❌ | 0.33x | 0.50x |
+| nature_01 | Photo | 1251.4 | 1153.8 | 0.92x ✅ | 4.74x | 0.39x |
+| nature_02 | Photo | 1412.6 | 1232.5 | 0.87x ✅ | 9.01x | 0.40x |
+| minecraft_2d | Game | 8.8 | 150.8 | 17.22x ❌ | 0.32x | 0.45x |
+| retro | Game | 9.4 | 151.3 | 16.14x ❌ | 0.33x | 0.49x |
+| kodim01 | Natural | 5.1 | 125.5 | 24.70x ❌ | 0.98x | 0.24x |
+| kodim02 | Natural | 2.2 | 66.5 | 30.83x ❌ | 0.84x | 0.45x |
+| kodim03 | Natural | 117.6 | 515.0 | 4.38x ❌ | 14.71x | 0.18x |
+| hd_01 | Natural | 8.6 | 1040.9 | 121.33x ❌ | 0.31x | 0.24x |
+
+### Category Analysis
+
+| Category | Images | Avg Size Ratio | Avg Enc Speedup | Avg Dec Speedup |
+|----------|--------|----------------|-----------------|-----------------|
+| Anime | 2 | 15.75x ❌ | 0.33x | 0.49x |
+| Game | 2 | 16.68x ❌ | 0.32x | 0.47x |
+| Natural | 4 | 45.31x ❌ | 4.21x | 0.28x |
+| Photo | 2 | 0.90x ✅ | 6.88x | 0.40x |
+| UI | 3 | 14.78x ❌ | 0.34x | 0.48x |
+
+### Analysis
+
+#### ❌ Critical Issue Found
+- **HKN Lossless has a serious bug**: File size is consistently ~150KB regardless of image content
+- This indicates a problem with the lossless encoding implementation
+- Only large natural photos (1MB+) show reasonable compression due to raw data size
+
+#### ✅ Photo Category Win
+- **Photo**: HKN achieves -10% size reduction and 6.88x encode speedup
+- This is the only category where HKN performs as expected
+
+#### 🔍 Investigation Required
+- The ~150KB constant size suggests:
+  1. Header overhead issue
+  2. CDF serialization inefficiency (1024 bytes x 256 symbols = 256KB header!)
+  3. Filter/encoding not being applied correctly
+
+### Next Steps
+- Debug lossless encoding (constant size issue)
+- Optimize CDF storage for lossless mode
+- Re-run benchmarks after fix
+
+---
+
 ## Lossless Mode ベンチマーク (Phase 8)
 
 **Date**: 2026-02-11
