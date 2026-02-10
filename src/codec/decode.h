@@ -82,7 +82,7 @@ public:
         } else {
             for (int y = 0; y < h; y++) { std::memcpy(&cb_p[y * w], &cb_raw[y * pyw], w); std::memcpy(&cr_p[y * w], &cr_raw[y * pyw], w); }
         }
-        std::vector<uint8_t> rgb(w * h * 3); unsigned int nt = std::thread::hardware_concurrency(); if (nt == 0) nt = 4;
+        std::vector<uint8_t> rgb(w * h * 3); unsigned int nt = std::thread::hardware_concurrency(); if (nt == 0) nt = 4; nt = std::min<unsigned int>(nt, 8); nt = std::max(1u, std::min<unsigned int>(nt, (unsigned int)h));
         std::vector<std::future<void>> futs; int rpt = h / nt;
         for (unsigned int t = 0; t < nt; t++) {
             int sy = t * rpt, ey = (t == nt - 1) ? h : (t + 1) * rpt;
@@ -123,7 +123,7 @@ private:
         }
         block_starts[nb] = (uint32_t)cur;
 
-        unsigned int nt = std::thread::hardware_concurrency(); if (nt == 0) nt = 4;
+        unsigned int nt = std::thread::hardware_concurrency(); if (nt == 0) nt = 4; nt = std::min<unsigned int>(nt, 8); nt = std::max(1u, std::min<unsigned int>(nt, (unsigned int)nb));
         std::vector<std::future<void>> futs; int bpt = nb / nt;
         for (unsigned int t = 0; t < nt; t++) {
             int sb = t * bpt, eb = (t == nt - 1) ? nb : (t + 1) * bpt;
@@ -184,7 +184,10 @@ private:
         CDFTable cdf = CDFBuilder().build_from_freq(f);
         uint32_t tc; std::memcpy(&tc, s+4+cs, 4);
         uint32_t rs; std::memcpy(&rs, s+8+cs, 4);
-        auto syms = ParallelDecoder::decode(std::span<const uint8_t>(s+12+cs, rs), pi, cdf, std::thread::hardware_concurrency());
+        unsigned int nt = std::thread::hardware_concurrency();
+        if (nt == 0) nt = 4;
+        nt = std::min<unsigned int>(nt, 8);
+        auto syms = ParallelDecoder::decode(std::span<const uint8_t>(s+12+cs, rs), pi, cdf, nt);
         std::vector<Token> t; t.reserve(tc);
         for (int x : syms) t.emplace_back((TokenType)x, 0, 0);
         uint32_t rc; size_t off = 12+cs+rs; std::memcpy(&rc, s+off, 4); off += 4;

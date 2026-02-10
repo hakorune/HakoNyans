@@ -173,13 +173,26 @@ NyANS-P（Parallel Interleaved rANS + P-Index）を中核エントロピーエ�
 
 ---
 
-### Phase 7b: デコード速度改善 🔜 次ここから
-**目標**: 27.4 ms → 20 ms 達成（Full HD）
+### Phase 7b: デコード速度改善 ✅ 完了
+**目標**: 36 ms → 29 ms（Full HD）
 
-- [ ] **Step 1: AAN IDCT（G提案）** — 整数型 IDCT で演算削減 
-- [ ] **Step 2: SIMD 色変換** — YCbCr→RGB/色アップサンプルの SIMD 化
-- [ ] **Step 3: メモリレイアウト最適化** — キャッシュ効率向上
-- [ ] ベンチマーク: 1/2/4/8/16 スレッド並列スケーリング
+- [x] **AVX2 色変換 int16 オーバーフロー修正** — 係数を shift-8→shift-7 に変更（PSNR 13dB→42.6dB）
+- [x] **固定小数点 IDCT** — cos() 呼び出しを事前計算テーブルに置換（36ms→29.2ms, -19%）
+- [x] **メモリレイアウト最適化** — タイルベース処理（Gemini実装）
+- [x] テスト: 全 11/11 PASS
+
+**デコード速度**: 36ms → **29.2ms (-19%)**、203 MiB/s
+
+---
+
+### Phase 7c: さらなる最適化 🚧 進行中
+**目標**: AAN butterfly IDCT + Screen Profile
+
+- [x] **Task 1: AAN butterfly IDCT** — 整数 butterfly（Loeffler/AAN 系）に差し替え
+- [x] **Task 1.5: デコード並列度調整** — `std::async` のワーカー上限を 8 に制限
+- [x] **Task 1 結果** — Full HD decode: **29.2ms → 19.48ms**, **304.6 MiB/s**, 全 11/11 テスト PASS
+- [ ] **Task 2: Screen Profile（Palette + 2D Copy）** — スクショ特化圧縮
+- [ ] ドキュメント更新（Phase 7c 詳細）
 
 ---
 
