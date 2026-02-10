@@ -98,12 +98,12 @@ NyANS-P（Parallel Interleaved rANS + P-Index）を中核エントロピーエ�
 **目標**: .hkn ファイルの encode/decode が動く
 **設計書**: [docs/PHASE5_DESIGN.md](docs/PHASE5_DESIGN.md)
 
-#### Step 5.1: Grayscale end-to-end（最小動作確認）← 次ここから
-- [ ] `src/codec/transform_dct.h` — 8×8 DCT/IDCT（スカラー、分離可能 1D×2）
-- [ ] `src/codec/quant.h` — 量子化/逆量子化 + JPEG-like quant matrix
-- [ ] `src/codec/zigzag.h` — Zigzag scan LUT
-- [ ] `src/entropy/nyans_p/tokenization.h` — ZRUN 統合版に更新
-- [ ] `src/codec/headers.h` — FileHeader(48B) + ChunkDirectory
+#### Step 5.1: Grayscale end-to-end（最小動作確認）← 進行中
+- [x] `src/codec/zigzag.h` — Zigzag scan LUT
+- [x] `src/codec/quant.h` — 量子化/逆量子化 + JPEG-like quant matrix
+- [x] `src/codec/transform_dct.h` — 8×8 DCT/IDCT（スカラー、分離可能 1D×2）
+- [x] `src/entropy/nyans_p/tokenization_v2.h` — ZRUN 統合版（DC/AC 分離対応）
+- [x] `src/codec/headers.h` — FileHeader(48B) + ChunkDirectory + QMAT
 - [ ] `src/codec/encode.cpp` — Grayscale エンコーダ（DCT→量子化→ZRUN→rANS→.hkn）
 - [ ] `src/codec/decode.cpp` — Grayscale デコーダ（.hkn→rANS→ZRUN→逆量子化→IDCT）
 - [ ] `tests/test_codec_gray.cpp` — 8×8 / 16×16 / 32×32 グレースケール往復テスト

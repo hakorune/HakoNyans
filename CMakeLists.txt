@@ -45,6 +45,10 @@ if(HAKONYANS_BUILD_TESTS)
   add_executable(test_parallel tests/test_parallel.cpp)
   target_link_libraries(test_parallel PRIVATE pthread)
   add_test(NAME parallel COMMAND test_parallel)
+  
+  # Phase 5: Component tests
+  add_executable(test_phase5_components tests/test_phase5_components.cpp)
+  add_test(NAME phase5_components COMMAND test_phase5_components)
 endif()
 
 # === Benchmarks ===
