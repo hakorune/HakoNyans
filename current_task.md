@@ -19,34 +19,40 @@ NyANS-P（Parallel Interleaved rANS + P-Index）を中核エントロピーエ�
 
 ## 実装予定
 
-### Phase 1: rANS 単体（N=1）🔜 ← 次ここから
+### Phase 1: rANS 単体（N=1）✅ 完了
 **目標**: encode → decode の往復テストが通る最小実装
 
-- [ ] `src/core/bitwriter.h` — ビット/バイト書き込み
-- [ ] `src/core/bitreader.h` — ビット/バイト読み込み
-- [ ] `src/entropy/nyans_p/rans_core.h` — rANS 基本操作
+- [x] `src/core/bitwriter.h` — ビット/バイト書き込み
+- [x] `src/core/bitreader.h` — ビット/バイト読み込み
+- [x] `src/entropy/nyans_p/rans_core.h` — rANS 基本操作
   - encode_symbol / decode_symbol
-  - renormalize
+  - renormalize (LIFO処理、バッファ反転)
   - CDF テーブル構造
-- [ ] `src/entropy/nyans_p/rans_tables.h` — CDF/alias テーブル生成
-- [ ] `tests/test_rans_roundtrip.cpp` — 往復テスト（ランダムシンボル列）
-- [ ] CMakeLists.txt 更新（テストビルド有効化）
-- [ ] 動作確認
+- [x] `src/entropy/nyans_p/rans_tables.h` — CDF/alias テーブル生成（RANS_TOTAL=4096 スケーリング）
+- [x] `tests/test_rans_simple.cpp` — 5 往復テスト（全パス）
+- [x] CMakeLists.txt 更新（テストビルド有効化）
+- [x] 動作確認（10,000シンボルのランダム往復成功）
 
 **箱理論チェック**:
-- bitstream box と entropy box が独立していること
-- スカラー実装が golden reference として固定されること
+- ✅ bitstream box と entropy box が独立
+- ✅ スカラー実装が golden reference
 
 ---
 
-### Phase 2: N=8 インターリーブ + ベンチマーク
+### Phase 2: N=8 インターリーブ + ベンチマーク 🔜 ← 次ここから
 **目標**: インターリーブで ILP 効果を確認、MiB/s 計測
 
-- [ ] `src/entropy/nyans_p/rans_interleaved.h` — N 状態管理
+- [ ] `src/entropy/nyans_p/rans_interleaved.h` — N=8 状態管理
+  - InterleavedRANSEncoder: ラウンドロビンで8状態に割り当て
+  - InterleavedRANSDecoder: 8状態から順次復号
 - [ ] トークン化（RUN / MAGC / EOB / SIGN / REM）
-- [ ] `src/entropy/nyans_p/tokenization.h`
+  - `src/entropy/nyans_p/tokenization.h`
+  - RUN(0..15) / RUN_ESC / MAGC(0..11) / EOB / SIGN
+  - REM は raw bits（rANS 外）
 - [ ] `bench/bench_entropy.cpp` — スループット計測
-- [ ] N=1 vs N=8 の A/B ベンチマーク
+  - ランダムトークン列生成
+  - encode/decode MiB/s 測定
+  - N=1 vs N=8 の A/B ベンチマーク
 - [ ] 目標: >500 MiB/s (1コア, スカラー)
 
 ---

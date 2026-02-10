@@ -166,7 +166,7 @@ private:
     }
 
     uint32_t state_;
-    std::vector<uint8_t> data_;
+    std::span<const uint8_t> data_;  // ← ゼロコピー（vector から span に変更）
     size_t pos_;
 };
 

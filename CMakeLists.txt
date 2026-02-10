@@ -28,9 +28,20 @@ include_directories(${CMAKE_SOURCE_DIR})
 if(HAKONYANS_BUILD_TESTS)
   enable_testing()
   
-  # Simple test (no external dependencies)
+  # Phase 1: Simple rANS test
   add_executable(test_rans_simple tests/test_rans_simple.cpp)
   add_test(NAME rans_simple COMMAND test_rans_simple)
+  
+  # Phase 2: Interleaved rANS + Tokenization test
+  add_executable(test_interleaved tests/test_interleaved.cpp)
+  add_test(NAME interleaved COMMAND test_interleaved)
+endif()
+
+# === Benchmarks ===
+if(HAKONYANS_BUILD_BENCH)
+  # Entropy benchmark (Phase 2)
+  add_executable(bench_entropy bench/bench_entropy.cpp)
+  target_compile_options(bench_entropy PRIVATE -O3 -march=native)
 endif()
 
 message(STATUS "HakoNyans v${PROJECT_VERSION}")
