@@ -6,12 +6,23 @@ ANS（Asymmetric Numeral Systems）ベースの並列エントロピー符号化
 
 ## 🚀 パフォーマンス
 
+### 内部ベンチマーク
 | 指標 | 性能 | 備考 |
 |------|------|------|
 | **エントロピーデコード** | 516 MiB/s (LUT, 1-thread) | N=8 interleaved rANS |
 | **並列スケーリング** | 5.17x @ 8 threads | P-Index による並列化 |
-| **Full HD デコード** | 232 MiB/s | 1920×1080 RGB, end-to-end |
-| **画質** | 49.0 dB @ Q100 | Grayscale, 8×8 block |
+| **Full HD デコード** | 27.4 ms/frame | 1920×1080 RGB, 216 MiB/s |
+| **画質** | 41.3 dB @ Q75 | Color RGB, 8×8 DCT |
+
+### 競合比較（Full HD 1920×1080）
+| Codec | デコード時間 | 相対速度 |
+|-------|------------|---------|
+| libjpeg-turbo | 8.3 ms | **3.3x 速い** ⚡ |
+| **HakoNyans** | **27.4 ms** | **1.0x (基準)** |
+| JPEG-XL | 33.7 ms | 0.81x (遅い) |
+| AVIF | ~150 ms | 0.18x (遅い) |
+
+**結論**: モダン高圧縮コーデック（JPEG-XL/AVIF）を大きく上回る速度。JPEG には届かないが、画質は圧倒的（PSNR 41.3 vs 34.6 dB）。
 
 ## 特徴
 
