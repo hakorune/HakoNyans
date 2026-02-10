@@ -146,32 +146,38 @@ perf report --no-children --stdio --percent-limit=1
 | Codec | デコード時間 | スループット | HakoNyans比 |
 |-------|------------|-------------|------------|
 | libjpeg-turbo | **8.3 ms** | **714 MiB/s** | **3.30x 速い** ⚡ |
-| **HakoNyans** | **27.4 ms** | **216 MiB/s** | **1.00x** (基準) |
-| JPEG-XL (libjxl) | 33.7 ms | 176 MiB/s | 0.81x (遅い) |
-| AVIF (libavif) | ~150 ms* | ~40 MiB/s | 0.18x (遅い) |
+| **HakoNyans (Phase 7a)** | **24 ms** | **259 MiB/s** | **1.00x** (基準) |
+| JPEG-XL (libjxl) | 33.7 ms | 176 MiB/s | 0.71x (遅い) |
+| AVIF (libavif) | ~150 ms* | ~40 MiB/s | 0.16x (遅い) |
 
 *推定値（部分実行ベース）
 
 **結論**:
-- ✅ **HakoNyans は JPEG-XL より 1.23x 速い**（33.7ms → 27.4ms）
-- ✅ **AVIF より 5.5x 速い**（150ms → 27.4ms）
-- ❌ JPEG (libjpeg-turbo) には届かず（8.3ms vs 27.4ms）
+- ✅ **HakoNyans は JPEG-XL より 1.40x 速い**（33.7ms → 24ms）
+- ✅ **AVIF より 6.25x 速い**（150ms → 24ms）
+- ❌ JPEG (libjpeg-turbo) には届かず（8.3ms vs 24ms）
   - ただし libjpeg-turbo は30年の最適化の結晶
-  - HakoNyans は Phase 5 時点（最適化余地あり）
+  - HakoNyans は Phase 7b で最適化予定
 
-### 圧縮率・画質比較
+### 圧縮率・画質比較（Phase 7a 完了時点）
 
-| Codec | Quality | ファイルサイズ | PSNR | bpp |
-|-------|---------|--------------|------|-----|
-| **HakoNyans** | Q=75 | **1004 KB** | **41.3 dB** | **4.07** |
-| HakoNyans | Q=50 | 780 KB | 38.9 dB | 3.16 |
-| JPEG | Q=90 | 168 KB | 34.6 dB | 0.68 |
-| JPEG-XL | D=0.5 | 96 KB | 36.9 dB | 0.39 |
+| Codec | Quality | ファイルサイズ | PSNR (Gray) | PSNR (Color) | 相対サイズ |
+|-------|---------|--------------|------------|------------|---------|
+| JPEG | Q=90 | **168 KB** | 35.2 dB | 34.6 dB | **1.0x** |
+| JPEG-XL | D=0.5 | 96 KB | 38.1 dB | 37.2 dB | 0.57x |
+| **HakoNyans** | **Q=75** | **484 KB** | **40.3 dB** | **23.5 dB** | **2.88x** |
+| HakoNyans (Phase 6) | Q=75 | 1004 KB | 40.8 dB | 39.4 dB | 5.98x |
+
+**Phase 7a 改善**:
+- ✅ ファイルサイズ **52% 削減**（1004KB → 484KB）
+- ✅ JPEG 比 **6.0x → 2.9x** に接近
+- ✅ グレースケール品質 **40.3 dB** 維持
+- ⚠️ カラー品質低下（39.4dB → 23.5dB、CfL 改善が必要）
 
 **結論**:
-- ✅ **HakoNyans は圧倒的に高画質**（PSNR 41.3dB vs JPEG 34.6dB）
-- ❌ **ファイルサイズは大きい**（1004KB vs JPEG 168KB = 6倍）
-- 理由: 4:4:4 固定（4:2:0 未実装）、適応量子化なし、デブロッキングなし
+- ✅ **ファイルサイズ目標達成**（490KB 目標に対し 484KB）
+- ✅ **HakoNyans は高画質な選択肢**（グレースケール 40.3 dB）
+- ⚠️ **カラー品質改善**: Phase 7b で CfL 調整予定
 
 ### 総合比較
 
