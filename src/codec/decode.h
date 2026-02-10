@@ -9,6 +9,7 @@
 #include "../entropy/nyans_p/rans_flat_interleaved.h"
 #include "../entropy/nyans_p/rans_tables.h"
 #include "../entropy/nyans_p/parallel_decode.h"
+#include "../simd/simd_dispatch.h"
 #include <vector>
 #include <cstring>
 #include <stdexcept>
@@ -20,6 +21,23 @@ namespace hakonyans {
 
 class GrayscaleDecoder {
 public:
+    static std::vector<uint8_t> pad_image(const uint8_t* p, uint32_t w, uint32_t h, uint32_t pw, uint32_t ph) {
+        std::vector<uint8_t> out(pw * ph); for (uint32_t y = 0; y < ph; y++) for (uint32_t x = 0; x < pw; x++) out[y * pw + x] = p[std::min(y, h-1) * w + std::min(x, w-1)]; return out;
+    }
+
+    static void upsample_420_bilinear(const uint8_t* s, int w, int h, std::vector<uint8_t>& d, int dw, int dh) {
+        d.resize(dw * dh);
+        for (int y = 0; y < dh; y++) {
+            for (int x = 0; x < dw; x++) {
+                float sx = (float)x * (w - 1) / (dw - 1), sy = (float)y * (h - 1) / (dh - 1);
+                int x0 = (int)sx, y0 = (int)sy, x1 = std::min(x0+1, w-1), y1 = std::min(y0+1, h-1);
+                float fx = sx - x0, fy = sy - y0;
+                float v = (s[y0*w+x0]*(1-fx) + s[y0*w+x1]*fx)*(1-fy) + (s[y1*w+x0]*(1-fx) + s[y1*w+x1]*fx)*fy;
+                d[y*dw+x] = (uint8_t)(v + 0.5f);
+            }
+        }
+    }
+
     static std::vector<uint8_t> decode(const std::vector<uint8_t>& hkn) {
         FileHeader hdr = FileHeader::read(hkn.data());
         ChunkDirectory dir = ChunkDirectory::deserialize(&hkn[48], hkn.size() - 48);
@@ -69,54 +87,38 @@ public:
         for (unsigned int t = 0; t < nt; t++) {
             int sy = t * rpt, ey = (t == nt - 1) ? h : (t + 1) * rpt;
             futs.push_back(std::async(std::launch::async, [=, &y_p, &cb_p, &cr_p, &rgb]() {
-                for (int y = sy; y < ey; y++) for (int x = 0; x < w; x++) { int i = y * w + x; ycbcr_to_rgb(y_p[i], cb_p[i], cr_p[i], rgb[i*3], rgb[i*3+1], rgb[i*3+2]); }
+                for (int y = sy; y < ey; y++) {
+                    simd::ycbcr_to_rgb_row(&y_p[y*w], &cb_p[y*w], &cr_p[y*w], &rgb[y*w*3], w);
+                }
             }));
         }
         for (auto& f : futs) f.get(); return rgb;
     }
 
-    static std::vector<uint8_t> pad_image(const uint8_t* p, uint32_t w, uint32_t h, uint32_t pw, uint32_t ph) {
-        std::vector<uint8_t> out(pw * ph); for (uint32_t y = 0; y < ph; y++) for (uint32_t x = 0; x < pw; x++) out[y * pw + x] = p[std::min(y, h-1) * w + std::min(x, w-1)]; return out;
-    }
-
-    static void upsample_420_bilinear(const uint8_t* s, int w, int h, std::vector<uint8_t>& d, int dw, int dh) {
-        d.resize(dw * dh);
-        for (int y = 0; y < dh; y++) {
-            for (int x = 0; x < dw; x++) {
-                float sx = (float)x * (w - 1) / (dw - 1), sy = (float)y * (h - 1) / (dh - 1);
-                int x0 = (int)sx, y0 = (int)sy, x1 = std::min(x0+1, w-1), y1 = std::min(y0+1, h-1);
-                float fx = sx - x0, fy = sy - y0;
-                float v = (s[y0*w+x0]*(1-fx) + s[y0*w+x1]*fx)*(1-fy) + (s[y1*w+x0]*(1-fx) + s[y1*w+x1]*fx)*fy;
-                d[y*dw+x] = (uint8_t)(v + 0.5f);
-            }
-        }
-    }
-
 private:
     static std::vector<uint8_t> decode_plane(const uint8_t* td, size_t ts, uint32_t pw, uint32_t ph, const uint16_t deq[64], const std::vector<uint8_t>* y_ref = nullptr) {
-        uint32_t sz[7]; std::memcpy(sz, td, 28); const uint8_t* ptr = td + 28;
+        uint32_t sz[5]; std::memcpy(sz, td, 20); const uint8_t* ptr = td + 20;
         auto dcs = decode_stream(ptr, sz[0]); ptr += sz[0];
-        std::vector<Token> acs[3];
-        for (int b=0; b<3; b++) {
-            if (b==0 && sz[4]>0) { PIndex pi = PIndexCodec::deserialize(std::span<const uint8_t>(td + 28 + sz[0] + sz[1] + sz[2] + sz[3], sz[4])); acs[b] = decode_stream_parallel(ptr, sz[b+1], pi); }
-            else acs[b] = decode_stream(ptr, sz[b+1]);
-            ptr += sz[b+1];
+        std::vector<Token> acs;
+        if (sz[2] > 0) {
+            PIndex pi = PIndexCodec::deserialize(std::span<const uint8_t>(td + 20 + sz[0] + sz[1], sz[2]));
+            acs = decode_stream_parallel(ptr, sz[1], pi);
+        } else {
+            acs = decode_stream(ptr, sz[1]);
         }
-        ptr += sz[4]; // Skip pindex
-        std::vector<int8_t> qds; if (sz[5]>0) { qds.resize(sz[5]); std::memcpy(qds.data(), ptr, sz[5]); ptr += sz[5]; }
-        std::vector<CfLParams> cfls; if (sz[6]>0) { for (uint32_t i=0; i<sz[6]/2; i++) { float a = (int8_t)ptr[i*2]/64.0f, b = ptr[i*2+1]; cfls.push_back({a, b, a, b}); } }
+        ptr += sz[1] + sz[2];
+        std::vector<int8_t> qds; if (sz[3] > 0) { qds.resize(sz[3]); std::memcpy(qds.data(), ptr, sz[3]); ptr += sz[3]; }
+        std::vector<CfLParams> cfls; if (sz[4] > 0) { for (uint32_t i=0; i<sz[4]/2; i++) { float a = (int8_t)ptr[i*2]/64.0f, b = ptr[i*2+1]; cfls.push_back({a, b, a, b}); } }
         
         int nx = pw/8, nb = nx*(ph/8); std::vector<uint8_t> pad(pw*ph);
-        std::vector<std::vector<Token>> b_acs(nb); size_t cur[3] = {0,0,0};
+        std::vector<std::vector<Token>> b_acs(nb); size_t cur = 0;
         for (int i=0; i<nb; i++) {
-            int pos = 0; while (pos < 63) {
-                int b = (pos < 15 ? 0 : (pos < 31 ? 1 : 2)); if (cur[b] >= acs[b].size()) break;
-                Token t = acs[b][cur[b]++]; b_acs[i].push_back(t);
+            while (cur < acs.size()) {
+                Token t = acs[cur++]; b_acs[i].push_back(t);
                 if (t.type == TokenType::ZRUN_63) break;
-                if ((int)t.type < 64) { pos += (int)t.type; if (pos < 63 && cur[b] < acs[b].size()) { b_acs[i].push_back(acs[b][cur[b]++]); pos++; } }
+                if ((int)t.type < 64) if (cur < acs.size()) b_acs[i].push_back(acs[cur++]);
             }
         }
-        
         unsigned int nt = std::thread::hardware_concurrency(); if (nt == 0) nt = 4;
         std::vector<std::future<void>> futs; int bpt = nb / nt;
         for (unsigned int t = 0; t < nt; t++) {
@@ -141,20 +143,30 @@ private:
     }
 
     static std::vector<Token> decode_stream(const uint8_t* s, size_t sz) {
-        if (sz < 8) return {}; uint32_t cs; std::memcpy(&cs, s, 4); std::vector<uint32_t> f(cs/4); std::memcpy(f.data(), s+4, cs);
-        uint32_t tc; std::memcpy(&tc, s+4+cs, 4); uint32_t rs; std::memcpy(&rs, s+8+cs, 4);
-        FlatInterleavedDecoder dec(std::span<const uint8_t>(s+12+cs, rs)); std::vector<Token> t; t.reserve(tc);
-        for (uint32_t i=0; i<tc; i++) t.emplace_back((TokenType)dec.decode_symbol(CDFBuilder().build_from_freq(f)), 0, 0);
+        if (sz < 8) return {};
+        uint32_t cs; std::memcpy(&cs, s, 4);
+        std::vector<uint32_t> f(cs/4); std::memcpy(f.data(), s+4, cs);
+        CDFTable cdf = CDFBuilder().build_from_freq(f);
+        uint32_t tc; std::memcpy(&tc, s+4+cs, 4);
+        uint32_t rs; std::memcpy(&rs, s+8+cs, 4);
+        FlatInterleavedDecoder dec(std::span<const uint8_t>(s+12+cs, rs));
+        std::vector<Token> t; t.reserve(tc);
+        for (uint32_t i=0; i<tc; i++) t.emplace_back((TokenType)dec.decode_symbol(cdf), 0, 0);
         uint32_t rc; size_t off = 12+cs+rs; std::memcpy(&rc, s+off, 4); off += 4;
         size_t ri = 0; for (auto& x : t) if ((int)x.type >= 64 && (int)x.type > 64) { if (ri < rc) { x.raw_bits_count = s[off]; x.raw_bits = s[off+1] | (s[off+2]<<8); off += 3; ri++; } }
         return t;
     }
 
     static std::vector<Token> decode_stream_parallel(const uint8_t* s, size_t sz, const PIndex& pi) {
-        if (sz < 8) return {}; uint32_t cs; std::memcpy(&cs, s, 4); std::vector<uint32_t> f(cs/4); std::memcpy(f.data(), s+4, cs);
-        uint32_t tc; std::memcpy(&tc, s+4+cs, 4); uint32_t rs; std::memcpy(&rs, s+8+cs, 4);
-        auto syms = ParallelDecoder::decode(std::span<const uint8_t>(s+12+cs, rs), pi, CDFBuilder().build_from_freq(f), std::thread::hardware_concurrency());
-        std::vector<Token> t; t.reserve(tc); for (int x : syms) t.emplace_back((TokenType)x, 0, 0);
+        if (sz < 8) return {};
+        uint32_t cs; std::memcpy(&cs, s, 4);
+        std::vector<uint32_t> f(cs/4); std::memcpy(f.data(), s+4, cs);
+        CDFTable cdf = CDFBuilder().build_from_freq(f);
+        uint32_t tc; std::memcpy(&tc, s+4+cs, 4);
+        uint32_t rs; std::memcpy(&rs, s+8+cs, 4);
+        auto syms = ParallelDecoder::decode(std::span<const uint8_t>(s+12+cs, rs), pi, cdf, std::thread::hardware_concurrency());
+        std::vector<Token> t; t.reserve(tc);
+        for (int x : syms) t.emplace_back((TokenType)x, 0, 0);
         uint32_t rc; size_t off = 12+cs+rs; std::memcpy(&rc, s+off, 4); off += 4;
         size_t ri = 0; for (auto& x : t) if ((int)x.type >= 64 && (int)x.type > 64) { if (ri < rc) { x.raw_bits_count = s[off]; x.raw_bits = s[off+1] | (s[off+2]<<8); off += 3; ri++; } }
         return t;

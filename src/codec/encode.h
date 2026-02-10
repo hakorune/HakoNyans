@@ -87,10 +87,9 @@ private:
         std::vector<float> activities(nb); float total_activity = 0.0f;
         std::vector<CfLParams> cfl_params;
         for (int i = 0; i < nb; i++) {
-            int bx = i % nx, by = i / nx; int16_t block[64];
-            for (int y=0; y<8; y++) for (int x=0; x<8; x++) block[y*8+x] = (int16_t)padded[((by*8+y)*pad_w)+(bx*8+x)] - 128;
+            int bx = i % nx, by = i / nx; int16_t block[64]; extract_block(padded.data(), pad_w, pad_h, bx, by, block);
             if (y_ref) {
-                int16_t yb[64]; for (int y=0; y<8; y++) for (int x=0; x<8; x++) yb[y*8+x] = (int16_t)y_padded[((by*8+y)*pad_w)+(bx*8+x)] - 128;
+                int16_t yb[64]; extract_block(y_padded.data(), pad_w, pad_h, bx, by, yb);
                 uint8_t yu[64], cu[64]; for (int k=0; k<64; k++) { yu[k]=(uint8_t)(yb[k]+128); cu[k]=(uint8_t)(block[k]+128); }
                 CfLParams p = compute_cfl_params(yu, cu, cu); float a = (chroma_idx==0?p.alpha_cb:p.alpha_cr), b = (chroma_idx==0?p.beta_cb:p.beta_cr);
                 cfl_params.push_back({a, b, a, b});
@@ -101,38 +100,39 @@ private:
             if (aq) { float act = QuantTable::calc_activity(&zigzag[1]); activities[i] = act; total_activity += act; }
         }
         float avg_activity = total_activity / nb;
-        std::vector<Token> dc_tokens; std::vector<std::vector<Token>> ac_tokens_by_band(3);
+        std::vector<Token> dc_tokens; std::vector<Token> ac_tokens;
         std::vector<int8_t> q_deltas; if (aq) q_deltas.reserve(nb);
         int16_t prev_dc = 0;
         for (int i = 0; i < nb; i++) {
             float scale = 1.0f; if (aq) { scale = QuantTable::get_adaptive_scale(activities[i], avg_activity); int8_t delta = (int8_t)std::clamp((scale - 1.0f) * 50.0f, -127.0f, 127.0f); q_deltas.push_back(delta); scale = 1.0f + (delta / 50.0f); }
             int16_t quantized[64]; for (int k = 0; k < 64; k++) { int16_t coeff = dct_blocks[i][k]; uint16_t q_adj = std::max((uint16_t)1, (uint16_t)std::round(quant[k] * scale)); int sign = (coeff < 0) ? -1 : 1; quantized[k] = sign * ((std::abs(coeff) + q_adj / 2) / q_adj); }
             int16_t dc_diff = quantized[0] - prev_dc; prev_dc = quantized[0]; dc_tokens.push_back(Tokenizer::tokenize_dc(dc_diff));
-            std::vector<TokenWithBand> tb; Tokenizer::tokenize_ac_with_bands(&quantized[1], tb); for (const auto& t : tb) ac_tokens_by_band[t.band].push_back(t.token);
+            auto at = Tokenizer::tokenize_ac(&quantized[1]); ac_tokens.insert(ac_tokens.end(), at.begin(), at.end());
         }
+        std::vector<uint8_t> pindex_data;
         auto dc_stream = encode_tokens(dc_tokens, build_cdf(dc_tokens));
-        std::vector<std::vector<uint8_t>> ac_streams(3); std::vector<uint8_t> pindex_data;
-        for (int b = 0; b < 3; b++) ac_streams[b] = encode_tokens(ac_tokens_by_band[b], build_cdf(ac_tokens_by_band[b]), (b==0&&pi?&pindex_data:nullptr));
-        std::vector<uint8_t> tile_data; uint32_t sz[7] = {(uint32_t)dc_stream.size(), (uint32_t)ac_streams[0].size(), (uint32_t)ac_streams[1].size(), (uint32_t)ac_streams[2].size(), (uint32_t)pindex_data.size(), (uint32_t)q_deltas.size(), (uint32_t)cfl_params.size()*2};
-        tile_data.resize(28); std::memcpy(&tile_data[0], sz, 28);
-        tile_data.insert(tile_data.end(), dc_stream.begin(), dc_stream.end()); for(int b=0; b<3; b++) tile_data.insert(tile_data.end(), ac_streams[b].begin(), ac_streams[b].end());
-        if (sz[4]>0) tile_data.insert(tile_data.end(), pindex_data.begin(), pindex_data.end());
-        if (sz[5]>0) { const uint8_t* p = reinterpret_cast<const uint8_t*>(q_deltas.data()); tile_data.insert(tile_data.end(), p, p + sz[5]); }
-        if (sz[6]>0) { for (const auto& p : cfl_params) { tile_data.push_back((int8_t)std::clamp(p.alpha_cb * 64.0f, -128.0f, 127.0f)); tile_data.push_back((uint8_t)std::clamp(p.beta_cb, 0.0f, 255.0f)); } }
+        auto ac_stream = encode_tokens(ac_tokens, build_cdf(ac_tokens), pi ? &pindex_data : nullptr);
+        std::vector<uint8_t> tile_data;
+        uint32_t sz[5] = {(uint32_t)dc_stream.size(), (uint32_t)ac_stream.size(), (uint32_t)pindex_data.size(), (uint32_t)q_deltas.size(), (uint32_t)cfl_params.size()*2};
+        tile_data.resize(20); std::memcpy(&tile_data[0], sz, 20);
+        tile_data.insert(tile_data.end(), dc_stream.begin(), dc_stream.end()); tile_data.insert(tile_data.end(), ac_stream.begin(), ac_stream.end());
+        if (sz[2]>0) tile_data.insert(tile_data.end(), pindex_data.begin(), pindex_data.end());
+        if (sz[3]>0) { const uint8_t* p = reinterpret_cast<const uint8_t*>(q_deltas.data()); tile_data.insert(tile_data.end(), p, p + sz[3]); }
+        if (sz[4]>0) { for (const auto& p : cfl_params) { tile_data.push_back((int8_t)std::clamp(p.alpha_cb * 64.0f, -128.0f, 127.0f)); tile_data.push_back((uint8_t)std::clamp(p.beta_cb, 0.0f, 255.0f)); } }
         return tile_data;
     }
 
-    static CDFTable build_cdf(const std::vector<Token>& tokens) { std::vector<uint32_t> freq(76, 1); for (const auto& tok : tokens) { int sym = static_cast<int>(tok.type); if (sym < 76) freq[sym]++; } return CDFBuilder().build_from_freq(freq); }
-    static std::vector<uint8_t> encode_tokens(const std::vector<Token>& tokens, const CDFTable& cdf, std::vector<uint8_t>* out_pi = nullptr) {
-        std::vector<uint8_t> output; int alpha = cdf.alphabet_size; std::vector<uint8_t> cdf_data(alpha * 4);
-        for (int i = 0; i < alpha; i++) { uint32_t f = cdf.freq[i]; std::memcpy(&cdf_data[i * 4], &f, 4); }
+    static CDFTable build_cdf(const std::vector<Token>& t) { std::vector<uint32_t> f(76, 1); for (const auto& x : t) { int sym = static_cast<int>(x.type); if (sym < 76) f[sym]++; } return CDFBuilder().build_from_freq(f); }
+    static std::vector<uint8_t> encode_tokens(const std::vector<Token>& t, const CDFTable& c, std::vector<uint8_t>* out_pi = nullptr) {
+        std::vector<uint8_t> output; int alpha = c.alphabet_size; std::vector<uint8_t> cdf_data(alpha * 4);
+        for (int i = 0; i < alpha; i++) { uint32_t f = c.freq[i]; std::memcpy(&cdf_data[i * 4], &f, 4); }
         uint32_t cdf_size = cdf_data.size(); output.resize(4); std::memcpy(output.data(), &cdf_size, 4); output.insert(output.end(), cdf_data.begin(), cdf_data.end());
-        uint32_t token_count = tokens.size(); size_t count_offset = output.size(); output.resize(count_offset + 4); std::memcpy(&output[count_offset], &token_count, 4);
-        FlatInterleavedEncoder encoder; for (const auto& tok : tokens) encoder.encode_symbol(cdf, static_cast<uint8_t>(tok.type)); auto rb = encoder.finish();
-        if (out_pi) { auto pindex = PIndexBuilder::build(rb, cdf, tokens.size(), 1024); *out_pi = PIndexCodec::serialize(pindex); }
+        uint32_t token_count = t.size(); size_t count_offset = output.size(); output.resize(count_offset + 4); std::memcpy(&output[count_offset], &token_count, 4);
+        FlatInterleavedEncoder encoder; for (const auto& tok : t) encoder.encode_symbol(c, static_cast<uint8_t>(tok.type)); auto rb = encoder.finish();
+        if (out_pi) { auto pindex = PIndexBuilder::build(rb, c, t.size(), 1024); *out_pi = PIndexCodec::serialize(pindex); }
         uint32_t rans_size = rb.size(); size_t rs_offset = output.size(); output.resize(rs_offset + 4); std::memcpy(&output[rs_offset], &rans_size, 4); output.insert(output.end(), rb.begin(), rb.end());
         std::vector<uint8_t> raw_data; uint32_t raw_count = 0;
-        for (const auto& tok : tokens) if (tok.raw_bits_count > 0) { raw_data.push_back(tok.raw_bits_count); raw_data.push_back(tok.raw_bits & 0xFF); raw_data.push_back((tok.raw_bits >> 8) & 0xFF); raw_count++; }
+        for (const auto& tok : t) if (tok.raw_bits_count > 0) { raw_data.push_back(tok.raw_bits_count); raw_data.push_back(tok.raw_bits & 0xFF); raw_data.push_back((tok.raw_bits >> 8) & 0xFF); raw_count++; }
         size_t rc_offset = output.size(); output.resize(rc_offset + 4); std::memcpy(&output[rc_offset], &raw_count, 4); output.insert(output.end(), raw_data.begin(), raw_data.end());
         return output;
     }
