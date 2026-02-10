@@ -1,0 +1,10 @@
+build/
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+perf.data
+perf.data.old
+.cache/
+compile_commands.json
