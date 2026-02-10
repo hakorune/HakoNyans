@@ -72,6 +72,26 @@ if(HAKONYANS_BUILD_TESTS)
   add_executable(test_band_cdf tests/test_band_cdf.cpp)
   target_link_libraries(test_band_cdf PRIVATE pthread)
   add_test(NAME band_cdf COMMAND test_band_cdf)
+
+  # Screen Profile Step 1: BlockType Infrastructure
+  add_executable(test_screen_profile_step1 tests/test_screen_profile_step1.cpp)
+  target_link_libraries(test_screen_profile_step1 PRIVATE pthread)
+  add_test(NAME screen_profile_step1 COMMAND test_screen_profile_step1)
+
+  # Screen Profile Step 2: Palette Mode
+  add_executable(test_screen_profile_step2 tests/test_screen_profile_step2.cpp)
+  target_link_libraries(test_screen_profile_step2 PRIVATE pthread)
+  add_test(NAME screen_profile_step2 COMMAND test_screen_profile_step2)
+
+  # Screen Profile Step 3: Copy Mode
+  add_executable(test_screen_profile_step3 tests/test_screen_profile_step3.cpp)
+  target_link_libraries(test_screen_profile_step3 PRIVATE pthread)
+  add_test(NAME screen_profile_step3 COMMAND test_screen_profile_step3)
+
+  # Screen Profile Step 4: Encoder Integration
+  add_executable(test_screen_profile_step4 tests/test_screen_profile_step4.cpp)
+  target_link_libraries(test_screen_profile_step4 PRIVATE pthread)
+  add_test(NAME screen_profile_step4 COMMAND test_screen_profile_step4)
 endif()
 
 # === Benchmarks ===

@@ -33,7 +33,13 @@ struct FileHeader {
     uint8_t  reserved[16];  // 将来拡張用
     
     static constexpr uint32_t MAGIC = 0x484B4E00;  // 'HKN\0'
-    static constexpr uint16_t VERSION = 0x0002;    // v0.2
+    static constexpr uint16_t VERSION = 0x0003;    // v0.3 (BlockType support)
+    
+    enum class BlockType : uint8_t {
+        DCT = 0,
+        PALETTE = 1,
+        COPY = 2
+    };
     
     FileHeader() {
         std::memset(this, 0, sizeof(FileHeader));

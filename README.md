@@ -48,6 +48,10 @@ ANS（Asymmetric Numeral Systems）ベースの並列エントロピー符号化
 - **Color**: YCbCr 4:4:4 / 4:2:0 + CfL予測
 - **適応量子化**: ブロック複雑度ベースの動的量子化
 - **Band-group CDF**: 周波数帯域別エントロピーモデル
+- **Screen Profile** ⭐ NEW:
+  - **Palette モード**: 8色以下のブロック（UI、ベタ塗り）
+  - **2D Copy モード**: 繰り返しパターン（テキスト、ロゴ、タイル）
+  - 自動モード選択（Copy → Palette → DCT）
 - **箱理論設計**: モジュール境界が明確、テスト容易
 
 ## アーキテクチャ

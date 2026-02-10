@@ -9,6 +9,8 @@
 #include "../entropy/nyans_p/rans_flat_interleaved.h"
 #include "../entropy/nyans_p/rans_tables.h"
 #include "../entropy/nyans_p/pindex.h"
+#include "palette.h"
+#include "copy.h"
 #include <vector>
 #include <cstring>
 #include <stdexcept>
@@ -75,19 +77,125 @@ public:
         return output;
     }
 
-private:
+public:
     static std::vector<uint8_t> encode_plane(
         const uint8_t* pixels, uint32_t width, uint32_t height, uint32_t pad_w, uint32_t pad_h,
-        const uint16_t quant[64], bool pi=false, bool aq=false, const std::vector<uint8_t>* y_ref=nullptr, int chroma_idx=0
+        const uint16_t quant[64], bool pi=false, bool aq=false, const std::vector<uint8_t>* y_ref=nullptr, int chroma_idx=0,
+        const std::vector<FileHeader::BlockType>* block_types_in = nullptr,
+        const std::vector<CopyParams>* copy_params_in = nullptr,
+        bool enable_screen_profile = false
     ) {
         std::vector<uint8_t> padded = pad_image(pixels, width, height, pad_w, pad_h);
         std::vector<uint8_t> y_padded; if (y_ref) y_padded = pad_image(y_ref->data(), (y_ref->size() > width*height/2 ? width : (width+1)/2), (y_ref->size() > width*height/2 ? height : (height+1)/2), pad_w, pad_h);
         int nx = pad_w / 8, ny = pad_h / 8, nb = nx * ny;
+        
+        // Block Types handling
+        std::vector<FileHeader::BlockType> block_types;
+        if (block_types_in && block_types_in->size() == nb) {
+            block_types = *block_types_in;
+        } else {
+            block_types.assign(nb, FileHeader::BlockType::DCT);
+        }
+        
+        
+        // std::vector<uint8_t> bt_data = encode_block_types(block_types); // Moved to after loop
+
+
         std::vector<std::vector<int16_t>> dct_blocks(nb, std::vector<int16_t>(64));
         std::vector<float> activities(nb); float total_activity = 0.0f;
         std::vector<CfLParams> cfl_params;
+        
+        std::vector<Palette> palettes;
+        std::vector<std::vector<uint8_t>> palette_indices;
+        
+        std::vector<CopyParams> copy_ops;
+        int copy_op_idx = 0;
+
         for (int i = 0; i < nb; i++) {
             int bx = i % nx, by = i / nx; int16_t block[64]; extract_block(padded.data(), pad_w, pad_h, bx, by, block);
+            
+            // Automatic Block Type Selection Logic
+            // Priority: Forced Input -> Copy (Search) -> Palette (Check) -> DCT
+            
+            FileHeader::BlockType selected_type = FileHeader::BlockType::DCT;
+            
+            // 1. Check Forced Input
+            if (block_types_in && i < (int)block_types_in->size()) {
+                selected_type = (*block_types_in)[i];
+            } else if (enable_screen_profile) {
+                // Automatic selection only if Screen Profile is enabled
+                // A. Try Copy
+                // Limit search to mainly text/UI areas (high variance? or always try?)
+                // Copy search is expensive. For V1, let's limit radius or try only if variance is high?
+                // Actually, Palette/Copy are good for flat areas too.
+                // Let's try Copy Search with small radius (e.g. 128 px)
+                
+                CopyParams cp;
+                // Note: We should search in `padded` (original pixels)?
+                // Ideally we search in `reconstructed` pixels for correctness (drift prevention).
+                // But `dct_blocks` haven't been quantized/dequantized yet!
+                // We are in the loop `for (int i=0; i<nb; i++)`.
+                // Previous blocks `0..i-1` have been processed but their RECONSTRUCTED pixels are not stored yet?
+                // `encode_plane` calculates `quantized` coeff in the NEXT loop.
+                // So strict IntraBC is impossible in this single-pass structure without buffering.
+                //
+                // SOLUTION for Multi-Pass:
+                // We need to reconstruct blocks as we go if we want to search in them.
+                // OR: We assume "high quality" and search in Processed Original pixels.
+                // Screen content is usually lossless-ish.
+                // Let's search in `padded` (Original) for Step 4 V1.
+                // This introduces slight mismatch (Encoder thinks match, Decoder sees reconstructed diff).
+                // But for lossless-like settings (Q90+), it matches.
+                
+                int sad = IntraBCSearch::search(padded.data(), pad_w, pad_h, bx, by, 64, cp);
+                if (sad == 0) { // Perfect match
+                    selected_type = FileHeader::BlockType::COPY;
+                    copy_ops.push_back(cp);
+                    block_types[i] = selected_type;
+                    continue; // Skip Palette/DCT
+                }
+                
+                // B. Try Palette
+                Palette p = PaletteExtractor::extract(block, 8);
+                if (p.size > 0 && p.size <= 8) {
+                    // Check error? PaletteExtractor as implemented is "Lossless if <= 8 colors"
+                    // If it returned a palette, it means the block HAD <= 8 colors.
+                    selected_type = FileHeader::BlockType::PALETTE;
+                }
+            }
+            
+            // Apply selection
+            block_types[i] = selected_type;
+
+            if (selected_type == FileHeader::BlockType::COPY) {
+                 // Already handled above if auto-detected.
+                 // But if forced via input, we need to push param.
+                 if (copy_params_in && copy_op_idx < (int)copy_params_in->size()) {
+                    copy_ops.push_back((*copy_params_in)[copy_op_idx++]);
+                 } else {
+                    // Fallback if forced but no param?
+                    // Should rely on auto-search if forced but no param?
+                    // For now assume forced input comes with params or we re-search?
+                    // Let's re-search if param missing.
+                    CopyParams cp;
+                    IntraBCSearch::search(padded.data(), pad_w, pad_h, bx, by, 64, cp);
+                    copy_ops.push_back(cp);
+                 }
+                 continue;
+            } else if (selected_type == FileHeader::BlockType::PALETTE) {
+                // Try to extract palette (redundant if we just did it, but safe)
+                Palette p = PaletteExtractor::extract(block, 8);
+                if (p.size > 0) {
+                    palettes.push_back(p);
+                    palette_indices.push_back(PaletteExtractor::map_indices(block, p));
+                    continue; 
+                } else {
+                    // Start of fallback to DCT
+                    block_types[i] = FileHeader::BlockType::DCT;
+                }
+            }
+            
+            // Fallthrough to DCT logic
             if (y_ref) {
                 int16_t yb[64]; extract_block(y_padded.data(), pad_w, pad_h, bx, by, yb);
                 uint8_t yu[64], cu[64]; for (int k=0; k<64; k++) { yu[k]=(uint8_t)(yb[k]+128); cu[k]=(uint8_t)(block[k]+128); }
@@ -104,21 +212,44 @@ private:
         std::vector<int8_t> q_deltas; if (aq) q_deltas.reserve(nb);
         int16_t prev_dc = 0;
         for (int i = 0; i < nb; i++) {
+            if (i < (int)block_types.size() && (block_types[i] == FileHeader::BlockType::PALETTE || block_types[i] == FileHeader::BlockType::COPY)) {
+                // Skip DCT encoding for palette/copy blocks
+                 continue;
+            }
+
             float scale = 1.0f; if (aq) { scale = QuantTable::get_adaptive_scale(activities[i], avg_activity); int8_t delta = (int8_t)std::clamp((scale - 1.0f) * 50.0f, -127.0f, 127.0f); q_deltas.push_back(delta); scale = 1.0f + (delta / 50.0f); }
             int16_t quantized[64]; for (int k = 0; k < 64; k++) { int16_t coeff = dct_blocks[i][k]; uint16_t q_adj = std::max((uint16_t)1, (uint16_t)std::round(quant[k] * scale)); int sign = (coeff < 0) ? -1 : 1; quantized[k] = sign * ((std::abs(coeff) + q_adj / 2) / q_adj); }
             int16_t dc_diff = quantized[0] - prev_dc; prev_dc = quantized[0]; dc_tokens.push_back(Tokenizer::tokenize_dc(dc_diff));
             auto at = Tokenizer::tokenize_ac(&quantized[1]); ac_tokens.insert(ac_tokens.end(), at.begin(), at.end());
         }
+        
+        std::vector<uint8_t> bt_data = encode_block_types(block_types);
+        std::vector<uint8_t> pal_data = PaletteCodec::encode_palette_stream(palettes, palette_indices);
+        std::vector<uint8_t> cpy_data = CopyCodec::encode_copy_stream(copy_ops);
         std::vector<uint8_t> pindex_data;
         auto dc_stream = encode_tokens(dc_tokens, build_cdf(dc_tokens));
         auto ac_stream = encode_tokens(ac_tokens, build_cdf(ac_tokens), pi ? &pindex_data : nullptr);
         std::vector<uint8_t> tile_data;
-        uint32_t sz[5] = {(uint32_t)dc_stream.size(), (uint32_t)ac_stream.size(), (uint32_t)pindex_data.size(), (uint32_t)q_deltas.size(), (uint32_t)cfl_params.size()*2};
-        tile_data.resize(20); std::memcpy(&tile_data[0], sz, 20);
-        tile_data.insert(tile_data.end(), dc_stream.begin(), dc_stream.end()); tile_data.insert(tile_data.end(), ac_stream.begin(), ac_stream.end());
+        // TileHeader v2: 8 fields (32 bytes)
+        uint32_t sz[8] = {
+            (uint32_t)dc_stream.size(), 
+            (uint32_t)ac_stream.size(), 
+            (uint32_t)pindex_data.size(), 
+            (uint32_t)q_deltas.size(), 
+            (uint32_t)cfl_params.size()*2,
+            (uint32_t)bt_data.size(),
+            (uint32_t)pal_data.size(), 
+            (uint32_t)cpy_data.size()
+        };
+        tile_data.resize(32); std::memcpy(&tile_data[0], sz, 32);
+        tile_data.insert(tile_data.end(), dc_stream.begin(), dc_stream.end());
+        tile_data.insert(tile_data.end(), ac_stream.begin(), ac_stream.end());
         if (sz[2]>0) tile_data.insert(tile_data.end(), pindex_data.begin(), pindex_data.end());
         if (sz[3]>0) { const uint8_t* p = reinterpret_cast<const uint8_t*>(q_deltas.data()); tile_data.insert(tile_data.end(), p, p + sz[3]); }
         if (sz[4]>0) { for (const auto& p : cfl_params) { tile_data.push_back((int8_t)std::clamp(p.alpha_cb * 64.0f, -128.0f, 127.0f)); tile_data.push_back((uint8_t)std::clamp(p.beta_cb, 0.0f, 255.0f)); } }
+        if (sz[5]>0) tile_data.insert(tile_data.end(), bt_data.begin(), bt_data.end());
+        if (sz[6]>0) tile_data.insert(tile_data.end(), pal_data.begin(), pal_data.end());
+        if (sz[7]>0) tile_data.insert(tile_data.end(), cpy_data.begin(), cpy_data.end());
         return tile_data;
     }
 
@@ -144,6 +275,28 @@ private:
     }
     static void extract_block(const uint8_t* pixels, uint32_t stride, uint32_t height, int bx, int by, int16_t block[64]) {
         for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) block[y * 8 + x] = static_cast<int16_t>(pixels[(by * 8 + y) * stride + (bx * 8 + x)]) - 128;
+    }
+
+public:
+    static std::vector<uint8_t> encode_block_types(const std::vector<FileHeader::BlockType>& types) {
+        std::vector<uint8_t> out;
+        if (types.empty()) return out;
+        
+        size_t n = types.size();
+        size_t i = 0;
+        while (i < n) {
+            uint8_t type = (uint8_t)types[i];
+            size_t run = 1;
+            while (i + run < n && run < 64 && (uint8_t)types[i + run] == type) {
+                run++;
+            }
+            // Format: (Count - 1) << 2 | Type
+            // Type: 2 bits (0-3)
+            // Count: 6 bits (1-64)
+            out.push_back((uint8_t)(((run - 1) << 2) | (type & 0x03)));
+            i += run;
+        }
+        return out;
     }
 };
 

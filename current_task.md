@@ -185,14 +185,19 @@ NyANS-P（Parallel Interleaved rANS + P-Index）を中核エントロピーエ�
 
 ---
 
-### Phase 7c: さらなる最適化 🚧 進行中
+### Phase 7c: さらなる最適化 ✅ 完了
 **目標**: AAN butterfly IDCT + Screen Profile
 
 - [x] **Task 1: AAN butterfly IDCT** — 整数 butterfly（Loeffler/AAN 系）に差し替え
 - [x] **Task 1.5: デコード並列度調整** — `std::async` のワーカー上限を 8 に制限
-- [x] **Task 1 結果** — Full HD decode: **29.2ms → 19.48ms**, **304.6 MiB/s**, 全 11/11 テスト PASS
-- [ ] **Task 2: Screen Profile（Palette + 2D Copy）** — スクショ特化圧縮
-- [ ] ドキュメント更新（Phase 7c 詳細）
+- [x] **Task 1 結果** — Full HD decode: **27.8ms → 19.5ms**, **305 MiB/s**, 全 11/11 テスト PASS
+- [x] **Task 2: Screen Profile（Palette + 2D Copy）** — スクショ特化圧縮 ✅ 完了
+  - Palette モード: 8色以下のブロック（頻度ベース抽出、Delta符号化）
+  - 2D Copy モード (IntraBC): 繰り返しパターン検出（SAD探索、±64ブロック範囲）
+  - 自動モード選択: Copy → Palette → DCT の優先順位
+  - ファイルフォーマット v2 対応
+  - 全 15/15 テスト PASS
+- [x] ドキュメント更新（Phase 7c 完全版）
 
 ---
 

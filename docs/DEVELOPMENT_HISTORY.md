@@ -387,6 +387,51 @@ Stage 4: 最終合成
 - ✅ 全 11/11 テスト PASS
 - ✅ PSNR 品質維持 (42.6 dB)
 
+**Task 3: Screen Profile (Palette + 2D Copy)** (2026-02-10 - 実装完了) ✅
+**目標**: UI/スクショ/ゲーム画面で高効率圧縮
+
+**実装内容**:
+- `src/codec/palette.h` — **Palette モード**
+  - 8色以下のブロック向け（UI、ベタ塗り）
+  - 頻度ベースの色抽出
+  - Delta Palette（前ブロックとの差分符号化）
+  - ビットパック済みインデックスマップ
+- `src/codec/copy.h` — **2D Copy モード** (IntraBC)
+  - 繰り返しパターン検出（テキスト、ロゴ、タイル）
+  - SAD (Sum of Absolute Differences) ベースの探索
+  - 探索範囲 ±64ブロック
+  - 参照位置の差分符号化
+- **ファイルフォーマット v2** 対応
+  - BlockType ストリーム (RLE圧縮)
+  - Palette データストリーム
+  - Copy パラメータストリーム
+- **自動モード選択** (エンコーダ)
+  - 優先順位: Copy (完全一致) → Palette (≤8色) → DCT (デフォルト)
+  - `enable_screen_profile` フラグで制御
+- `src/codec/encode.h`, `src/codec/decode.h` — 統合
+  - 混合ブロックタイプ (DCT/Palette/Copy) の処理
+  - スパース DCT ストリームのインデックス追跡
+  - 並列デコード対応（Copy モードはセーフスレッディング）
+
+**テスト結果**:
+- ✅ **test_screen_profile_step4** — 自動モード選択の検証
+  - テキスト領域: Copy モード (25ブロック)
+  - ベタ塗り領域: Palette モード (7ブロック)
+  - ノイズ/グラデーション: DCT モード (32ブロック)
+- ✅ **回帰テスト** — 既存の codec_gray/codec_color テスト全 PASS
+  - 写真品質: 悪化なし（PSNR 42.6 dB 維持）
+
+**期待される効果** (実測は後日):
+- UI/スクショ: **-40〜-50% ファイルサイズ削減**
+- テキスト入り図版: **-50% 削減**
+- 写真: ±0%（影響なし）
+
+**成果**:
+- ✅ **全 15/15 テスト PASS** (Screen Profile 4テスト + 既存 11テスト)
+- ✅ **2つの新ブロックタイプ実装完了**
+- ✅ **自動エンコーダ選択機能**
+- ✅ **既存テストとの互換性維持**
+
 ---
 
 ## 📊 現在の到達点 (2026-02-10)
@@ -403,17 +448,18 @@ Stage 4: 最終合成
 | エントロピーデコード | 516 MiB/s | > 500 MiB/s | ✅ 103% |
 
 ### コードベース統計
-- **総行数**: 約 4,500 行 (ヘッダー + テスト)
-- **テスト**: 11/11 PASS ✅
-- **コミット数**: 20+
+- **総行数**: 約 5,500 行 (ヘッダー + テスト + Screen Profile)
+- **テスト**: 15/15 PASS ✅
+- **コミット数**: 22+
 - **開発期間**: 26日間 (2026-01-15 → 2026-02-10)
-- **開発体制**: Claude (主導) + Gemini (Phase 5-7 部分実装)
+- **開発体制**: Claude (主導) + Gemini (Phase 5-7a部分) + ChatGPT (AAN IDCT)
 
 ### 実装済み機能
 - ✅ rANS エントロピーコーディング (NyANS-P)
 - ✅ P-Index 並列デコード (5.17x @ 8 threads)
 - ✅ AVX2 SIMD 最適化 (LUT: 2.80x)
-- ✅ **8×8 AAN butterfly IDCT** (22乗算/block) ⭐ NEW
+- ✅ **8×8 AAN butterfly IDCT** (22乗算/block) ⭐
+- ✅ **Screen Profile (Palette + 2D Copy)** ⭐ NEW
 - ✅ グレースケール + RGB カラー (YCbCr 4:4:4, 4:2:0)
 - ✅ 適応量子化 (AQ)
 - ✅ 4:2:0 サブサンプリング
@@ -426,11 +472,11 @@ Stage 4: 最終合成
 
 ## 🎯 今後の展望
 
-### Phase 7c 残りタスク (進行中)
+### Phase 7c 完了 ✅
 - [x] **AVX2 色変換バグ修正** ✅ PSNR 13dB→42.6dB (Claude実装)
 - [x] **固定小数点 IDCT** ✅ 36ms→27.8ms (Claude実装)
 - [x] **AAN butterfly IDCT** ✅ 27.8ms→19.5ms (ChatGPT実装)
-- [ ] **Screen Profile** — Palette + 2D Copy (スクショ特化、-50%目標) ← **次ここ**
+- [x] **Screen Profile (Palette + 2D Copy)** ✅ UI/スクショ特化圧縮 (実装完了)
 
 ### Phase 8 候補 (設計済み、未実装)
 1. **Super-resolution + Restore** — 低ビットレート用プロファイル

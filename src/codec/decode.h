@@ -16,6 +16,8 @@
 #include <future>
 #include <thread>
 #include <cmath>
+#include "palette.h"
+#include "copy.h"
 
 namespace hakonyans {
 
@@ -95,13 +97,14 @@ public:
         for (auto& f : futs) f.get(); return rgb;
     }
 
-private:
+public:
     static std::vector<uint8_t> decode_plane(const uint8_t* td, size_t ts, uint32_t pw, uint32_t ph, const uint16_t deq[64], const std::vector<uint8_t>* y_ref = nullptr) {
-        uint32_t sz[5]; std::memcpy(sz, td, 20); const uint8_t* ptr = td + 20;
+        uint32_t sz[8]; std::memcpy(sz, td, 32); const uint8_t* ptr = td + 32;
         auto dcs = decode_stream(ptr, sz[0]); ptr += sz[0];
+        // sz[1]=ac, sz[2]=pi, sz[3]=q, sz[4]=cfl, sz[5]=bt, sz[6]=pal, sz[7]=cpy
         std::vector<Token> acs;
         if (sz[2] > 0) {
-            PIndex pi = PIndexCodec::deserialize(std::span<const uint8_t>(td + 20 + sz[0] + sz[1], sz[2]));
+            PIndex pi = PIndexCodec::deserialize(std::span<const uint8_t>(td + 32 + sz[0] + sz[1], sz[2]));
             acs = decode_stream_parallel(ptr, sz[1], pi);
         } else {
             acs = decode_stream(ptr, sz[1]);
@@ -109,57 +112,171 @@ private:
         ptr += sz[1] + sz[2];
         std::vector<int8_t> qds; if (sz[3] > 0) { qds.resize(sz[3]); std::memcpy(qds.data(), ptr, sz[3]); ptr += sz[3]; }
         std::vector<CfLParams> cfls; if (sz[4] > 0) { for (uint32_t i=0; i<sz[4]/2; i++) { float a = (int8_t)ptr[i*2]/64.0f, b = ptr[i*2+1]; cfls.push_back({a, b, a, b}); } }
-        
+        ptr += sz[4];
+
         int nx = pw/8, nb = nx*(ph/8); std::vector<uint8_t> pad(pw*ph);
+
+        std::vector<FileHeader::BlockType> block_types;
+        if (sz[5] > 0) {
+            block_types = decode_block_types(ptr, sz[5], nb);
+            ptr += sz[5];
+        } else {
+            block_types.assign(nb, FileHeader::BlockType::DCT);
+        }
+        
+        std::vector<Palette> palettes;
+        std::vector<std::vector<uint8_t>> palette_indices;
+        if (sz[6] > 0) {
+            int num_palette_blocks = 0;
+            for(auto t : block_types) if (t == FileHeader::BlockType::PALETTE) num_palette_blocks++;
+            PaletteCodec::decode_palette_stream(ptr, sz[6], palettes, palette_indices, num_palette_blocks);
+            ptr += sz[6];
+        }
+
+        std::vector<CopyParams> copy_params;
+        if (sz[7] > 0) {
+            int num_copy = 0;
+            for(auto t : block_types) if (t == FileHeader::BlockType::COPY) num_copy++;
+            CopyCodec::decode_copy_stream(ptr, sz[7], copy_params, num_copy);
+            ptr += sz[7];
+        }
         
         std::vector<uint32_t> block_starts(nb + 1);
         size_t cur = 0;
         for (int i = 0; i < nb; i++) {
             block_starts[i] = (uint32_t)cur;
-            while (cur < acs.size()) {
-                if (acs[cur++].type == TokenType::ZRUN_63) break;
-                if (cur < acs.size() && (int)acs[cur-1].type < 64) cur++; // Skip MAGC
+            if (block_types[i] == FileHeader::BlockType::DCT) {
+                while (cur < acs.size()) {
+                    if (acs[cur++].type == TokenType::ZRUN_63) break;
+                    if (cur < acs.size() && (int)acs[cur-1].type < 64) cur++; // Skip MAGC
+                }
             }
         }
         block_starts[nb] = (uint32_t)cur;
 
+        // Threading logic:
+        // If Copy Mode is used (sz[7] > 0), we force sequential decoding (nt=1) 
+        // to ensure Intra-Block Copy vectors point to already-decoded pixels.
         unsigned int nt = std::thread::hardware_concurrency(); if (nt == 0) nt = 4; nt = std::min<unsigned int>(nt, 8); nt = std::max(1u, std::min<unsigned int>(nt, (unsigned int)nb));
+        if (sz[7] > 0) {
+            nt = 1;
+        }
+
         std::vector<std::future<void>> futs; int bpt = nb / nt;
         for (unsigned int t = 0; t < nt; t++) {
             int sb = t * bpt, eb = (t == nt - 1) ? nb : (t + 1) * bpt;
-            futs.push_back(std::async(std::launch::async, [=, &dcs, &acs, &block_starts, &qds, &cfls, &pad, deq, y_ref]() {
-                int16_t pdc = 0; for (int i = 0; i < sb; i++) pdc += Tokenizer::detokenize_dc(dcs[i]);
+            futs.push_back(std::async(std::launch::async, [=, &dcs, &acs, &block_starts, &qds, &cfls, &pad, &block_types, &palettes, &palette_indices, &copy_params, deq, y_ref]() {
+                // Initialize pdc with correct value for the start of this thread's block range
+                int16_t pdc = 0; 
+                int palette_block_idx = 0;
+                int copy_block_idx = 0;
+                
+                int dct_block_idx = 0;
+                
+                // Pre-scan to find correct indices for palette/copy logic
+                for (int i = 0; i < sb; i++) {
+                     if (block_types[i] == FileHeader::BlockType::DCT) {
+                         pdc += Tokenizer::detokenize_dc(dcs[dct_block_idx]);
+                         dct_block_idx++;
+                     } else if (block_types[i] == FileHeader::BlockType::PALETTE) {
+                         palette_block_idx++;
+                     } else if (block_types[i] == FileHeader::BlockType::COPY) {
+                         copy_block_idx++;
+                     }
+                }
+                
                 int16_t ac[63];
                 for (int i = sb; i < eb; i++) {
-                    int bx = i % nx, by = i / nx; int16_t dc = pdc + Tokenizer::detokenize_dc(dcs[i]); pdc = dc;
-                    uint32_t start = block_starts[i], end = block_starts[i+1];
-                    std::fill(ac, ac + 63, 0); int pos = 0;
-                    for (uint32_t k = start; k < end && pos < 63; ++k) {
-                        const Token& tok = acs[k];
-                        if (tok.type == TokenType::ZRUN_63) break;
-                        if ((int)tok.type <= 62) {
-                            pos += (int)tok.type;
-                            if (++k >= end) break;
-                            const Token& mt = acs[k];
-                            int magc = (int)mt.type - 64;
-                            uint16_t sign = (mt.raw_bits >> magc) & 1;
-                            uint16_t rem = mt.raw_bits & ((1 << magc) - 1);
-                            uint16_t abs_v = (magc > 0) ? ((1 << (magc - 1)) + rem) : 0;
-                            if (pos < 63) ac[pos++] = (sign == 0) ? abs_v : -abs_v;
+                    int bx = i % nx, by = i / nx;
+                    
+                    if (block_types[i] == FileHeader::BlockType::DCT) {
+                        int16_t dc = pdc + Tokenizer::detokenize_dc(dcs[dct_block_idx]); pdc = dc;
+                        dct_block_idx++;
+                        uint32_t start = block_starts[i], end = block_starts[i+1];
+                        std::fill(ac, ac + 63, 0); int pos = 0;
+                        for (uint32_t k = start; k < end && pos < 63; ++k) {
+                            const Token& tok = acs[k];
+                            if (tok.type == TokenType::ZRUN_63) break;
+                            if ((int)tok.type <= 62) {
+                                pos += (int)tok.type;
+                                if (++k >= end) break;
+                                const Token& mt = acs[k];
+                                int magc = (int)mt.type - 64;
+                                uint16_t sign = (mt.raw_bits >> magc) & 1;
+                                uint16_t rem = mt.raw_bits & ((1 << magc) - 1);
+                                uint16_t abs_v = (magc > 0) ? ((1 << (magc - 1)) + rem) : 0;
+                                if (pos < 63) ac[pos++] = (sign == 0) ? abs_v : -abs_v;
+                            }
                         }
+                        float s = 1.0f; if (!qds.empty()) s = 1.0f + qds[i] / 50.0f;
+                        int16_t dq[64]; dq[0] = dc * (uint16_t)std::max(1.0f, std::round(deq[0]*s));
+                        for (int k = 1; k < 64; k++) dq[k] = ac[k-1] * (uint16_t)std::max(1.0f, std::round(deq[k]*s));
+                        int16_t co[64], bl[64]; Zigzag::inverse_scan(dq, co); DCT::inverse(co, bl);
+                        if (y_ref && !cfls.empty()) {
+                            float a = cfls[i].alpha_cb, b = cfls[i].beta_cb;
+                            for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) { int py = (*y_ref)[(by*8+y)*pw+(bx*8+x)]; pad[(by*8+y)*pw+(bx*8+x)] = std::clamp((int)bl[y*8+x] + (int)std::round(a*py+b), 0, 255); }
+                        } else { for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) pad[(by*8+y)*pw+(bx*8+x)] = (uint8_t)std::clamp(bl[y*8+x]+128, 0, 255); }
+                    } else if (block_types[i] == FileHeader::BlockType::PALETTE) {
+                        if (palette_block_idx < (int)palettes.size()) {
+                            const auto& p = palettes[palette_block_idx];
+                            const auto& idx = palette_indices[palette_block_idx];
+                            for (int y = 0; y < 8; y++) {
+                                for (int x = 0; x < 8; x++) {
+                                    int k = y * 8 + x;
+                                    uint8_t color = (k < (int)idx.size()) ? p.colors[idx[k]] : 0;
+                                    pad[(by * 8 + y) * pw + (bx * 8 + x)] = color;
+                                }
+                            }
+                            palette_block_idx++;
+                        }
+                    } else if (block_types[i] == FileHeader::BlockType::COPY) {
+                        if (copy_block_idx < (int)copy_params.size()) {
+                            CopyParams cp = copy_params[copy_block_idx];
+                            for (int y = 0; y < 8; y++) {
+                                for (int x = 0; x < 8; x++) {
+                                    int dst_x = bx * 8 + x;
+                                    int dst_y = by * 8 + y;
+                                    int src_x = dst_x + cp.dx;
+                                    int src_y = dst_y + cp.dy;
+                                    
+                                    // Boundary checks
+                                    // Should we clamp or replicate or black?
+                                    // Standard clamp
+                                    src_x = std::clamp(src_x, 0, (int)pw - 1);
+                                    src_y = std::clamp(src_y, 0, (int)ph - 1);
+                                    
+                                    pad[dst_y * pw + dst_x] = pad[src_y * pw + src_x];
+                                }
+                            }
+                            copy_block_idx++;
+                        }
+                    } else {
+                         // Unknown block type?
                     }
-                    float s = 1.0f; if (!qds.empty()) s = 1.0f + qds[i] / 50.0f;
-                    int16_t dq[64]; dq[0] = dc * (uint16_t)std::max(1.0f, std::round(deq[0]*s));
-                    for (int k = 1; k < 64; k++) dq[k] = ac[k-1] * (uint16_t)std::max(1.0f, std::round(deq[k]*s));
-                    int16_t co[64], bl[64]; Zigzag::inverse_scan(dq, co); DCT::inverse(co, bl);
-                    if (y_ref && !cfls.empty()) {
-                        float a = cfls[i].alpha_cb, b = cfls[i].beta_cb;
-                        for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) { int py = (*y_ref)[(by*8+y)*pw+(bx*8+x)]; pad[(by*8+y)*pw+(bx*8+x)] = std::clamp((int)bl[y*8+x] + (int)std::round(a*py+b), 0, 255); }
-                    } else { for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) pad[(by*8+y)*pw+(bx*8+x)] = (uint8_t)std::clamp(bl[y*8+x]+128, 0, 255); }
                 }
             }));
         }
         for (auto& f : futs) f.get(); return pad;
+    }
+
+public:
+    static std::vector<FileHeader::BlockType> decode_block_types(const uint8_t* val, size_t sz, int nb) {
+        std::vector<FileHeader::BlockType> out;
+        out.reserve(nb);
+        for (size_t i = 0; i < sz; i++) {
+            uint8_t v = val[i];
+            uint8_t type = v & 0x03;
+            int run = ((v >> 2) & 0x3F) + 1;
+            for (int k = 0; k < run; k++) {
+                if (out.size() < (size_t)nb) {
+                    out.push_back((FileHeader::BlockType)type);
+                }
+            }
+        }
+        if (out.size() < (size_t)nb) {
+            out.resize(nb, FileHeader::BlockType::DCT);
+        }
+        return out;
     }
 
     static std::vector<Token> decode_stream(const uint8_t* s, size_t sz) {
