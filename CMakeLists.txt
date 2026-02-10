@@ -49,6 +49,10 @@ if(HAKONYANS_BUILD_TESTS)
   # Phase 5: Component tests
   add_executable(test_phase5_components tests/test_phase5_components.cpp)
   add_test(NAME phase5_components COMMAND test_phase5_components)
+  
+  # Phase 5: Codec roundtrip tests
+  add_executable(test_codec_gray tests/test_codec_gray.cpp)
+  add_test(NAME codec_gray COMMAND test_codec_gray)
 endif()
 
 # === Benchmarks ===
