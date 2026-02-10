@@ -111,23 +111,43 @@ private:
         std::vector<CfLParams> cfls; if (sz[4] > 0) { for (uint32_t i=0; i<sz[4]/2; i++) { float a = (int8_t)ptr[i*2]/64.0f, b = ptr[i*2+1]; cfls.push_back({a, b, a, b}); } }
         
         int nx = pw/8, nb = nx*(ph/8); std::vector<uint8_t> pad(pw*ph);
-        std::vector<std::vector<Token>> b_acs(nb); size_t cur = 0;
-        for (int i=0; i<nb; i++) {
+        
+        std::vector<uint32_t> block_starts(nb + 1);
+        size_t cur = 0;
+        for (int i = 0; i < nb; i++) {
+            block_starts[i] = (uint32_t)cur;
             while (cur < acs.size()) {
-                Token t = acs[cur++]; b_acs[i].push_back(t);
-                if (t.type == TokenType::ZRUN_63) break;
-                if ((int)t.type < 64) if (cur < acs.size()) b_acs[i].push_back(acs[cur++]);
+                if (acs[cur++].type == TokenType::ZRUN_63) break;
+                if (cur < acs.size() && (int)acs[cur-1].type < 64) cur++; // Skip MAGC
             }
         }
+        block_starts[nb] = (uint32_t)cur;
+
         unsigned int nt = std::thread::hardware_concurrency(); if (nt == 0) nt = 4;
         std::vector<std::future<void>> futs; int bpt = nb / nt;
         for (unsigned int t = 0; t < nt; t++) {
             int sb = t * bpt, eb = (t == nt - 1) ? nb : (t + 1) * bpt;
-            futs.push_back(std::async(std::launch::async, [=, &dcs, &b_acs, &qds, &cfls, &pad, deq, y_ref]() {
+            futs.push_back(std::async(std::launch::async, [=, &dcs, &acs, &block_starts, &qds, &cfls, &pad, deq, y_ref]() {
                 int16_t pdc = 0; for (int i = 0; i < sb; i++) pdc += Tokenizer::detokenize_dc(dcs[i]);
+                int16_t ac[63];
                 for (int i = sb; i < eb; i++) {
                     int bx = i % nx, by = i / nx; int16_t dc = pdc + Tokenizer::detokenize_dc(dcs[i]); pdc = dc;
-                    int16_t ac[63]; Tokenizer::detokenize_ac(b_acs[i], ac);
+                    uint32_t start = block_starts[i], end = block_starts[i+1];
+                    std::fill(ac, ac + 63, 0); int pos = 0;
+                    for (uint32_t k = start; k < end && pos < 63; ++k) {
+                        const Token& tok = acs[k];
+                        if (tok.type == TokenType::ZRUN_63) break;
+                        if ((int)tok.type <= 62) {
+                            pos += (int)tok.type;
+                            if (++k >= end) break;
+                            const Token& mt = acs[k];
+                            int magc = (int)mt.type - 64;
+                            uint16_t sign = (mt.raw_bits >> magc) & 1;
+                            uint16_t rem = mt.raw_bits & ((1 << magc) - 1);
+                            uint16_t abs_v = (magc > 0) ? ((1 << (magc - 1)) + rem) : 0;
+                            if (pos < 63) ac[pos++] = (sign == 0) ? abs_v : -abs_v;
+                        }
+                    }
                     float s = 1.0f; if (!qds.empty()) s = 1.0f + qds[i] / 50.0f;
                     int16_t dq[64]; dq[0] = dc * (uint16_t)std::max(1.0f, std::round(deq[0]*s));
                     for (int k = 1; k < 64; k++) dq[k] = ac[k-1] * (uint16_t)std::max(1.0f, std::round(deq[k]*s));
