@@ -4,9 +4,23 @@
 #include <vector>
 #include <algorithm>
 #include <numeric>
+#include <memory>
 #include "rans_core.h"
 
 namespace hakonyans {
+
+/**
+ * SIMD 向け高速デコードテーブル
+ * 
+ * slot→symbol の O(1) ルックアップを実現。
+ * _mm256_i32gather_epi32 で 8 レーン同時参照可能。
+ */
+struct alignas(64) SIMDDecodeTable {
+    uint32_t slot_to_symbol[RANS_TOTAL];  // 4096 entries: slot → symbol
+    uint32_t freq[256];                    // symbol → freq  (最大256シンボル)
+    uint32_t bias[256];                    // symbol → cdf[symbol]
+    int alphabet_size;
+};
 
 /**
  * CDF テーブルビルダー
@@ -62,6 +76,36 @@ public:
             .freq = freq_ptr,
             .alphabet_size = alphabet_size,
         };
+    }
+
+    /**
+     * CDFTable から SIMD 向けデコードテーブルを構築
+     * 
+     * slot→symbol LUT: 各スロット値に対応するシンボルを事前計算
+     * freq/bias 配列: gather 命令で 8 レーン同時参照
+     */
+    static std::unique_ptr<SIMDDecodeTable> build_simd_table(const CDFTable& cdf) {
+        auto table = std::make_unique<SIMDDecodeTable>();
+        table->alphabet_size = cdf.alphabet_size;
+        
+        // freq / bias をコピー
+        std::memset(table->freq, 0, sizeof(table->freq));
+        std::memset(table->bias, 0, sizeof(table->bias));
+        for (int i = 0; i < cdf.alphabet_size; ++i) {
+            table->freq[i] = cdf.freq[i];
+            table->bias[i] = cdf.cdf[i];
+        }
+        
+        // slot→symbol LUT 構築
+        for (int sym = 0; sym < cdf.alphabet_size; ++sym) {
+            uint32_t lo = cdf.cdf[sym];
+            uint32_t hi = cdf.cdf[sym + 1];
+            for (uint32_t slot = lo; slot < hi; ++slot) {
+                table->slot_to_symbol[slot] = sym;
+            }
+        }
+        
+        return table;
     }
 
     /**

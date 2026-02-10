@@ -35,6 +35,11 @@ if(HAKONYANS_BUILD_TESTS)
   # Phase 2: Interleaved rANS + Tokenization test
   add_executable(test_interleaved tests/test_interleaved.cpp)
   add_test(NAME interleaved COMMAND test_interleaved)
+  
+  # Phase 3: Flat Interleaved + AVX2 test
+  add_executable(test_avx2_rans tests/test_avx2_rans.cpp)
+  target_compile_options(test_avx2_rans PRIVATE -mavx2)
+  add_test(NAME avx2_rans COMMAND test_avx2_rans)
 endif()
 
 # === Benchmarks ===
@@ -42,6 +47,10 @@ if(HAKONYANS_BUILD_BENCH)
   # Entropy benchmark (Phase 2)
   add_executable(bench_entropy bench/bench_entropy.cpp)
   target_compile_options(bench_entropy PRIVATE -O3 -march=native)
+  
+  # Phase 3 benchmark (N=1 vs Flat vs LUT vs AVX2)
+  add_executable(bench_phase3 bench/bench_phase3.cpp)
+  target_compile_options(bench_phase3 PRIVATE -O3 -march=native -mavx2)
 endif()
 
 message(STATUS "HakoNyans v${PROJECT_VERSION}")

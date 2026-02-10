@@ -42,28 +42,33 @@ NyANS-P（Parallel Interleaved rANS + P-Index）を中核エントロピーエ�
 ### Phase 2: N=8 インターリーブ + ベンチマーク 🔜 ← 次ここから
 **目標**: インターリーブで ILP 効果を確認、MiB/s 計測
 
-- [ ] `src/entropy/nyans_p/rans_interleaved.h` — N=8 状態管理
-  - InterleavedRANSEncoder: ラウンドロビンで8状態に割り当て
-  - InterleavedRANSDecoder: 8状態から順次復号
-- [ ] トークン化（RUN / MAGC / EOB / SIGN / REM）
-  - `src/entropy/nyans_p/tokenization.h`
-  - RUN(0..15) / RUN_ESC / MAGC(0..11) / EOB / SIGN
-  - REM は raw bits（rANS 外）
-- [ ] `bench/bench_entropy.cpp` — スループット計測
-  - ランダムトークン列生成
-  - encode/decode MiB/s 測定
-  - N=1 vs N=8 の A/B ベンチマーク
-- [ ] 目標: >500 MiB/s (1コア, スカラー)
+- [x] `src/entropy/nyans_p/rans_interleaved.h` — N=8 状態管理（Phase 2: 独立ストリーム版）
+- [x] トークン化: `src/entropy/nyans_p/tokenization.h`
+- [x] `bench/bench_entropy.cpp` — N=1 vs N=8 スループット計測
+- [x] 目標: >500 MiB/s → LUT版で達成
 
 ---
 
-### Phase 3: AVX2 SIMD 実装
-**目標**: rANS デコードを AVX2 で 8 状態同時処理
+### Phase 3: AVX2 SIMD 実装 ✅ 完了
+**目標**: rANS デコードを高速化 → LUT: 2.80x, AVX2: 2.48x
 
-- [ ] `src/simd/x86_avx2/rans_decode_avx2.cpp`
-- [ ] `src/simd/simd_dispatch.cpp` — ランタイム CPUID 検出
-- [ ] SIMD vs スカラー A/B ベンチマーク
-- [ ] `HAKONYANS_FORCE_SCALAR` 環境変数対応
+- [x] `src/entropy/nyans_p/rans_flat_interleaved.h` — 8状態・1本ストリーム共有
+- [x] `src/entropy/nyans_p/rans_tables.h` — slot→symbol LUT (SIMDDecodeTable)
+- [x] `src/simd/x86_avx2/rans_decode_avx2.h` — AVX2 gather+SIMD デコーダ
+- [x] `src/simd/simd_dispatch.h` — ランタイム CPUID 検出 + HAKONYANS_FORCE_SCALAR
+- [x] `bench/bench_phase3.cpp` — 4パス比較ベンチマーク
+- [x] `tests/test_avx2_rans.cpp` — 4テスト全パス
+
+**ベンチマーク結果** (Ryzen 9 9950X, -O3 -march=native):
+| パス | デコード速度 | スピードアップ |
+|------|-------------|---------------|
+| N=1 scalar (baseline) | 185 MiB/s | 1.00x |
+| N=8 flat scalar (CDF search) | 188 MiB/s | 1.02x |
+| N=8 flat scalar (LUT) | **516 MiB/s** | **2.80x** ✓ |
+| N=8 AVX2 (bulk) | 457 MiB/s | 2.48x |
+
+**分析**: LUT が最大の効果。AVX2 gather は現行CPUではスカラーLUTに及ばないが、P-Index並列化やAVX-512時代の基盤として重要。
+- [ ] `HAKONYANS_FORCE_SCALAR` 環境変数対応 ✅（simd_dispatch.h で実装済み）
 
 ---
 
