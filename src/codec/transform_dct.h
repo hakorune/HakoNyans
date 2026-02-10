@@ -107,7 +107,7 @@ private:
                 sum += input[k * stride] * std::cos(angle);
             }
             
-            output[n * stride] = static_cast<int16_t>(sum * 0.5f + 0.5f);
+            output[n * stride] = static_cast<int16_t>(std::round(sum * 0.5f));
         }
     }
 };

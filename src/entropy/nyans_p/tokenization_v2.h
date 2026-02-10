@@ -121,6 +121,11 @@ public:
             pos++;
         }
         
+        // 全位置が処理済みでも EOB を付加（ブロック境界マーカー）
+        if (tokens.empty() || tokens.back().type != TokenType::ZRUN_63) {
+            tokens.emplace_back(TokenType::ZRUN_63, 0, 0);
+        }
+        
         return tokens;
     }
 

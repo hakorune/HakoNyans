@@ -201,12 +201,18 @@ private:
     
     /**
      * Build CDF from token frequency
+     * Uses 76-symbol alphabet: ZRUN_0..63 (0-63) + MAGC_0..11 (64-75)
      */
+    static constexpr int ALPHABET_SIZE = 76;
+    
     static CDFTable build_cdf(const std::vector<Token>& tokens) {
-        std::vector<uint32_t> freq(256, 1);  // Initialize with 1 for smoothing
+        std::vector<uint32_t> freq(ALPHABET_SIZE, 1);  // Initialize with 1 for smoothing
         
         for (const auto& tok : tokens) {
-            freq[static_cast<uint8_t>(tok.type)]++;
+            int sym = static_cast<int>(tok.type);
+            if (sym < ALPHABET_SIZE) {
+                freq[sym]++;
+            }
         }
         
         CDFBuilder builder;
@@ -215,7 +221,7 @@ private:
     
     /**
      * Encode tokens with flat interleaved rANS
-     * Returns: CDF_size(4) + CDF_data + token_count(4) + rANS_data
+     * Returns: CDF_size(4) + CDF_data + token_count(4) + rANS_data_size(4) + rANS_data + raw_count(4) + raw_data
      */
     static std::vector<uint8_t> encode_tokens(
         const std::vector<Token>& tokens,
@@ -223,10 +229,11 @@ private:
     ) {
         std::vector<uint8_t> output;
         
-        // 1. Write CDF (freq table)
+        // 1. Write CDF (freq table) — use actual alphabet size
+        int alpha = cdf.alphabet_size;
         std::vector<uint8_t> cdf_data;
-        cdf_data.resize(256 * 4);  // 256 frequencies × 4 bytes
-        for (int i = 0; i < 256; i++) {
+        cdf_data.resize(alpha * 4);
+        for (int i = 0; i < alpha; i++) {
             uint32_t f = cdf.freq[i];
             std::memcpy(&cdf_data[i * 4], &f, 4);
         }
@@ -249,9 +256,31 @@ private:
         }
         
         auto rans_buffer = encoder.finish();
+        
+        // Write rANS data size + data
+        uint32_t rans_size = rans_buffer.size();
+        size_t rans_size_offset = output.size();
+        output.resize(rans_size_offset + 4);
+        std::memcpy(&output[rans_size_offset], &rans_size, 4);
         output.insert(output.end(), rans_buffer.begin(), rans_buffer.end());
         
-        // TODO: Append raw bits (SIGN + REM) after rANS data
+        // 4. Write raw bits (SIGN + REM for MAGC tokens)
+        std::vector<uint8_t> raw_data;
+        uint32_t raw_count = 0;
+        
+        for (const auto& tok : tokens) {
+            if (tok.raw_bits_count > 0) {
+                raw_data.push_back(tok.raw_bits_count);
+                raw_data.push_back(tok.raw_bits & 0xFF);
+                raw_data.push_back((tok.raw_bits >> 8) & 0xFF);
+                raw_count++;
+            }
+        }
+        
+        size_t raw_count_offset = output.size();
+        output.resize(raw_count_offset + 4);
+        std::memcpy(&output[raw_count_offset], &raw_count, 4);
+        output.insert(output.end(), raw_data.begin(), raw_data.end());
         
         return output;
     }

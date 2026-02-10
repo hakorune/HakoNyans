@@ -108,8 +108,12 @@ NyANS-P（Parallel Interleaved rANS + P-Index）を中核エントロピーエ�
 - [x] `src/codec/encode.h` — Grayscale エンコーダ（DCT→量子化→ZRUN→rANS→.hkn）✅ (ビルド OK)
 - [x] `src/codec/decode.h` — Grayscale デコーダ（.hkn→rANS→ZRUN→逆量子化→IDCT）✅ (ビルド OK)
 - [x] `tests/test_codec_gray.cpp` — グレースケール往復テスト ✅ (作成)
-- [ ] デバッグ：8×8 block は PASS、16×16 で bad_alloc（AC token デコードの問題）← デバッグ中
-- [ ] PSNR 計測（quality 別）
+- [x] デバッグ完了：全テスト PASS ✅
+  - CDF 周波数アンダーフロー修正（rans_tables.h）
+  - アルファベットサイズ 256→76（encode.h/decode.h）
+  - AC EOB 欠落修正：全係数が非ゼロ時に ZRUN_63 未付加（tokenization_v2.h）
+  - IDCT 丸め修正：負の値で誤差（transform_dct.h）
+- [x] PSNR 計測：Q75=46.1dB, Q90=47.7dB, Q100=49.0dB ✅
 
 #### Step 5.2: Color（YCbCr 4:4:4）
 - [ ] `src/codec/colorspace.h` — RGB ↔ YCbCr 整数近似

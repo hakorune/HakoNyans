@@ -50,11 +50,23 @@ public:
             scaled_total += freq[i];
         }
         
-        // 合計を RANS_TOTAL に調整（最大頻度のシンボルで吸収）
-        if (scaled_total != RANS_TOTAL) {
-            int max_idx = std::distance(freq.begin(), 
-                std::max_element(freq.begin(), freq.end()));
-            freq[max_idx] += RANS_TOTAL - scaled_total;
+        // 合計を RANS_TOTAL に調整
+        while (scaled_total != RANS_TOTAL) {
+            if (scaled_total > RANS_TOTAL) {
+                // scaled_total が超過 → 頻度が大きいシンボルから1ずつ引く
+                for (int i = 0; i < alphabet_size && scaled_total > RANS_TOTAL; ++i) {
+                    if (freq[i] > 1) {
+                        freq[i]--;
+                        scaled_total--;
+                    }
+                }
+            } else {
+                // scaled_total が不足 → 最大頻度シンボルに加算
+                int max_idx = std::distance(freq.begin(), 
+                    std::max_element(freq.begin(), freq.end()));
+                freq[max_idx] += RANS_TOTAL - scaled_total;
+                scaled_total = RANS_TOTAL;
+            }
         }
         
         // CDF 構築

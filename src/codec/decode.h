@@ -167,7 +167,7 @@ public:
 private:
     /**
      * Decode rANS stream to tokens
-     * Stream format: CDF_size(4) + CDF_data + token_count(4) + rANS_data
+     * Stream format: CDF_size(4) + CDF_data + token_count(4) + rANS_data_size(4) + rANS_data + raw_count(4) + raw_data
      */
     static std::vector<Token> decode_stream(const uint8_t* stream, size_t size) {
         if (size < 8) {
@@ -185,17 +185,14 @@ private:
             throw std::runtime_error("CDF data truncated");
         }
         
-        uint32_t freq[256];
-        if (cdf_size == 256 * 4) {
-            for (int i = 0; i < 256; i++) {
-                std::memcpy(&freq[i], &stream[offset + i * 4], 4);
-            }
-        } else {
-            throw std::runtime_error("Invalid CDF size");
+        // Derive alphabet size from CDF data size
+        int alpha = cdf_size / 4;
+        std::vector<uint32_t> freq_vec(alpha);
+        for (int i = 0; i < alpha; i++) {
+            std::memcpy(&freq_vec[i], &stream[offset + i * 4], 4);
         }
         offset += cdf_size;
         
-        std::vector<uint32_t> freq_vec(freq, freq + 256);
         CDFBuilder builder;
         CDFTable cdf = builder.build_from_freq(freq_vec);
         
@@ -208,12 +205,21 @@ private:
         std::memcpy(&token_count, &stream[offset], 4);
         offset += 4;
         
-        // 3. Decode rANS
-        if (offset >= size) {
-            throw std::runtime_error("rANS data missing");
+        // 3. Read rANS data size
+        if (offset + 4 > size) {
+            throw std::runtime_error("rANS size missing");
         }
         
-        std::span<const uint8_t> data_span(&stream[offset], size - offset);
+        uint32_t rans_size;
+        std::memcpy(&rans_size, &stream[offset], 4);
+        offset += 4;
+        
+        if (offset + rans_size > size) {
+            throw std::runtime_error("rANS data truncated");
+        }
+        
+        // 4. Decode rANS symbols
+        std::span<const uint8_t> data_span(&stream[offset], rans_size);
         FlatInterleavedDecoder decoder(data_span);
         
         std::vector<Token> tokens;
@@ -222,6 +228,33 @@ private:
         for (uint32_t i = 0; i < token_count; i++) {
             uint8_t symbol = decoder.decode_symbol(cdf);
             tokens.emplace_back(static_cast<TokenType>(symbol), 0, 0);
+        }
+        
+        offset += rans_size;
+        
+        // 5. Read raw bits
+        if (offset + 4 > size) {
+            throw std::runtime_error("Raw count missing");
+        }
+        
+        uint32_t raw_count;
+        std::memcpy(&raw_count, &stream[offset], 4);
+        offset += 4;
+        
+        // Assign raw bits to tokens that need them
+        size_t raw_idx = 0;
+        for (auto& tok : tokens) {
+            if (tok.type >= TokenType::MAGC_0 && tok.type <= TokenType::MAGC_11) {
+                int magc = static_cast<int>(tok.type) - static_cast<int>(TokenType::MAGC_0);
+                if (magc > 0 && raw_idx < raw_count) {
+                    // Read raw entry: count(1) + bits_lo(1) + bits_hi(1)
+                    if (offset + 3 > size) break;
+                    tok.raw_bits_count = stream[offset];
+                    tok.raw_bits = stream[offset + 1] | (stream[offset + 2] << 8);
+                    offset += 3;
+                    raw_idx++;
+                }
+            }
         }
         
         return tokens;
