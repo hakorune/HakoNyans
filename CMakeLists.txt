@@ -53,6 +53,9 @@ if(HAKONYANS_BUILD_TESTS)
   # Phase 5: Codec roundtrip tests
   add_executable(test_codec_gray tests/test_codec_gray.cpp)
   add_test(NAME codec_gray COMMAND test_codec_gray)
+
+  add_executable(test_codec_color tests/test_codec_color.cpp)
+  add_test(NAME codec_color COMMAND test_codec_color)
 endif()
 
 # === Benchmarks ===
@@ -64,6 +67,16 @@ if(HAKONYANS_BUILD_BENCH)
   # Phase 3 benchmark (N=1 vs Flat vs LUT vs AVX2)
   add_executable(bench_phase3 bench/bench_phase3.cpp)
   target_compile_options(bench_phase3 PRIVATE -O3 -march=native -mavx2)
+
+  # Phase 5.4 benchmark (Full HD Decode)
+  add_executable(bench_decode bench/bench_decode.cpp)
+  target_compile_options(bench_decode PRIVATE -O3 -march=native)
+  target_link_libraries(bench_decode PRIVATE pthread)
+endif()
+
+# === Tools ===
+if(HAKONYANS_BUILD_TOOLS)
+  add_executable(hakonyans tools/hakonyans_cli.cpp)
 endif()
 
 message(STATUS "HakoNyans v${PROJECT_VERSION}")
