@@ -40,6 +40,11 @@ if(HAKONYANS_BUILD_TESTS)
   add_executable(test_avx2_rans tests/test_avx2_rans.cpp)
   target_compile_options(test_avx2_rans PRIVATE -mavx2)
   add_test(NAME avx2_rans COMMAND test_avx2_rans)
+  
+  # Phase 4: P-Index parallel decode test
+  add_executable(test_parallel tests/test_parallel.cpp)
+  target_link_libraries(test_parallel PRIVATE pthread)
+  add_test(NAME parallel COMMAND test_parallel)
 endif()
 
 # === Benchmarks ===

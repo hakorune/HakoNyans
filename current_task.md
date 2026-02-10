@@ -72,13 +72,25 @@ NyANS-P（Parallel Interleaved rANS + P-Index）を中核エントロピーエ�
 
 ---
 
-### Phase 4: P-Index 並列デコード
+### Phase 4: P-Index 並列デコード ✅ 完了
 **目標**: マルチスレッドでデコード速度がコア数に比例
 
-- [ ] `src/entropy/nyans_p/pindex.h` — チェックポイント encode/decode
-- [ ] `src/platform/thread_pool.cpp`
-- [ ] 1/2/4/8 スレッドでのスケーリングベンチ
-- [ ] `HAKONYANS_THREADS=N` 環境変数対応
+- [x] `src/entropy/nyans_p/pindex.h` — チェックポイント構造 + PIndexBuilder + シリアライズ
+- [x] `src/platform/thread_pool.h` — シンプルなスレッドプール + HAKONYANS_THREADS 環境変数
+- [x] `src/entropy/nyans_p/parallel_decode.h` — P-Index 並列デコーダ (CDF + LUT 版)
+- [x] `tests/test_parallel.cpp` — 9テスト全パス
+- [x] 1/2/4/8/16 スレッドスケーリングベンチ
+
+**ベンチマーク結果** (Ryzen 9 9950X, 4M tokens):
+| スレッド | デコード速度 | スケーリング |
+|---------|-------------|-------------|
+| 1 | 458 MiB/s | 1.00x |
+| 2 | 859 MiB/s | 1.88x |
+| 4 | 1533 MiB/s | 3.35x |
+| 8 | 2366 MiB/s | 5.17x |
+| 16 | 2528 MiB/s | 5.52x |
+
+**分析**: 4コアまでほぼ線形スケーリング（効率83%）。8コア以降はメモリ帯域で飽和。
 
 ---
 
