@@ -323,16 +323,27 @@ NyANS-P（Parallel Interleaved rANS + P-Index）を中核エントロピーエ�
 
 ## Phase 9候補（未実装）
 
-### rANS 基本操作（覚書）
-```
-encode: state = (state / freq) * total + (state % freq) + bias
-decode: slot = state % total → symbol lookup → state update
-renorm: state が下限を下回ったらバイトを読む/書く
-```
+### Phase 9a: Lossless Auto Profile（設計）✅ 完了
+**目標**: 画像タイプに応じて Copy/Palette/Filter を自動最適化し、UIワーストケースを改善
 
-### 重要な設計判断
-- **C++17** 採用（テンプレート、constexpr、structured bindings）
-- **AVX2 + NEON** が Tier 1、AVX-512 はボーナス
-- **rANS 状態は 32-bit**（AVX2 で 8 個同時処理）
-- **小アルファベット** → LUT が L1 キャッシュに乗る設計
-- **REM は raw bits** → rANS の負荷を最小化
+- [x] 設計ドキュメント作成 — `docs/PHASE9_LOSSLESS_PROFILE_PLAN.md`
+- [x] 特徴量定義（U/T/gX/gY/var/hash/CopyHit）
+- [x] 画像プロファイル判定ルール（EditorUI/BrowserUI/FlatUI/PixelArt/Anime/Photo）
+- [x] Block判定しきい値（Copy→Palette→Filter）を数値で確定
+- [x] P0/P1/P2 ロードマップ整理
+- [x] 検証プロトコル（Ablation + 成功基準 + フォールバック）
+
+### Phase 9b: Lossless Auto Profile（実装）🚧 未着手
+**目標**: P0を encoder-only で導入し、互換を維持したまま圧縮率を底上げ
+
+- [ ] 画像プロファイル判定を `encode_plane_lossless()` 前段に追加
+- [ ] P0決定木（Copy/Palette/Filter）を実装
+- [ ] Copy辞書（`hash -> last_pos`）導入
+- [ ] タイル単位フォールバック（optimized vs baseline）実装
+- [ ] ベンチ再測定（UI/Anime/Game/Photo + ablation）
+
+### Phase 9c: 仕様拡張候補（P1/P2）🧪
+- [ ] Palette index 文脈化 + RLE
+- [ ] Copy辞書 multi-candidate 化（`hash -> vector<pos>`）
+- [ ] block_types の 9文脈エントロピー最適化
+- [ ] Tile palette dictionary / delta palette（要フォーマット拡張）
