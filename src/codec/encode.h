@@ -45,6 +45,7 @@ public:
         uint64_t copy_selected;
         uint64_t palette_selected;
         uint64_t filter_selected;
+        uint64_t filter_med_selected;
 
         uint64_t est_copy_bits_sum;      // candidate blocks only
         uint64_t est_palette_bits_sum;   // candidate blocks only
@@ -61,6 +62,7 @@ public:
             copy_selected = 0;
             palette_selected = 0;
             filter_selected = 0;
+            filter_med_selected = 0;
             est_copy_bits_sum = 0;
             est_palette_bits_sum = 0;
             est_filter_bits_sum = 0;
@@ -843,7 +845,7 @@ public:
     ) {
         (void)pad_h;
         int best_bits2 = std::numeric_limits<int>::max();
-        for (int f = 0; f < 5; f++) {
+        for (int f = 0; f < LosslessFilter::FILTER_COUNT; f++) {
             int bits2 = 4; // block_type (2 bits * 2)
             bits2 += 6;    // effective filter_id overhead (3 bits * 2)
             for (int y = 0; y < 8; y++) {
@@ -861,6 +863,7 @@ public:
                         case 2: pred = b; break;
                         case 3: pred = (int16_t)(((int)a + (int)b) / 2); break;
                         case 4: pred = LosslessFilter::paeth_predictor(a, b, c); break;
+                        case 5: pred = LosslessFilter::med_predictor(a, b, c); break;
                     }
                     int abs_r = std::abs((int)orig - (int)pred);
                     bits2 += estimate_filter_symbol_bits2(abs_r, use_photo_mode_bias);
@@ -1080,10 +1083,10 @@ public:
                 continue;
             }
 
-            // Try all 5 filters, pick one minimizing sum(|residual|) for filter-block pixels
+            // Try all filters, pick one minimizing sum(|residual|) for filter-block pixels
             int best_f = 0;
             int64_t best_sum = INT64_MAX;
-            for (int f = 0; f < 5; f++) {
+            for (int f = 0; f < LosslessFilter::FILTER_COUNT; f++) {
                 int64_t sum = 0;
                 for (uint32_t x = 0; x < pad_w; x++) {
                     int bx_col = x / 8;
@@ -1099,6 +1102,7 @@ public:
                         case 2: pred = b; break;
                         case 3: pred = (int16_t)(((int)a + (int)b) / 2); break;
                         case 4: pred = LosslessFilter::paeth_predictor(a, b, c); break;
+                        case 5: pred = LosslessFilter::med_predictor(a, b, c); break;
                         default: pred = 0; break;
                     }
                     sum += std::abs((int)(orig - pred));
@@ -1106,6 +1110,7 @@ public:
                 if (sum < best_sum) { best_sum = sum; best_f = f; }
             }
             filter_ids[y] = (uint8_t)best_f;
+            if (best_f == 5) tl_lossless_mode_debug_stats_.filter_med_selected++;
 
             // Emit residuals for filter-block pixels only
             for (uint32_t x = 0; x < pad_w; x++) {
@@ -1122,6 +1127,7 @@ public:
                     case 2: pred = b; break;
                     case 3: pred = (int16_t)(((int)a + (int)b) / 2); break;
                     case 4: pred = LosslessFilter::paeth_predictor(a, b, c); break;
+                    case 5: pred = LosslessFilter::med_predictor(a, b, c); break;
                     default: pred = 0; break;
                 }
                 filter_residuals.push_back(orig - pred);

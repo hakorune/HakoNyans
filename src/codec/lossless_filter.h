@@ -34,7 +34,8 @@ public:
         FILTER_UP      = 2,
         FILTER_AVERAGE = 3,
         FILTER_PAETH   = 4,
-        FILTER_COUNT   = 5
+        FILTER_MED     = 5,
+        FILTER_COUNT   = 6
     };
 
     /**
@@ -48,6 +49,15 @@ public:
         if (pa <= pb && pa <= pc) return a;
         if (pb <= pc) return b;
         return c;
+    }
+
+    /**
+     * MED (Median Edge Detector) predictor (from JPEG-LS / LOCO-I)
+     */
+    static inline int16_t med_predictor(int16_t a, int16_t b, int16_t c) {
+        if (c >= std::max(a, b)) return std::min(a, b);
+        if (c <= std::min(a, b)) return std::max(a, b);
+        return a + b - c;
     }
 
     /**
@@ -77,7 +87,7 @@ public:
             const int16_t* row  = data + y * width;
             const int16_t* prev = (y > 0) ? data + (y - 1) * width : nullptr;
 
-            // Compute all 5 filter candidates for this row
+            // Compute all filter candidates for this row
             for (int x = 0; x < width; x++) {
                 int16_t a = (x > 0) ? row[x - 1] : 0;       // left
                 int16_t b = prev ? prev[x] : 0;              // above
@@ -88,6 +98,7 @@ public:
                 candidates[FILTER_UP][x]      = row[x] - b;
                 candidates[FILTER_AVERAGE][x] = row[x] - (int16_t)((int)(a + b) / 2);
                 candidates[FILTER_PAETH][x]   = row[x] - paeth_predictor(a, b, c);
+                candidates[FILTER_MED][x]     = row[x] - med_predictor(a, b, c);
             }
 
             // Select filter with minimal sum of absolute residuals
@@ -153,6 +164,9 @@ public:
                 case FILTER_PAETH:
                     orow[x] = frow[x] + paeth_predictor(a, b, c);
                     break;
+                case FILTER_MED:
+                    orow[x] = frow[x] + med_predictor(a, b, c);
+                    break;
                 default:
                     orow[x] = frow[x];
                     break;
@@ -181,6 +195,7 @@ public:
             case FILTER_UP:      out[x] = row[x] - b; break;
             case FILTER_AVERAGE: out[x] = row[x] - (int16_t)((int)(a + b) / 2); break;
             case FILTER_PAETH:   out[x] = row[x] - paeth_predictor(a, b, c); break;
+            case FILTER_MED:     out[x] = row[x] - med_predictor(a, b, c); break;
             default:             out[x] = row[x]; break;
             }
         }

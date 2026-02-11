@@ -224,7 +224,11 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
     print_mode_stat_row("copy_palette_overlap", s.copy_palette_overlap, s.total_blocks);
     print_mode_stat_row("copy_selected", s.copy_selected, s.total_blocks);
     print_mode_stat_row("palette_selected", s.palette_selected, s.total_blocks);
-    print_mode_stat_row("filter_selected", s.filter_selected, s.total_blocks);
+    print_mode_stat_row("filter_any_selected", s.filter_selected, s.total_blocks);
+    // filter_med_selected is count of ROWS using MED. 
+    // total_rows = total_blocks * 8 (approx, for Full HD 1080p height is padded)
+    // For now just show the raw count.
+    std::cout << "  filter_med_rows        " << std::right << std::setw(10) << s.filter_med_selected << "\n";
 
     if (s.total_blocks > 0) {
         double copy_cand_bpb = (s.copy_candidates > 0)

@@ -756,6 +756,7 @@ public:
                         case 2: pred = b; break;
                         case 3: pred = (int16_t)(((int)a + (int)b) / 2); break;
                         case 4: pred = LosslessFilter::paeth_predictor(a, b, c); break;
+                        case 5: pred = LosslessFilter::med_predictor(a, b, c); break;
                         default: pred = 0; break;
                     }
                     if (residual_idx < filter_residuals.size()) {

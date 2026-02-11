@@ -130,7 +130,7 @@ void test_zigzag_roundtrip() {
 // Test 4: Filter individual roundtrip (each filter type)
 // ============================================================
 void test_filter_individual_roundtrip() {
-    TEST("Filter individual roundtrip (5 filter types)");
+    TEST("Filter individual roundtrip (6 filter types)");
     
     const int W = 16, H = 8;
     std::mt19937 rng(42);
