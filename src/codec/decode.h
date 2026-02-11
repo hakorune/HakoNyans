@@ -330,7 +330,7 @@ public:
 
         std::vector<FileHeader::BlockType> block_types;
         if (block_types_size > 0) {
-            block_types = decode_block_types(ptr, block_types_size, nb);
+            block_types = decode_block_types(ptr, block_types_size, nb, file_version);
             ptr += block_types_size;
         } else {
             block_types.assign(nb, FileHeader::BlockType::DCT);
@@ -519,11 +519,32 @@ public:
     }
 
 public:
-    static std::vector<FileHeader::BlockType> decode_block_types(const uint8_t* val, size_t sz, int nb) {
+    static std::vector<FileHeader::BlockType> decode_block_types(
+        const uint8_t* val, size_t sz, int nb,
+        uint16_t file_version = FileHeader::MIN_SUPPORTED_VERSION
+    ) {
         std::vector<FileHeader::BlockType> out;
         out.reserve(nb);
-        for (size_t i = 0; i < sz; i++) {
-            uint8_t v = val[i];
+        const uint8_t* runs = val;
+        size_t runs_size = sz;
+
+        // Optional compact envelope for v0.6+:
+        // [0xA6][mode=1][raw_count:u32][encoded_raw_runs]
+        std::vector<uint8_t> decoded_runs;
+        if (file_version >= FileHeader::VERSION_BLOCK_TYPES_V2 && sz >= 6 && val[0] == 0xA6 && val[1] == 1) {
+            uint32_t raw_count = 0;
+            std::memcpy(&raw_count, val + 2, 4);
+            const uint8_t* enc_ptr = val + 6;
+            size_t enc_size = sz - 6;
+            decoded_runs = decode_byte_stream(enc_ptr, enc_size, raw_count);
+            if (!decoded_runs.empty()) {
+                runs = decoded_runs.data();
+                runs_size = decoded_runs.size();
+            }
+        }
+
+        for (size_t i = 0; i < runs_size; i++) {
+            uint8_t v = runs[i];
             uint8_t type = v & 0x03;
             int run = ((v >> 2) & 0x3F) + 1;
             for (int k = 0; k < run; k++) {
@@ -665,7 +686,7 @@ public:
         // Decode block types
         std::vector<FileHeader::BlockType> block_types;
         if (block_types_size > 0) {
-            block_types = decode_block_types(ptr, block_types_size, nb);
+            block_types = decode_block_types(ptr, block_types_size, nb, file_version);
             ptr += block_types_size;
         } else {
             block_types.assign(nb, FileHeader::BlockType::DCT);
@@ -677,7 +698,24 @@ public:
         if (palette_data_size > 0) {
             int num_palette = 0;
             for (auto t : block_types) if (t == FileHeader::BlockType::PALETTE) num_palette++;
-            PaletteCodec::decode_palette_stream(ptr, palette_data_size, palettes, palette_indices, num_palette);
+            const uint8_t* pal_ptr = ptr;
+            size_t pal_size = palette_data_size;
+            std::vector<uint8_t> pal_decoded;
+            // Optional compact envelope for v0.6+:
+            // [0xA7][mode=1][raw_count:u32][encoded_raw_palette_stream]
+            if (file_version >= FileHeader::VERSION_BLOCK_TYPES_V2 &&
+                palette_data_size >= 6 && ptr[0] == 0xA7 && ptr[1] == 1) {
+                uint32_t raw_count = 0;
+                std::memcpy(&raw_count, ptr + 2, 4);
+                const uint8_t* enc_ptr = ptr + 6;
+                size_t enc_size = palette_data_size - 6;
+                pal_decoded = decode_byte_stream(enc_ptr, enc_size, raw_count);
+                if (!pal_decoded.empty()) {
+                    pal_ptr = pal_decoded.data();
+                    pal_size = pal_decoded.size();
+                }
+            }
+            PaletteCodec::decode_palette_stream(pal_ptr, pal_size, palettes, palette_indices, num_palette);
             ptr += palette_data_size;
         }
 

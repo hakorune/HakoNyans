@@ -33,10 +33,11 @@ struct FileHeader {
     uint8_t  reserved[16];  // 将来拡張用
     
     static constexpr uint32_t MAGIC = 0x484B4E00;       // 'HKN\0'
-    static constexpr uint16_t VERSION = 0x0005;         // v0.5 (4x4 tile-match)
+    static constexpr uint16_t VERSION = 0x0006;         // v0.6 (lossless block_types compact stream)
     static constexpr uint16_t MIN_SUPPORTED_VERSION = 0x0003;
     static constexpr uint16_t VERSION_BAND_GROUP_CDF = 0x0004;
     static constexpr uint16_t VERSION_TILE_MATCH4 = 0x0005;
+    static constexpr uint16_t VERSION_BLOCK_TYPES_V2 = 0x0006;
     
     enum class BlockType : uint8_t {
         DCT = 0,

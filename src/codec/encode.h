@@ -761,9 +761,12 @@ public:
     }
 
 public:
-    static std::vector<uint8_t> encode_block_types(const std::vector<FileHeader::BlockType>& types) {
-        std::vector<uint8_t> out;
-        if (types.empty()) return out;
+    static std::vector<uint8_t> encode_block_types(
+        const std::vector<FileHeader::BlockType>& types,
+        bool allow_compact = false
+    ) {
+        std::vector<uint8_t> raw;
+        if (types.empty()) return raw;
         
         size_t n = types.size();
         size_t i = 0;
@@ -776,10 +779,28 @@ public:
             // Format: (Count - 1) << 2 | Type
             // Type: 2 bits (0-3)
             // Count: 6 bits (1-64)
-            out.push_back((uint8_t)(((run - 1) << 2) | (type & 0x03)));
+            raw.push_back((uint8_t)(((run - 1) << 2) | (type & 0x03)));
             i += run;
         }
-        return out;
+        if (!allow_compact) return raw;
+
+        // Compact v2 envelope (lossless only):
+        // [0xA6][mode=1][raw_count:u32][encoded_raw_runs]
+        // encoded_raw_runs uses existing byte-stream rANS with adaptive CDF.
+        auto encoded = encode_byte_stream(raw);
+        if (encoded.empty()) return raw;
+
+        std::vector<uint8_t> compact;
+        compact.reserve(1 + 1 + 4 + encoded.size());
+        compact.push_back(0xA6);
+        compact.push_back(1);
+        uint32_t raw_count = (uint32_t)raw.size();
+        compact.resize(compact.size() + 4);
+        std::memcpy(compact.data() + 2, &raw_count, 4);
+        compact.insert(compact.end(), encoded.begin(), encoded.end());
+
+        // Keep legacy payload unless compact stream is strictly smaller.
+        return (compact.size() < raw.size()) ? compact : raw;
     }
 
     // ========================================================================
@@ -1349,8 +1370,26 @@ public:
         }
 
         // --- Step 4: Encode block types, palette, copy, tile4 ---
-        std::vector<uint8_t> bt_data = encode_block_types(block_types);
+        std::vector<uint8_t> bt_data = encode_block_types(block_types, true);
         std::vector<uint8_t> pal_data = PaletteCodec::encode_palette_stream(palettes, palette_indices);
+        if (!pal_data.empty()) {
+            // Optional compact envelope for palette stream:
+            // [0xA7][mode=1][raw_count:u32][encoded_raw_palette_stream]
+            auto encoded_pal = encode_byte_stream(pal_data);
+            if (!encoded_pal.empty()) {
+                std::vector<uint8_t> compact_pal;
+                compact_pal.reserve(1 + 1 + 4 + encoded_pal.size());
+                compact_pal.push_back(0xA7);
+                compact_pal.push_back(1);
+                uint32_t raw_count = (uint32_t)pal_data.size();
+                compact_pal.resize(compact_pal.size() + 4);
+                std::memcpy(compact_pal.data() + 2, &raw_count, 4);
+                compact_pal.insert(compact_pal.end(), encoded_pal.begin(), encoded_pal.end());
+                if (compact_pal.size() < pal_data.size()) {
+                    pal_data = std::move(compact_pal);
+                }
+            }
+        }
         std::vector<uint8_t> cpy_data = CopyCodec::encode_copy_stream(copy_ops);
         std::vector<uint8_t> tile4_data;
         for (const auto& res : tile4_results) {
