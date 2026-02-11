@@ -4,6 +4,11 @@
 高速デコード重視の次世代画像コーデック。
 NyANS-P（Parallel Interleaved rANS + P-Index）を中核エントロピーエンジンに採用。
 
+## 戦略ドキュメント
+
+- プロダクト戦略の正本: `docs/PRODUCT_POSITIONING.md`
+- `AGENTS.md` は開発運用ルール専用（戦略は書かない）
+
 ## 完了タスク
 
 ### Phase 0: プロジェクトセットアップ ✅
