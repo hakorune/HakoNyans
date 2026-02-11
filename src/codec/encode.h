@@ -80,6 +80,70 @@ private:
     inline static thread_local LosslessModeDebugStats tl_lossless_mode_debug_stats_;
 
 public:
+    // Heuristic profile for applying "photo-only" lossless mode biases.
+    // Classify from sampled exact-copy hit rate on Y plane:
+    //   - UI/Anime/Game: high copy-hit rate (repeated tiles/text)
+    //   - Photo/Natural: low copy-hit rate
+    static bool is_photo_like_lossless_profile(const int16_t* y_plane, uint32_t width, uint32_t height) {
+        if (!y_plane || width == 0 || height == 0) return false;
+
+        const int bx = (int)((width + 7) / 8);
+        const int by = (int)((height + 7) / 8);
+        if (bx * by < 64) return false; // avoid unstable decisions on tiny images
+
+        const CopyParams kCopyCandidates[4] = {
+            CopyParams(-8, 0), CopyParams(0, -8), CopyParams(-8, -8), CopyParams(8, -8)
+        };
+
+        auto sample_at = [&](int x, int y) -> int16_t {
+            int sx = std::clamp(x, 0, (int)width - 1);
+            int sy = std::clamp(y, 0, (int)height - 1);
+            return y_plane[(size_t)sy * width + (size_t)sx];
+        };
+
+        const int step = 4; // sample every 4th block in X/Y
+        int samples = 0;
+        int copy_hits = 0;
+
+        for (int yb = 0; yb < by; yb += step) {
+            for (int xb = 0; xb < bx; xb += step) {
+                int cur_x = xb * 8;
+                int cur_y = yb * 8;
+                bool hit = false;
+
+                for (const auto& cand : kCopyCandidates) {
+                    int src_x = cur_x + cand.dx;
+                    int src_y = cur_y + cand.dy;
+                    if (src_x < 0 || src_y < 0) continue;
+                    if (!(src_y < cur_y || (src_y == cur_y && src_x < cur_x))) continue;
+
+                    bool match = true;
+                    for (int y = 0; y < 8 && match; y++) {
+                        for (int x = 0; x < 8; x++) {
+                            if (sample_at(cur_x + x, cur_y + y) != sample_at(src_x + x, src_y + y)) {
+                                match = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (match) {
+                        hit = true;
+                        break;
+                    }
+                }
+
+                if (hit) copy_hits++;
+                samples++;
+            }
+        }
+
+        if (samples < 32) return false;
+        const double copy_hit_rate = (double)copy_hits / (double)samples;
+
+        // Photo-like if exact-copy opportunities are relatively sparse.
+        return copy_hit_rate < 0.80;
+    }
+
     static std::vector<uint8_t> encode(const uint8_t* pixels, uint32_t width, uint32_t height, uint8_t quality = 75) {
         FileHeader header; header.width = width; header.height = height; header.bit_depth = 8;
         header.num_channels = 1; header.colorspace = 2; header.subsampling = 0;
@@ -531,7 +595,8 @@ public:
             plane[i] = (int16_t)pixels[i];
         }
 
-        auto tile_data = encode_plane_lossless(plane.data(), width, height);
+        bool photo_like = is_photo_like_lossless_profile(plane.data(), width, height);
+        auto tile_data = encode_plane_lossless(plane.data(), width, height, photo_like);
 
         // Build file: Header + ChunkDir + Tile
         ChunkDirectory dir;
@@ -564,9 +629,10 @@ public:
                             y_plane[i], co_plane[i], cg_plane[i]);
         }
 
-        auto tile_y  = encode_plane_lossless(y_plane.data(), width, height);
-        auto tile_co = encode_plane_lossless(co_plane.data(), width, height);
-        auto tile_cg = encode_plane_lossless(cg_plane.data(), width, height);
+        bool photo_like = is_photo_like_lossless_profile(y_plane.data(), width, height);
+        auto tile_y  = encode_plane_lossless(y_plane.data(), width, height, photo_like);
+        auto tile_co = encode_plane_lossless(co_plane.data(), width, height, photo_like);
+        auto tile_cg = encode_plane_lossless(cg_plane.data(), width, height, photo_like);
 
         FileHeader header;
         header.width = width; header.height = height;
@@ -601,18 +667,22 @@ public:
 
     // ------------------------------------------------------------------------
     // Lossless mode bit estimators (coarse heuristics for mode decision only)
+    // Units: 1 unit = 0.5 bits (scaled by 2)
     // ------------------------------------------------------------------------
-    static int estimate_copy_bits(const CopyParams& cp, int tile_width) {
+    static int estimate_copy_bits(const CopyParams& cp, int tile_width, bool use_photo_mode_bias) {
         (void)tile_width;
-        int bits = 2;  // block_type
+        int bits2 = 4;  // block_type (2 bits * 2)
         int small_idx = CopyCodec::small_vector_index(cp);
         if (small_idx >= 0) {
-            bits += 2;  // small-vector code (mode1/mode2 average)
-            bits += 2;  // amortized stream/mode overhead
+            bits2 += 4;  // small-vector code (2 bits * 2)
+            bits2 += 4;  // amortized stream/mode overhead (2 bits * 2)
         } else {
-            bits += 32; // raw dx/dy payload fallback
+            bits2 += 64; // raw dx/dy payload fallback (32 bits * 2)
         }
-        return bits;
+        if (use_photo_mode_bias) {
+            bits2 += 8; // +4 bits penalty in photo mode
+        }
+        return bits2;
     }
 
     static int estimate_palette_index_bits_per_pixel(int palette_size) {
@@ -624,43 +694,43 @@ public:
 
     static int estimate_palette_bits(const Palette& p, int transitions) {
         if (p.size == 0) return std::numeric_limits<int>::max();
-        int bits = 2;   // block_type
-        bits += 8;      // per-block palette header
-        bits += (int)p.size * 8; // grayscale palette values
+        int bits2 = 4;   // block_type (2 bits * 2)
+        bits2 += 16;     // per-block palette header (8 bits * 2)
+        bits2 += (int)p.size * 16; // grayscale palette values (8 bits * 2)
 
-        if (p.size <= 1) return bits;
+        if (p.size <= 1) return bits2;
         if (p.size == 2) {
             // 2-color blocks are mask-based in PaletteCodec.
             // Lower transitions usually compress better via dictionary reuse.
-            bits += (transitions <= 24) ? 24 : 64;
-            return bits;
+            bits2 += (transitions <= 24) ? 48 : 128; // (24/64 bits * 2)
+            return bits2;
         }
 
         int bits_per_index = estimate_palette_index_bits_per_pixel((int)p.size);
-        bits += 64 * bits_per_index;
-        return bits;
+        bits2 += 64 * bits_per_index * 2;
+        return bits2;
     }
 
-    static int estimate_filter_symbol_bits(int abs_residual) {
-        if (abs_residual == 0) return 1;
-        if (abs_residual <= 1) return 2;
-        if (abs_residual <= 3) return 3;
-        if (abs_residual <= 7) return 4;
-        if (abs_residual <= 15) return 5;
-        if (abs_residual <= 31) return 6;
-        if (abs_residual <= 63) return 7;
-        if (abs_residual <= 127) return 8;
-        return 10;
+    static int estimate_filter_symbol_bits2(int abs_residual, bool use_photo_mode_bias) {
+        if (abs_residual == 0) return use_photo_mode_bias ? 1 : 2;  // 0.5 bits (photo) / 1.0 bits (default)
+        if (abs_residual <= 1) return 4;  // 2 bits * 2
+        if (abs_residual <= 3) return 6;  // 3 bits * 2
+        if (abs_residual <= 7) return 8;  // 4 bits * 2
+        if (abs_residual <= 15) return 10; // 5 bits * 2
+        if (abs_residual <= 31) return 12; // 6 bits * 2
+        if (abs_residual <= 63) return 14; // 7 bits * 2
+        if (abs_residual <= 127) return 16; // 8 bits * 2
+        return 20; // 10 bits * 2
     }
 
     static int estimate_filter_bits(
-        const int16_t* padded, uint32_t pad_w, uint32_t pad_h, int cur_x, int cur_y
+        const int16_t* padded, uint32_t pad_w, uint32_t pad_h, int cur_x, int cur_y, bool use_photo_mode_bias
     ) {
         (void)pad_h;
-        int best_bits = std::numeric_limits<int>::max();
+        int best_bits2 = std::numeric_limits<int>::max();
         for (int f = 0; f < 5; f++) {
-            int bits = 2; // block_type
-            bits += 3;    // effective filter_id overhead (row-level amortized)
+            int bits2 = 4; // block_type (2 bits * 2)
+            bits2 += 6;    // effective filter_id overhead (3 bits * 2)
             for (int y = 0; y < 8; y++) {
                 for (int x = 0; x < 8; x++) {
                     int px = cur_x + x;
@@ -678,12 +748,12 @@ public:
                         case 4: pred = LosslessFilter::paeth_predictor(a, b, c); break;
                     }
                     int abs_r = std::abs((int)orig - (int)pred);
-                    bits += estimate_filter_symbol_bits(abs_r);
+                    bits2 += estimate_filter_symbol_bits2(abs_r, use_photo_mode_bias);
                 }
             }
-            best_bits = std::min(best_bits, bits);
+            best_bits2 = std::min(best_bits2, bits2);
         }
-        return best_bits;
+        return best_bits2;
     }
 
     /**
@@ -700,7 +770,7 @@ public:
      *   [filter_ids][lo_stream][hi_stream][block_types][palette_data][copy_data]
      */
     static std::vector<uint8_t> encode_plane_lossless(
-        const int16_t* data, uint32_t width, uint32_t height
+        const int16_t* data, uint32_t width, uint32_t height, bool use_photo_mode_bias = false
     ) {
         // Pad dimensions to multiple of 8
         uint32_t pad_w = ((width + 7) / 8) * 8;
@@ -729,6 +799,8 @@ public:
             int palette_transition_limit = 63;
             int64_t palette_variance_limit = 1040384;
         } mode_params;
+
+        FileHeader::BlockType prev_mode = FileHeader::BlockType::DCT;
 
         for (int i = 0; i < nb; i++) {
             int bx = i % nx, by = i / nx;
@@ -812,51 +884,59 @@ public:
 
             // Mode decision:
             // Choose the minimum estimated bits among Copy / Palette / Filter.
-            int copy_bits = std::numeric_limits<int>::max();
-            int palette_bits = std::numeric_limits<int>::max();
-            int filter_bits = estimate_filter_bits(
-                padded.data(), pad_w, pad_h, cur_x, cur_y
+            int copy_bits2 = std::numeric_limits<int>::max();
+            int palette_bits2 = std::numeric_limits<int>::max();
+            int filter_bits2 = estimate_filter_bits(
+                padded.data(), pad_w, pad_h, cur_x, cur_y, use_photo_mode_bias
             );
             if (copy_found) {
-                copy_bits = estimate_copy_bits(copy_candidate, (int)pad_w);
+                copy_bits2 = estimate_copy_bits(copy_candidate, (int)pad_w, use_photo_mode_bias);
             }
             if (palette_found) {
-                palette_bits = estimate_palette_bits(palette_candidate, transitions);
+                palette_bits2 = estimate_palette_bits(palette_candidate, transitions);
+            }
+
+            if (use_photo_mode_bias) {
+                // P0: Mode Inertia (-2 bits = -4 units)
+                if (copy_found && prev_mode == FileHeader::BlockType::COPY) copy_bits2 -= 4;
+                if (palette_found && prev_mode == FileHeader::BlockType::PALETTE) palette_bits2 -= 4;
+                if (prev_mode == FileHeader::BlockType::DCT) filter_bits2 -= 4;
             }
 
             auto& mode_stats = tl_lossless_mode_debug_stats_;
             mode_stats.total_blocks++;
-            mode_stats.est_filter_bits_sum += (uint64_t)filter_bits;
+            mode_stats.est_filter_bits_sum += (uint64_t)(filter_bits2 / 2);
             if (copy_found) {
                 mode_stats.copy_candidates++;
-                mode_stats.est_copy_bits_sum += (uint64_t)copy_bits;
+                mode_stats.est_copy_bits_sum += (uint64_t)(copy_bits2 / 2);
             }
             if (palette_found) {
                 mode_stats.palette_candidates++;
-                mode_stats.est_palette_bits_sum += (uint64_t)palette_bits;
+                mode_stats.est_palette_bits_sum += (uint64_t)(palette_bits2 / 2);
             }
             if (copy_found && palette_found) mode_stats.copy_palette_overlap++;
 
             FileHeader::BlockType best_mode = FileHeader::BlockType::DCT;
-            if (copy_bits <= palette_bits && copy_bits <= filter_bits) {
+            if (copy_bits2 <= palette_bits2 && copy_bits2 <= filter_bits2) {
                 best_mode = FileHeader::BlockType::COPY;
-            } else if (palette_bits <= filter_bits) {
+            } else if (palette_bits2 <= filter_bits2) {
                 best_mode = FileHeader::BlockType::PALETTE;
             }
 
             block_types[i] = best_mode;
+            prev_mode = best_mode;
             if (best_mode == FileHeader::BlockType::COPY) {
                 mode_stats.copy_selected++;
-                mode_stats.est_selected_bits_sum += (uint64_t)copy_bits;
+                mode_stats.est_selected_bits_sum += (uint64_t)(copy_bits2 / 2);
                 copy_ops.push_back(copy_candidate);
             } else if (best_mode == FileHeader::BlockType::PALETTE) {
                 mode_stats.palette_selected++;
-                mode_stats.est_selected_bits_sum += (uint64_t)palette_bits;
+                mode_stats.est_selected_bits_sum += (uint64_t)(palette_bits2 / 2);
                 palettes.push_back(palette_candidate);
                 palette_indices.push_back(std::move(palette_index_candidate));
             } else {
                 mode_stats.filter_selected++;
-                mode_stats.est_selected_bits_sum += (uint64_t)filter_bits;
+                mode_stats.est_selected_bits_sum += (uint64_t)(filter_bits2 / 2);
             }
             // Filter mode keeps default DCT tag.
         }
