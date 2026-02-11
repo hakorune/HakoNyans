@@ -222,11 +222,12 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
     std::cout << "\nMode Selection Stats (Lossless)\n";
     std::cout << "----------------------------------------------\n";
     std::cout << "  total_blocks           " << s.total_blocks << "\n";
+    print_mode_stat_row("tile4_candidates", s.tile4_candidates, s.total_blocks);
     print_mode_stat_row("copy_candidates", s.copy_candidates, s.total_blocks);
     print_mode_stat_row("palette_candidates", s.palette_candidates, s.total_blocks);
     print_mode_stat_row("copy_palette_overlap", s.copy_palette_overlap, s.total_blocks);
-    print_mode_stat_row("copy_selected", s.copy_selected, s.total_blocks);
     print_mode_stat_row("tile4_selected", s.tile4_selected, s.total_blocks);
+    print_mode_stat_row("copy_selected", s.copy_selected, s.total_blocks);
     print_mode_stat_row("palette_selected", s.palette_selected, s.total_blocks);
     print_mode_stat_row("filter_any_selected", s.filter_selected, s.total_blocks);
     // filter_med_selected is count of ROWS using MED. 
@@ -235,6 +236,8 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
     std::cout << "  filter_med_rows        " << std::right << std::setw(10) << s.filter_med_selected << "\n";
 
     if (s.total_blocks > 0) {
+        double tile4_cand_bpb = (s.tile4_candidates > 0)
+            ? (double)s.est_tile4_bits_sum / (double)s.tile4_candidates : 0.0;
         double copy_cand_bpb = (s.copy_candidates > 0)
             ? (double)s.est_copy_bits_sum / (double)s.copy_candidates : 0.0;
         double palette_cand_bpb = (s.palette_candidates > 0)
@@ -245,6 +248,8 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
             ? (100.0 * ((double)s.est_filter_bits_sum - (double)s.est_selected_bits_sum) / (double)s.est_filter_bits_sum)
             : 0.0;
 
+        std::cout << "  est_tile4_bits_sum     " << s.est_tile4_bits_sum
+                  << " (avg " << std::fixed << std::setprecision(2) << tile4_cand_bpb << " bits/candidate)\n";
         std::cout << "  est_copy_bits_sum      " << s.est_copy_bits_sum
                   << " (avg " << std::fixed << std::setprecision(2) << copy_cand_bpb << " bits/candidate)\n";
         std::cout << "  est_palette_bits_sum   " << s.est_palette_bits_sum
@@ -256,6 +261,53 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
                   << selected_bpb << " (selected) / " << filter_bpb << " (filter-only)\n";
         std::cout << "  est_gain_vs_filter     "
                   << std::fixed << std::setprecision(2) << gain_pct << "%\n";
+
+        uint64_t tile4_rejected = s.tile4_rejected_by_copy + s.tile4_rejected_by_palette + s.tile4_rejected_by_filter;
+        uint64_t copy_rejected = s.copy_rejected_by_tile4 + s.copy_rejected_by_palette + s.copy_rejected_by_filter;
+        uint64_t palette_rejected = s.palette_rejected_by_tile4 + s.palette_rejected_by_copy + s.palette_rejected_by_filter;
+
+        auto print_win_rate = [](const std::string& key, uint64_t wins, uint64_t cands) {
+            double pct = (cands > 0) ? (100.0 * (double)wins / (double)cands) : 0.0;
+            std::cout << "  " << std::left << std::setw(25) << key
+                      << std::right << std::setw(8) << std::fixed << std::setprecision(2) << pct << "%\n";
+        };
+        std::cout << "\n  Candidate win-rate\n";
+        print_win_rate("tile4_win_rate", s.tile4_selected, s.tile4_candidates);
+        print_win_rate("copy_win_rate", s.copy_selected, s.copy_candidates);
+        print_win_rate("palette_win_rate", s.palette_selected, s.palette_candidates);
+
+        auto print_reject_row = [](const std::string& name, uint64_t val, uint64_t total) {
+            double pct = (total > 0) ? (100.0 * (double)val / (double)total) : 0.0;
+            std::cout << "    " << std::left << std::setw(22) << name
+                      << std::right << std::setw(8) << val
+                      << std::setw(9) << std::fixed << std::setprecision(2) << pct << "%\n";
+        };
+
+        std::cout << "\n  Rejected reasons (tile4 candidates)\n";
+        print_reject_row("lost_to_copy", s.tile4_rejected_by_copy, tile4_rejected);
+        print_reject_row("lost_to_palette", s.tile4_rejected_by_palette, tile4_rejected);
+        print_reject_row("lost_to_filter", s.tile4_rejected_by_filter, tile4_rejected);
+
+        std::cout << "  Rejected reasons (copy candidates)\n";
+        print_reject_row("lost_to_tile4", s.copy_rejected_by_tile4, copy_rejected);
+        print_reject_row("lost_to_palette", s.copy_rejected_by_palette, copy_rejected);
+        print_reject_row("lost_to_filter", s.copy_rejected_by_filter, copy_rejected);
+
+        std::cout << "  Rejected reasons (palette candidates)\n";
+        print_reject_row("lost_to_tile4", s.palette_rejected_by_tile4, palette_rejected);
+        print_reject_row("lost_to_copy", s.palette_rejected_by_copy, palette_rejected);
+        print_reject_row("lost_to_filter", s.palette_rejected_by_filter, palette_rejected);
+
+        auto print_loss_bits = [](const std::string& key, uint64_t loss_bits, uint64_t rejected) {
+            double avg = (rejected > 0) ? (double)loss_bits / (double)rejected : 0.0;
+            std::cout << "  " << std::left << std::setw(25) << key
+                      << std::right << std::setw(10) << loss_bits
+                      << " (avg " << std::fixed << std::setprecision(2) << avg << " bits/reject)\n";
+        };
+        std::cout << "\n  Estimated loss vs chosen mode\n";
+        print_loss_bits("tile4_loss_bits_sum", s.est_tile4_loss_bits_sum, tile4_rejected);
+        print_loss_bits("copy_loss_bits_sum", s.est_copy_loss_bits_sum, copy_rejected);
+        print_loss_bits("palette_loss_bits_sum", s.est_palette_loss_bits_sum, palette_rejected);
     }
 }
 

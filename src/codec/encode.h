@@ -38,37 +38,67 @@ class GrayscaleEncoder {
 public:
     struct LosslessModeDebugStats {
         uint64_t total_blocks;
+        uint64_t tile4_candidates;
         uint64_t copy_candidates;
         uint64_t palette_candidates;
         uint64_t copy_palette_overlap;
 
+        uint64_t tile4_selected;
         uint64_t copy_selected;
         uint64_t palette_selected;
         uint64_t filter_selected;
         uint64_t filter_med_selected;
-        uint64_t tile4_selected;
+
+        // Candidate existed but another mode won.
+        uint64_t tile4_rejected_by_copy;
+        uint64_t tile4_rejected_by_palette;
+        uint64_t tile4_rejected_by_filter;
+        uint64_t copy_rejected_by_tile4;
+        uint64_t copy_rejected_by_palette;
+        uint64_t copy_rejected_by_filter;
+        uint64_t palette_rejected_by_tile4;
+        uint64_t palette_rejected_by_copy;
+        uint64_t palette_rejected_by_filter;
 
         uint64_t est_copy_bits_sum;      // candidate blocks only
+        uint64_t est_tile4_bits_sum;     // candidate blocks only
         uint64_t est_palette_bits_sum;   // candidate blocks only
         uint64_t est_filter_bits_sum;    // all blocks
         uint64_t est_selected_bits_sum;  // chosen mode only
+        uint64_t est_copy_loss_bits_sum;    // copy candidate blocks where copy lost
+        uint64_t est_tile4_loss_bits_sum;   // tile4 candidate blocks where tile4 lost
+        uint64_t est_palette_loss_bits_sum; // palette candidate blocks where palette lost
 
         LosslessModeDebugStats() { reset(); }
 
         void reset() {
             total_blocks = 0;
+            tile4_candidates = 0;
             copy_candidates = 0;
             palette_candidates = 0;
             copy_palette_overlap = 0;
+            tile4_selected = 0;
             copy_selected = 0;
             palette_selected = 0;
             filter_selected = 0;
             filter_med_selected = 0;
-            tile4_selected = 0;
+            tile4_rejected_by_copy = 0;
+            tile4_rejected_by_palette = 0;
+            tile4_rejected_by_filter = 0;
+            copy_rejected_by_tile4 = 0;
+            copy_rejected_by_palette = 0;
+            copy_rejected_by_filter = 0;
+            palette_rejected_by_tile4 = 0;
+            palette_rejected_by_copy = 0;
+            palette_rejected_by_filter = 0;
             est_copy_bits_sum = 0;
+            est_tile4_bits_sum = 0;
             est_palette_bits_sum = 0;
             est_filter_bits_sum = 0;
             est_selected_bits_sum = 0;
+            est_copy_loss_bits_sum = 0;
+            est_tile4_loss_bits_sum = 0;
+            est_palette_loss_bits_sum = 0;
         }
     };
 
@@ -1108,8 +1138,8 @@ public:
             mode_stats.total_blocks++;
             mode_stats.est_filter_bits_sum += (uint64_t)(filter_bits2 / 2);
             if (tile4_found) {
-                // For telemetry we don't have tile4_candidates yet, let's just use existing ones for now
-                // or I could add it.
+                mode_stats.tile4_candidates++;
+                mode_stats.est_tile4_bits_sum += (uint64_t)(tile4_bits2 / 2);
             }
             if (copy_found) {
                 mode_stats.copy_candidates++;
@@ -1129,25 +1159,52 @@ public:
             } else if (palette_bits2 <= filter_bits2) {
                 best_mode = FileHeader::BlockType::PALETTE;
             }
+            int selected_bits2 = filter_bits2;
+            if (best_mode == FileHeader::BlockType::TILE_MATCH4) selected_bits2 = tile4_bits2;
+            else if (best_mode == FileHeader::BlockType::COPY) selected_bits2 = copy_bits2;
+            else if (best_mode == FileHeader::BlockType::PALETTE) selected_bits2 = palette_bits2;
+
+            // Diagnostics: candidate existed but lost to another mode.
+            if (tile4_found && best_mode != FileHeader::BlockType::TILE_MATCH4) {
+                if (best_mode == FileHeader::BlockType::COPY) mode_stats.tile4_rejected_by_copy++;
+                else if (best_mode == FileHeader::BlockType::PALETTE) mode_stats.tile4_rejected_by_palette++;
+                else mode_stats.tile4_rejected_by_filter++;
+                mode_stats.est_tile4_loss_bits_sum +=
+                    (uint64_t)(std::max(0, tile4_bits2 - selected_bits2) / 2);
+            }
+            if (copy_found && best_mode != FileHeader::BlockType::COPY) {
+                if (best_mode == FileHeader::BlockType::TILE_MATCH4) mode_stats.copy_rejected_by_tile4++;
+                else if (best_mode == FileHeader::BlockType::PALETTE) mode_stats.copy_rejected_by_palette++;
+                else mode_stats.copy_rejected_by_filter++;
+                mode_stats.est_copy_loss_bits_sum +=
+                    (uint64_t)(std::max(0, copy_bits2 - selected_bits2) / 2);
+            }
+            if (palette_found && best_mode != FileHeader::BlockType::PALETTE) {
+                if (best_mode == FileHeader::BlockType::TILE_MATCH4) mode_stats.palette_rejected_by_tile4++;
+                else if (best_mode == FileHeader::BlockType::COPY) mode_stats.palette_rejected_by_copy++;
+                else mode_stats.palette_rejected_by_filter++;
+                mode_stats.est_palette_loss_bits_sum +=
+                    (uint64_t)(std::max(0, palette_bits2 - selected_bits2) / 2);
+            }
 
             block_types[i] = best_mode;
             prev_mode = best_mode;
             if (best_mode == FileHeader::BlockType::TILE_MATCH4) {
                 tile4_results.push_back(tile4_candidate);
-                mode_stats.est_selected_bits_sum += (uint64_t)(tile4_bits2 / 2);
+                mode_stats.est_selected_bits_sum += (uint64_t)(selected_bits2 / 2);
                 mode_stats.tile4_selected++;
             } else if (best_mode == FileHeader::BlockType::COPY) {
                 mode_stats.copy_selected++;
-                mode_stats.est_selected_bits_sum += (uint64_t)(copy_bits2 / 2);
+                mode_stats.est_selected_bits_sum += (uint64_t)(selected_bits2 / 2);
                 copy_ops.push_back(copy_candidate);
             } else if (best_mode == FileHeader::BlockType::PALETTE) {
                 mode_stats.palette_selected++;
-                mode_stats.est_selected_bits_sum += (uint64_t)(palette_bits2 / 2);
+                mode_stats.est_selected_bits_sum += (uint64_t)(selected_bits2 / 2);
                 palettes.push_back(palette_candidate);
                 palette_indices.push_back(std::move(palette_index_candidate));
             } else {
                 mode_stats.filter_selected++;
-                mode_stats.est_selected_bits_sum += (uint64_t)(filter_bits2 / 2);
+                mode_stats.est_selected_bits_sum += (uint64_t)(selected_bits2 / 2);
             }
             // Filter mode keeps default DCT tag.
         }
