@@ -840,12 +840,18 @@ public:
         return 20; // 10 bits * 2
     }
 
+    static int lossless_filter_candidates(bool use_photo_mode_bias) {
+        // Keep MED only for photo-like profile to avoid UI/anime regressions.
+        return use_photo_mode_bias ? LosslessFilter::FILTER_COUNT : LosslessFilter::FILTER_MED;
+    }
+
     static int estimate_filter_bits(
         const int16_t* padded, uint32_t pad_w, uint32_t pad_h, int cur_x, int cur_y, bool use_photo_mode_bias
     ) {
         (void)pad_h;
         int best_bits2 = std::numeric_limits<int>::max();
-        for (int f = 0; f < LosslessFilter::FILTER_COUNT; f++) {
+        const int filter_count = lossless_filter_candidates(use_photo_mode_bias);
+        for (int f = 0; f < filter_count; f++) {
             int bits2 = 4; // block_type (2 bits * 2)
             bits2 += 6;    // effective filter_id overhead (3 bits * 2)
             for (int y = 0; y < 8; y++) {
@@ -1086,7 +1092,8 @@ public:
             // Try all filters, pick one minimizing sum(|residual|) for filter-block pixels
             int best_f = 0;
             int64_t best_sum = INT64_MAX;
-            for (int f = 0; f < LosslessFilter::FILTER_COUNT; f++) {
+            const int filter_count = lossless_filter_candidates(use_photo_mode_bias);
+            for (int f = 0; f < filter_count; f++) {
                 int64_t sum = 0;
                 for (uint32_t x = 0; x < pad_w; x++) {
                     int bx_col = x / 8;

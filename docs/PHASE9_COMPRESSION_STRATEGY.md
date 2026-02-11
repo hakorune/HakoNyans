@@ -44,7 +44,7 @@
 - ⏳ タイル内 match/LZ 系トークン導入
 - ⏳ 可逆色変換の拡張（YCoCg-R 固定から）
 
-## 直近の開発過程（9h-2 / 9h-3 / 9i-1）
+## 直近の開発過程（9h-2 / 9h-3 / 9i-1 / 9j / 9j-2）
 
 ### 9h-2: 観測強化
 - `bench_bit_accounting` に mode telemetry を追加
@@ -77,6 +77,17 @@
   - `nature_02`: 1019.0 KiB → 998.2 KiB（-2.0%）
   - `nature_01`: 932.7 KiB → 926.9 KiB（-0.6%）
 - `ctest`: 17/17 PASS
+
+### 9j-2: MED photo-onlyゲート（回帰リスク抑制）
+- `encode_plane_lossless()` のフィルタ候補を `use_photo_mode_bias` で切替
+  - photo-like: 6種（MED含む）
+  - non-photo: 5種（PNG互換系のみ）
+- 追加テスト:
+  - `tests/test_lossless_round2.cpp` に `MED filter gate (photo-only)` を追加
+- 実測:
+  - `bench_png_compare`（13枚）でサイズ差分なし
+  - `bench_decode`: 20.3608ms → 20.4605ms（+0.49%）
+  - `ctest`: 17/17 PASS
 
 
 

@@ -569,6 +569,7 @@ Phase 9 P0（コア4項目）+ チューニング2項目 完了！🏆
 **次の実装候補**:
 - [x] Phase 10a: CfL強化（整数固定小数点 + MSE適応判定）✅ (2026-02-11)
 - [x] Phase 9j: MED predictor（Lossless Filter追加）✅ (2026-02-11)
+- [x] Phase 9j-2: MED photo-onlyゲート（回帰リスク抑制）✅ (2026-02-11)
 - [ ] Phase 9 P1: Tile Match/LZ
 
 ---
@@ -587,6 +588,27 @@ Phase 9 P0（コア4項目）+ チューニング2項目 完了！🏆
 
 **結論**:
 テクスチャの多い Kodak 画像（Natural）で 10% を超える劇的な改善を確認。風景写真（Photo）でも着実な改善。デコード速度への影響は軽微。
+
+---
+
+### Phase 9j-2: MED Photo-onlyゲート ✅ (2026-02-11)
+
+**実装内容**:
+- `encode_plane_lossless()` のフィルタ候補数を `lossless_filter_candidates(use_photo_mode_bias)` で切替
+- `photo-like=true` のときのみ MED を候補に追加（6種）
+- 非photoでは従来の5種（None/Sub/Up/Avg/Paeth）で選択
+- `tests/test_lossless_round2.cpp` に回帰テスト `MED filter gate (photo-only)` を追加
+
+**検証結果**:
+- `ctest`: **17/17 PASS**
+- `test_lossless_round2`: **8/8 PASS**（新規MEDゲート検証を含む）
+- `bench_png_compare`（13枚セット）: **サイズ差分なし**（既存レンジ維持）
+- `bench_decode`:
+  - before: `20.3608 ms`
+  - after: `20.4605 ms`（**+0.49%**, 許容範囲）
+
+**結論**:
+MEDの効果（Photo/Natural）を維持しつつ、UI/Anime側の将来回帰リスクを設計上で抑制。
 
 ---
 

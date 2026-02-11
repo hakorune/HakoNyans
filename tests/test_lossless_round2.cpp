@@ -4,9 +4,11 @@
 #include <cstring>
 #include <random>
 #include <cmath>
+#include <algorithm>
 
 #include "../src/codec/encode.h"
 #include "../src/codec/decode.h"
+#include "../src/codec/lossless_filter.h"
 
 using namespace hakonyans;
 
@@ -233,6 +235,50 @@ void test_header_flags() {
     else { FAIL("Header flags incorrect"); }
 }
 
+static bool lossless_tile_has_filter_id(const std::vector<uint8_t>& tile_data, uint8_t filter_id) {
+    if (tile_data.size() < 32) return false;
+    uint32_t hdr[8] = {};
+    std::memcpy(hdr, tile_data.data(), 32);
+    uint32_t filter_ids_size = hdr[0];
+    if (tile_data.size() < 32ull + (size_t)filter_ids_size) return false;
+    const uint8_t* fids = tile_data.data() + 32;
+    return std::find(fids, fids + filter_ids_size, filter_id) != (fids + filter_ids_size);
+}
+
+// ============================================================
+// Test 8: MED filter should be disabled outside photo-like mode
+// ============================================================
+void test_med_filter_photo_gate() {
+    TEST("MED filter gate (photo-only)");
+
+    const int W = 32, H = 32;
+    std::vector<int16_t> plane(W * H);
+    bool found_med_case = false;
+
+    // Search deterministic seeds until we find a block set where MED is selected
+    // in photo mode. Then verify non-photo mode suppresses MED.
+    for (int seed = 1; seed <= 256 && !found_med_case; seed++) {
+        std::mt19937 rng(seed);
+        std::uniform_int_distribution<int> dist(-128, 127);
+        for (auto& v : plane) v = (int16_t)dist(rng);
+
+        auto tile_photo = GrayscaleEncoder::encode_plane_lossless(plane.data(), W, H, true);
+        if (!lossless_tile_has_filter_id(tile_photo, LosslessFilter::FILTER_MED)) {
+            continue;
+        }
+
+        auto tile_non_photo = GrayscaleEncoder::encode_plane_lossless(plane.data(), W, H, false);
+        if (lossless_tile_has_filter_id(tile_non_photo, LosslessFilter::FILTER_MED)) {
+            FAIL("MED appeared in non-photo mode for seed=" + std::to_string(seed));
+            return;
+        }
+        found_med_case = true;
+    }
+
+    if (found_med_case) { PASS(); }
+    else { FAIL("No MED-selected seed found in search range"); }
+}
+
 int main() {
     std::cout << "=== Phase 8 Round 2: Lossless Codec Tests ===" << std::endl;
 
@@ -243,6 +289,7 @@ int main() {
     test_odd_dimensions();
     test_flat_image();
     test_header_flags();
+    test_med_filter_photo_gate();
 
     std::cout << "\n=== Results: " << tests_passed << "/" << tests_run << " passed ===" << std::endl;
     return (tests_passed == tests_run) ? 0 : 1;

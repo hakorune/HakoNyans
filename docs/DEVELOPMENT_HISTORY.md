@@ -1108,6 +1108,27 @@ Lossless 圧縮の Filter モードに、JPEG-LS 等で実績のある **MED (Me
 
 ---
 
+### Phase 9j-2: MED Photo-onlyゲート (2026-02-11)
+
+MED predictor の効果を維持しつつ、UI/Anime 側の回帰リスクを抑えるため、
+Lossless フィルタ候補を `photo-like` 判定で切り替えるゲートを追加。
+
+**主な変更**:
+1. **候補切替関数追加**: `lossless_filter_candidates(use_photo_mode_bias)` を `src/codec/encode.h` に追加。
+2. **選択範囲の制御**:
+   - `photo-like=true`: 6種（None/Sub/Up/Avg/Paeth/MED）
+   - `photo-like=false`: 5種（None/Sub/Up/Avg/Paeth）
+3. **回帰テスト追加**: `tests/test_lossless_round2.cpp` に `MED filter gate (photo-only)` を追加し、
+   同一データで `photo=true` 時のみ MED が現れることを検証。
+
+**検証結果**:
+- `ctest`: 17/17 PASS
+- `test_lossless_round2`: 8/8 PASS（新規テスト含む）
+- `bench_png_compare`（13枚）: サイズ差分なし（既存レンジ維持）
+- `bench_decode`: 20.3608 ms → 20.4605 ms（+0.49%、許容範囲）
+
+---
+
 ## 🏆 技術的ハイライト
 
 ### 1. NyANS-P エントロピーエンジン
