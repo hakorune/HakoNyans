@@ -11,6 +11,24 @@
 
 namespace hakonyans {
 
+#ifndef HAKONYANS_BAND_LOW_END
+#define HAKONYANS_BAND_LOW_END 15
+#endif
+
+#ifndef HAKONYANS_BAND_MID_END
+#define HAKONYANS_BAND_MID_END 31
+#endif
+
+static_assert(HAKONYANS_BAND_LOW_END >= 1, "HAKONYANS_BAND_LOW_END must be >= 1");
+static_assert(HAKONYANS_BAND_LOW_END <= 61, "HAKONYANS_BAND_LOW_END must be <= 61");
+static_assert(HAKONYANS_BAND_MID_END >= 2, "HAKONYANS_BAND_MID_END must be >= 2");
+static_assert(HAKONYANS_BAND_MID_END <= 62, "HAKONYANS_BAND_MID_END must be <= 62");
+static_assert(HAKONYANS_BAND_LOW_END < HAKONYANS_BAND_MID_END,
+              "HAKONYANS_BAND_LOW_END must be < HAKONYANS_BAND_MID_END");
+
+static constexpr int BAND_LOW_END_ZZ = HAKONYANS_BAND_LOW_END;
+static constexpr int BAND_MID_END_ZZ = HAKONYANS_BAND_MID_END;
+
 enum BandGroup : uint8_t {
     BAND_DC = 0,
     BAND_LOW = 1,
@@ -20,8 +38,8 @@ enum BandGroup : uint8_t {
 
 constexpr BandGroup band_from_zigzag_index(int zigzag_idx) {
     if (zigzag_idx <= 0) return BAND_DC;
-    if (zigzag_idx <= 15) return BAND_LOW;
-    if (zigzag_idx <= 31) return BAND_MID;
+    if (zigzag_idx <= BAND_LOW_END_ZZ) return BAND_LOW;
+    if (zigzag_idx <= BAND_MID_END_ZZ) return BAND_MID;
     return BAND_HIGH;
 }
 
@@ -39,22 +57,26 @@ struct BandRange {
 
 inline BandRange band_ac_range(BandGroup band) {
     switch (band) {
-        case BAND_LOW:  return {0, 15};   // zigzag 1..15
-        case BAND_MID:  return {15, 16};  // zigzag 16..31
-        case BAND_HIGH: return {31, 32};  // zigzag 32..63
+        case BAND_LOW:  return {0, BAND_LOW_END_ZZ};
+        case BAND_MID:  return {BAND_LOW_END_ZZ, BAND_MID_END_ZZ - BAND_LOW_END_ZZ};
+        case BAND_HIGH: return {BAND_MID_END_ZZ, 63 - BAND_MID_END_ZZ};
         default:        return {0, 0};
     }
 }
 
 inline void split_ac_by_band(
     const int16_t quantized[64],
-    int16_t low[15],
-    int16_t mid[16],
-    int16_t high[32]
+    int16_t low[HAKONYANS_BAND_LOW_END],
+    int16_t mid[HAKONYANS_BAND_MID_END - HAKONYANS_BAND_LOW_END],
+    int16_t high[63 - HAKONYANS_BAND_MID_END]
 ) {
-    for (int i = 0; i < 15; i++) low[i] = quantized[1 + i];
-    for (int i = 0; i < 16; i++) mid[i] = quantized[16 + i];
-    for (int i = 0; i < 32; i++) high[i] = quantized[32 + i];
+    for (int i = 0; i < HAKONYANS_BAND_LOW_END; i++) low[i] = quantized[1 + i];
+    for (int i = 0; i < HAKONYANS_BAND_MID_END - HAKONYANS_BAND_LOW_END; i++) {
+        mid[i] = quantized[1 + HAKONYANS_BAND_LOW_END + i];
+    }
+    for (int i = 0; i < 63 - HAKONYANS_BAND_MID_END; i++) {
+        high[i] = quantized[1 + HAKONYANS_BAND_MID_END + i];
+    }
 }
 
 inline int band_magc(uint16_t abs_v) {

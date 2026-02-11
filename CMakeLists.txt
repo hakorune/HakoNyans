@@ -13,6 +13,22 @@ option(HAKONYANS_ENABLE_AVX2 "Enable AVX2 SIMD" ON)
 option(HAKONYANS_ENABLE_AVX512 "Enable AVX-512 SIMD" OFF)
 option(HAKONYANS_ENABLE_NEON "Enable ARM NEON SIMD" OFF)
 
+# Band-group CDF split points (zigzag index)
+set(HAKONYANS_BAND_LOW_END "15" CACHE STRING "LOW band end zigzag index (1..61)")
+set(HAKONYANS_BAND_MID_END "31" CACHE STRING "MID band end zigzag index (LOW+1..62)")
+if(NOT HAKONYANS_BAND_LOW_END MATCHES "^[0-9]+$" OR NOT HAKONYANS_BAND_MID_END MATCHES "^[0-9]+$")
+  message(FATAL_ERROR "HAKONYANS_BAND_LOW_END and HAKONYANS_BAND_MID_END must be positive integers")
+endif()
+if(HAKONYANS_BAND_LOW_END LESS 1 OR HAKONYANS_BAND_LOW_END GREATER 61)
+  message(FATAL_ERROR "HAKONYANS_BAND_LOW_END must be in [1, 61]")
+endif()
+if(HAKONYANS_BAND_MID_END LESS 2 OR HAKONYANS_BAND_MID_END GREATER 62)
+  message(FATAL_ERROR "HAKONYANS_BAND_MID_END must be in [2, 62]")
+endif()
+if(NOT HAKONYANS_BAND_LOW_END LESS HAKONYANS_BAND_MID_END)
+  message(FATAL_ERROR "HAKONYANS_BAND_LOW_END must be less than HAKONYANS_BAND_MID_END")
+endif()
+
 # Detect architecture
 include(CheckCXXCompilerFlag)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
@@ -23,6 +39,10 @@ endif()
 
 # Include paths
 include_directories(${CMAKE_SOURCE_DIR})
+add_compile_definitions(
+  HAKONYANS_BAND_LOW_END=${HAKONYANS_BAND_LOW_END}
+  HAKONYANS_BAND_MID_END=${HAKONYANS_BAND_MID_END}
+)
 
 # === Tests ===
 if(HAKONYANS_BUILD_TESTS)
@@ -158,6 +178,7 @@ message(STATUS "  AVX2: ${HAKONYANS_ENABLE_AVX2}")
 message(STATUS "  AVX-512: ${HAKONYANS_ENABLE_AVX512}")
 message(STATUS "  NEON: ${HAKONYANS_ENABLE_NEON}")
 message(STATUS "  Tests: ${HAKONYANS_BUILD_TESTS}")
+message(STATUS "  Band Split (zigzag): low<=${HAKONYANS_BAND_LOW_END}, mid<=${HAKONYANS_BAND_MID_END}, high>${HAKONYANS_BAND_MID_END}")
 
 # Anime lossy benchmark
 if(PNG_FOUND)
