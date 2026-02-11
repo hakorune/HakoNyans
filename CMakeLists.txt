@@ -153,3 +153,14 @@ message(STATUS "  AVX2: ${HAKONYANS_ENABLE_AVX2}")
 message(STATUS "  AVX-512: ${HAKONYANS_ENABLE_AVX512}")
 message(STATUS "  NEON: ${HAKONYANS_ENABLE_NEON}")
 message(STATUS "  Tests: ${HAKONYANS_BUILD_TESTS}")
+
+# Anime lossy benchmark
+if(PNG_FOUND)
+  add_executable(bench_anime_lossy bench/bench_anime_lossy.cpp)
+  target_compile_options(bench_anime_lossy PRIVATE -O3 -march=native)
+  target_link_libraries(bench_anime_lossy PRIVATE ${PNG_LIBRARIES} pthread)
+
+  add_executable(repro_artoria bench/repro_artoria.cpp)
+  target_compile_options(repro_artoria PRIVATE -O3 -march=native)
+  target_link_libraries(repro_artoria PRIVATE ${PNG_LIBRARIES} pthread)
+endif()

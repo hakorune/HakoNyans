@@ -10,10 +10,30 @@
 
 #include "../src/codec/encode.h"
 #include "../src/codec/decode.h"
-#include "../src/codec/ppm_loader.h"
-#include "../src/codec/png_wrapper.h"
+#include "ppm_loader.h"
+#include "png_wrapper.h"
 
 using namespace hakonyans;
+
+/**
+ * Load image from PNG file
+ */
+struct ImageData {
+    std::vector<uint8_t> rgb_data;
+    int width;
+    int height;
+    size_t data_size() const { return rgb_data.size(); }
+};
+
+ImageData load_image_png(const std::string& filepath) {
+    auto result = load_png_file(filepath);
+    
+    ImageData img;
+    img.rgb_data = std::move(result.rgb_data);
+    img.width = result.width;
+    img.height = result.height;
+    return img;
+}
 
 /**
  * Calculate PSNR between two images
@@ -61,36 +81,45 @@ struct QualityResult {
     size_t jpeg90_size;
 };
 
-QualityResult verify_anime_image(const std::string& ppm_path, const std::string& name, const std::string& output_dir) {
+QualityResult verify_anime_image(const std::string& image_path, const std::string& name, const std::string& output_dir) {
     std::cout << "Processing " << name << "..." << std::flush;
 
     QualityResult result;
     result.name = name;
 
-    // Load PPM
-    auto ppm = load_ppm(ppm_path);
-    result.original_size = ppm.data_size();
+    // Load image (PNG or PPM)
+    ImageData img;
+    if (image_path.ends_with(".png")) {
+        img = load_image_png(image_path);
+    } else {
+        auto ppm = load_ppm(image_path);
+        img.rgb_data = std::move(ppm.rgb_data);
+        img.width = ppm.width;
+        img.height = ppm.height;
+    }
+    
+    result.original_size = img.data_size();
 
     // Create output directory
     std::filesystem::create_directories(output_dir);
 
     // Save original as PNG for reference
     {
-        auto png_result = encode_png(ppm.rgb_data.data(), ppm.width, ppm.height);
+        auto png_result = encode_png(img.rgb_data.data(), img.width, img.height);
         result.png_size = png_result.png_data.size();
         save_file(output_dir + "/" + name + "_original.png", png_result.png_data);
     }
 
     // === HKN Lossless Roundtrip ===
     {
-        auto hkn_data = GrayscaleEncoder::encode_color_lossless(ppm.rgb_data.data(), ppm.width, ppm.height);
+        auto hkn_data = GrayscaleEncoder::encode_color_lossless(img.rgb_data.data(), img.width, img.height);
         result.hkn_size = hkn_data.size();
 
         int dec_w, dec_h;
         auto decoded = GrayscaleDecoder::decode_color_lossless(hkn_data, dec_w, dec_h);
 
         // Calculate PSNR
-        result.hkn_psnr = calculate_psnr(ppm.rgb_data.data(), decoded.data(), ppm.data_size());
+        result.hkn_psnr = calculate_psnr(img.rgb_data.data(), decoded.data(), img.data_size());
 
         // Save decoded as PNG
         auto png_result = encode_png(decoded.data(), dec_w, dec_h);
@@ -99,7 +128,7 @@ QualityResult verify_anime_image(const std::string& ppm_path, const std::string&
 
     // === JPEG Comparison ===
     std::string temp_ppm = output_dir + "/" + name + "_temp.ppm";
-    save_ppm(temp_ppm.c_str(), ppm.rgb_data.data(), ppm.width, ppm.height);
+    save_ppm(temp_ppm.c_str(), img.rgb_data.data(), img.width, img.height);
 
     // JPEG Q75
     {
@@ -134,12 +163,11 @@ int main() {
 
     // Test images
     std::vector<std::pair<std::string, std::string>> test_images = {
-        {"../test_images/anime/anime_girl_portrait.ppm", "anime_girl"},
-        {"../test_images/anime/anime_sunset.ppm", "anime_sunset"},
-        {"../test_images/ui/browser.ppm", "browser"},
+        {"../test_images/anime/Artoria Pendragon (Tokyo Tower, Tokyo) by Takeuchi Takashi.png", "artoria"},
+        {"../test_images/anime/Nitocris (Tottori Sand Dunes, Tottori) by Shima Udon.png", "nitocris"},
     };
 
-    std::string output_dir = "/home/tomoaki/git/HakoNyans/bench_results/anime_quality";
+    std::string output_dir = "bench_results/anime_quality";
 
     std::vector<QualityResult> results;
 

@@ -302,7 +302,22 @@ NyANS-P（Parallel Interleaved rANS + P-Index）を中核エントロピーエ�
 - Game: **43.1x → 3.90x**（-90.9%）
 - Photo: **0.93x → 0.72x**（PNG比28%削減 ✅）
 
-**Phase 8 完全達成** 🎉
+---
+
+### Phase 8e: Artoria Decode Bug Fix ✅ 完了 (2026-02-11)
+**目標**: 高解像度アニメ画像のロスレスデコードバグ修正
+
+- [x] **バグ特定** — Palette v2 辞書オーバーフロー（255個上限）
+- [x] **修正実装** — `dict_overflow` チェック追加、Raw mode フォールバック
+- [x] **検証** — Artoria/Nitocris 両方で PSNR = INF 確認
+- [x] **回帰テスト** — 17/17 PASS
+- [x] **bench_results 統一** — 出力先を `bench_results/` に統一
+
+**修正結果**:
+- Artoria (5120×3157): **7.5dB → INF**（完全修正 🎉）
+- Nitocris (5120×3157): **INF → INF**（回帰なし ✅）
+
+**Phase 8 完全達成** 🎉🎉🎉
 
 ---
 

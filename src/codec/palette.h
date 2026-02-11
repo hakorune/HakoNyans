@@ -183,21 +183,27 @@ public:
         std::vector<uint64_t> mask_dict;
         std::unordered_map<uint64_t, uint8_t> mask_to_id;
 
+        bool dict_overflow = false;
         int two_color_blocks = 0;
         for (size_t i = 0; i < palettes.size() && i < indices_list.size(); i++) {
             const Palette& p = palettes[i];
             if (p.size != 2) continue;
             two_color_blocks++;
             uint64_t mask = indices_to_mask64(indices_list[i]);
-            if (mask_to_id.find(mask) == mask_to_id.end() && mask_dict.size() < 255) {
-                uint8_t id = (uint8_t)mask_dict.size();
-                mask_to_id[mask] = id;
-                mask_dict.push_back(mask);
+            if (mask_to_id.find(mask) == mask_to_id.end()) {
+                if (mask_dict.size() < 255) {
+                    uint8_t id = (uint8_t)mask_dict.size();
+                    mask_to_id[mask] = id;
+                    mask_dict.push_back(mask);
+                } else {
+                    dict_overflow = true;
+                }
             }
         }
 
         // Enable dictionary when it is materially smaller than raw 8B per size-2 block.
-        if (two_color_blocks > 0 && !mask_dict.empty()) {
+        // AND we can represent all masks (no overflow).
+        if (two_color_blocks > 0 && !mask_dict.empty() && !dict_overflow) {
             size_t raw_size = (size_t)two_color_blocks * 8;
             size_t dict_size = 1 + mask_dict.size() * 8 + (size_t)two_color_blocks; // count + dict + 1B refs
             if (dict_size < raw_size) flags |= 0x01;
