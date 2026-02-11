@@ -227,12 +227,20 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
     print_mode_stat_row("filter_selected", s.filter_selected, s.total_blocks);
 
     if (s.total_blocks > 0) {
+        double copy_cand_bpb = (s.copy_candidates > 0)
+            ? (double)s.est_copy_bits_sum / (double)s.copy_candidates : 0.0;
+        double palette_cand_bpb = (s.palette_candidates > 0)
+            ? (double)s.est_palette_bits_sum / (double)s.palette_candidates : 0.0;
         double selected_bpb = (double)s.est_selected_bits_sum / (double)s.total_blocks;
         double filter_bpb = (double)s.est_filter_bits_sum / (double)s.total_blocks;
         double gain_pct = (s.est_filter_bits_sum > 0)
             ? (100.0 * ((double)s.est_filter_bits_sum - (double)s.est_selected_bits_sum) / (double)s.est_filter_bits_sum)
             : 0.0;
 
+        std::cout << "  est_copy_bits_sum      " << s.est_copy_bits_sum
+                  << " (avg " << std::fixed << std::setprecision(2) << copy_cand_bpb << " bits/candidate)\n";
+        std::cout << "  est_palette_bits_sum   " << s.est_palette_bits_sum
+                  << " (avg " << std::fixed << std::setprecision(2) << palette_cand_bpb << " bits/candidate)\n";
         std::cout << "  est_selected_bits      " << s.est_selected_bits_sum << "\n";
         std::cout << "  est_filter_bits        " << s.est_filter_bits_sum << "\n";
         std::cout << "  est_bits_per_block     "
