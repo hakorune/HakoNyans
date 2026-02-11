@@ -358,6 +358,28 @@ NyANS-P（Parallel Interleaved rANS + P-Index）を中核エントロピーエ�
 - [x] 検証計画 D（RDカーブ/アブレーション/成功基準）整理
 
 ### Phase 9e: P0 圧縮改善（実装）✅ 完了 (2026-02-11)
+**目標**: Phase 9 P0施策（Chroma量子化分離、Bit Accounting、Lossless Mode整理）を実装
+
+- [x] **Chroma 量子化分離** — `src/codec/quant.h` に `base_quant_chroma[64]` 追加（JPEG Annex K準拠）
+- [x] **3テーブルQMAT** — Y/Cb/Cr別量子化、`chroma_quality = quality - 12`
+- [x] **Bit Accounting** — `bench/bench_bit_accounting.cpp` 実装（lossless/lossy両対応）
+- [x] **Lossless Mode整理** — Copy/Palette/Filter判定を候補抽出ベースに整理
+- [x] **後方互換性維持** — `num_tables==1` の旧形式デコード対応
+- [x] **テスト** — 17/17 PASS ✅
+- [x] **ベンチマーク確認** — UI 3.20x、Photo 0.78x（既存レンジ維持）
+- [x] **コミット** — f294bd2
+
+**検証結果**:
+```
+VSCode lossless 内訳（52.9KB）:
+  block_types: 27.92% ← 最大
+  palette:     26.00%
+  copy:        21.31%
+  filter_lo:    9.58%
+  filter_hi:    8.67%
+```
+
+**次**: Phase 9f（P0検証・最適化、または P1準備）
 **目標**: P0の低リスク施策を実装し、互換を維持したまま圧縮改善の土台を追加
 
 - [x] **Bit Accounting 追加** — `bench/bench_bit_accounting.cpp`
@@ -373,6 +395,172 @@ NyANS-P（Parallel Interleaved rANS + P-Index）を中核エントロピーエ�
   - `ctest`: 17/17 PASS
   - `bench_png_compare`: 既存レンジ維持（UI 3.20x, Photo 0.78x）
 
-**次の実装候補（P0残タスク）**:
-- [ ] P-Index密度オート（メタ比率 1〜2% ガード）
-- [ ] lossless mode 判定の本格 bit-estimation（ablation前提）
+---
+
+### Phase 9f: Band-group CDF実装とチューニング ✅ 完了 (2026-02-11)
+**目標**: AC係数をband別に分割してrANS CDFを独立化し、圧縮率を改善
+
+- [x] **Band-group CDF実装** — `src/codec/band_groups.h` 追加
+  - DC/LOW(1-15)/MID(16-35)/HIGH(36-63) の4バンドに分割
+  - 各バンドで独立したCDFを使用（`encode_band_group_rans()`）
+  - CMakeパラメータ化（`HAKONYANS_BAND_LOW_END`, `HAKONYANS_BAND_MID_END`）
+- [x] **総当たりチューナー実装** — `tools/tune_band_groups.py`
+  - 境界パラメータの全候補探索（117候補）
+  - Pass1（粗い探索）+ Pass2（上位候補の精密測定）
+  - チェックポイント/再開機能（`--resume`）
+  - 実行時間: 951.9秒（約16分）
+- [x] **最適パラメータ決定** — tuning結果
+  - **推奨値**: `low=24, mid=43`
+  - **baseline (15,31)** → 630193 bytes, 19.33ms
+  - **best (24,43)** → 628331 bytes, 20.19ms
+  - **改善**: サイズ -0.30%, decode +4.45%（許容範囲内）
+- [x] **後方互換性** — `version_minor=2` でband-group CDF有効化
+- [x] **検証** — 17/17 PASS ✅
+- [x] **コミット** — 6358323, 9a1c0f8, a43f79a
+
+---
+
+### Phase 9g: P-Index密度自動最適化 ✅ 完了 (2026-02-11)
+**目標**: P-Index（並列分割メタデータ）の密度を自動最適化し、メタ比率1〜2%以内に抑える
+
+- [x] **動的P-Index間隔計算** — `calculate_pindex_interval()`
+  - トークン数と実ストリームサイズから最適間隔を算出
+  - 目標メタ比率: 品質に応じて1〜2%
+  - 間隔クランプ: 64〜4096（8アライン）
+- [x] **Band-group P-Index対応** — band AC (low/mid/high) ごとに動的P-Index生成
+  - Tile v3 pindexスロットにband用blob格納
+  - デコーダで並列decode対応（`decode_stream_parallel()`）
+  - 小さいbandストリームは閾値でP-Index抑制
+- [x] **Bit Accounting拡張** — P-Index測定追加
+  - `PINDEX <bytes> (<percent>%)`
+  - `pindex_cps` (checkpoint数推定) 表示
+- [x] **検証結果**:
+  - ctest: 17/17 PASS ✅
+  - Q50: PINDEX 8476 bytes (1.33%) ✅
+  - Q75: PINDEX 14356 bytes (1.61%) ✅
+  - デコード速度: 約20ms維持
+- [x] **コミット** — dbec46f, a7d66bf, 3bf4e08
+
+**トレードオフ**:
+- Q50総サイズ: 630193 → 638669 (+1.34%)
+- メタ比率目標は達成、ただし圧縮率は微増
+
+---
+
+### Phase 9h: Lossless Mode決定最適化 ✅ 完了 (2026-02-11)
+**目標**: Losslessモード決定を「推定ビット最小化」に強化し、Copy/Palette/Filter選択を最適化
+
+- [x] **ビット推定関数追加** — `src/codec/encode.h`
+  - `estimate_copy_bits()` — Copy モードの推定（dx/dy可変ビット符号化）
+  - `estimate_palette_bits()` — Palette モードの推定（色数・マスク）
+  - `estimate_filter_bits()` — Filter モードの推定（非ゼロ係数エントロピー）
+- [x] **最適モード選択** — `encode_plane_lossless()`
+  - 固定優先順位（Copy→Palette→Filter）を廃止
+  - 推定ビット最小化による動的選択
+  - PaletteCodec private API依存を排除（ローカル推定関数に置換）
+- [x] **検証結果**:
+  - ctest: 17/17 PASS ✅
+  - ビルド成功（private API参照エラー修正済み）
+  - bench_png_compare: 既存と同等（実質差分なし）
+  - A/B比較: 3bf4e08 vs c141314 でサイズほぼ同等
+- [x] **コミット** — c141314
+
+**結果分析**:
+- サイズ改善は現時点で確認されず（推定式が保守的）
+- 次の最適化: モード選択統計の可視化と推定式の重み調整
+
+---
+
+### Phase 9h-2: Lossless Mode選択統計可視化 ✅ 完了 (2026-02-11)
+**目標**: モード選択の統計を可視化し、推定式のチューニング指針を取得
+
+- [x] **統計データ構造追加** — `src/codec/encode.h`
+  - `LosslessModeStats` 構造体（候補数/選択数/推定bits 集計用）
+  - 取得/リセットAPI（`get_lossless_mode_stats()`, `reset_lossless_mode_stats()`）
+
+- [x] **統計集計ロジック** — `encode_plane_lossless()`
+  - 各モード（Copy/Palette/Filter）の候補数をカウント
+  - 推定ビット数を記録
+  - 選択したモード（最小ビット）をカウント
+  - モード別選択率を計算
+
+- [x] **Bit Accounting統計表示** — `bench/bench_bit_accounting.cpp`
+  - `Mode Selection Stats:` セクション追加
+  - Copy/Palette/Filter の候補数・選択数・選択率を表示
+  - est_gain_vs_filter（Filter比ビット削減量）を表示
+
+- [x] **検証結果**:
+  - ctest: 17/17 PASS ✅
+  - UI (vscode.ppm, lossless):
+    ```
+    copy_candidates:    97112
+    copy_selected:      90111 (92.71%)
+    filter_selected:     3001 (3.09%)
+    palette_selected:     4000 (4.12%)
+    ```
+  - Photo (nature_01.ppm, lossless):
+    ```
+    copy_candidates:    97112
+    copy_selected:      47233 (48.59%)
+    filter_selected:    36142 (37.18%)
+    palette_selected:   13737 (14.15%)
+    ```
+
+- [x] **コミット** — 87df859
+
+**分析結果**:
+- **UI画像**: Copy優位（92.71%）— 繰り返しパターン多い
+- **Photo画像**: Copy vs Filter 競合（48.59% vs 37.18%）— 多様な構造
+- **推定式チューニング対象**: estimate_palette_bits() の係数（2色時が過小評価？）
+
+**次ステップ**:
+1. 統計を使って estimate_palette_bits() の係数（特に2色時）をチューニング
+2. カテゴリ別（UI/Anime/Photo）で est_gain_vs_filter を集計して閾値を再設定
+
+---
+
+### Phase 9h-3: Photo限定モードバイアス適用 ✅ 完了 (2026-02-11)
+**目標**: Photo系で確認された -5% 改善を取り込みつつ、UI回帰を防ぐ
+
+- [x] **Photo判定の導入** — `is_photo_like_lossless_profile()` を追加
+  - Y平面のサンプル8x8ブロックで Copy-hit 率を測定
+  - `copy_hit_rate < 0.80` を Photo-like と判定
+- [x] **P0バイアスを Photo-like 時のみ有効化**
+  - 残差0の推定コストを優遇（0.5bit相当）
+  - Copy推定に固定ペナルティ（+4bit相当）
+  - Mode Inertia（同一モード継続 -2bit相当）
+- [x] **適用経路**
+  - `encode_lossless()` / `encode_color_lossless()` で判定
+  - `encode_plane_lossless(..., use_photo_mode_bias)` に伝搬
+- [x] **検証**
+  - `ctest`: 17/17 PASS ✅
+  - `bench_png_compare`:
+    - `nature_01`: 982.0KB → 932.7KB (**-5.02%**)
+    - `nature_02`: 1082.4KB → 1019.0KB (**-5.86%**)
+    - UI（browser/vscode/terminal）: 既存レンジ維持（回帰なし）
+  - `bench_decode`: 19.5ms → 20.2ms（+3.6%、許容範囲）
+- [x] **コミット** — `bd0efa4`
+
+**開発過程メモ**:
+- グローバル適用版（Photo/UI共通）は Photo改善が出る一方で browser が悪化（21.5KB→25.4KB）し不採用。
+- 行フィルタ選択のコスト関数置換（|residual|合計→推定bits）も効果が薄く不採用。
+- 最終的に「Photo-like プロファイル時のみ有効化」に収束。
+
+---
+
+## Phase 9 P0 完了状況 🎉
+
+```
+✅ Phase 9e: Bit Accounting + Chroma量子化分離 + 3テーブルQMAT
+✅ Phase 9f: Band-group CDF（-0.30% サイズ改善）
+✅ Phase 9g: P-Index密度オート（メタ比率1〜2%達成）
+✅ Phase 9h: Lossless Mode決定最適化（推定ビット最小化）
+✅ Phase 9h-2: モード選択統計可視化（チューニング指針取得）
+✅ Phase 9h-3: Photo限定モードバイアス適用（Photo -5%）
+
+Phase 9 P0（コア4項目）+ チューニング2項目 完了！🏆
+```
+
+**次の実装候補**:
+- [ ] Phase 9h-2: モード選択統計可視化（bench_bit_accounting拡張）
+- [ ] Phase 9 P1: MED predictor / CfL / Tile Match/LZ

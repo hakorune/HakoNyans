@@ -12,16 +12,54 @@
 
 ## 実装ステータス（2026-02-11）
 
+### Phase 9 P0（互換/速度リスク最小）✅ 完了
+
 - ✅ `Bit Accounting` 実装済み（`bench/bench_bit_accounting.cpp`）
 - ✅ `Lossy 量子化刷新 + クロマQ分離` 実装済み
   - `QMAT` は 3テーブル対応（Y/Cb/Cr）
   - デコーダは旧1テーブル形式も後方互換で読める
-- ✅ `Lossless mode判定` は安全側の基盤整理まで実装済み
-  - Copy / Palette / Filter の候補抽出と明示的分岐を導入
-  - 既存ベンチ圧縮率レンジを維持
-- ⏳ 未着手（P0残）
-  - P-Index密度オート（メタ比率制御）
-  - mode選択の本格 bit-estimation + ablation チューニング
+- ✅ `Band-group CDF` 実装済み（`src/codec/band_groups.h`）
+  - AC係数を DC/LOW/MID/HIGH の4バンドに分割
+  - 各バンド独立CDFでrANS符号化
+  - チューニング結果: `(24,43)` で -0.30% サイズ改善、decode +4.45%（許容範囲）
+  - 総当たりtuner実装済み（`tools/tune_band_groups.py`）
+- ✅ `P-Index密度オート` 実装済み（メタ比率制御）
+  - 動的P-Index間隔計算（`calculate_pindex_interval()`）
+  - Band-group P-Index対応（low/mid/high 各ストリーム）
+  - メタ比率: Q50 1.33%, Q75 1.61%（目標1〜2%達成）
+  - トレードオフ: Q50総サイズ +1.34%（メタ比率優先）
+- ✅ `Lossless Mode決定最適化` 実装済み
+  - 推定ビット最小化による動的モード選択
+  - `estimate_copy_bits()`, `estimate_palette_bits()`, `estimate_filter_bits()`
+  - 固定優先順位を廃止、ビット推定で最適モード選択
+  - モード選択テレメトリ追加（候補数/選択率/候補平均bits 可視化）
+  - Photo限定バイアス適用（copy-hit率ベース判定）
+  - 実測: Photo `nature_01` -5.02%、`nature_02` -5.86%、UI回帰なし
+  - デコード影響: +3.6%（20ms帯維持、許容範囲）
+
+### Phase 9 P1（圧縮率をさらに伸ばす）⏳ 未着手
+
+- ⏳ MED predictor（JPEG-LS系）追加
+- ⏳ CfL（Chroma from Luma）導入
+- ⏳ タイル内 match/LZ 系トークン導入
+- ⏳ 可逆色変換の拡張（YCoCg-R 固定から）
+
+## 直近の開発過程（9h-2 / 9h-3）
+
+### 9h-2: 観測強化
+- `bench_bit_accounting` に mode telemetry を追加
+  - `copy_candidates / palette_candidates / selected比率`
+  - `est_copy_bits_sum / est_palette_bits_sum`（候補平均bits）
+- 目的: 推定式のズレ（推定bits vs 実stream bytes）を可視化し、改善対象を特定
+
+### 9h-3: 条件付き適用へ転換
+- グローバル適用版（0.5bit化 + Copy penalty + Mode inertia）は Photo改善が大きい一方で UI回帰が発生
+- そのため、Photo-like時のみ有効化するゲートを導入
+  - 判定指標: Y平面サンプル8x8の exact Copy-hit率
+  - しきい値: `copy_hit_rate < 0.80`
+- 効果: Photoで -5%級の改善を維持しつつ、UIレンジは維持
+
+
 
 ## A. 施策一覧（優先度順）
 
