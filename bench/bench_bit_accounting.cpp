@@ -308,6 +308,62 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
         print_loss_bits("tile4_loss_bits_sum", s.est_tile4_loss_bits_sum, tile4_rejected);
         print_loss_bits("copy_loss_bits_sum", s.est_copy_loss_bits_sum, copy_rejected);
         print_loss_bits("palette_loss_bits_sum", s.est_palette_loss_bits_sum, palette_rejected);
+
+        double bt_bpb = (s.total_blocks > 0)
+            ? (8.0 * (double)s.block_types_bytes_sum / (double)s.total_blocks) : 0.0;
+        double pal_bpb = (s.palette_selected > 0)
+            ? (8.0 * (double)s.palette_stream_bytes_sum / (double)s.palette_selected) : 0.0;
+        double tile4_bpb = (s.tile4_selected > 0)
+            ? (8.0 * (double)s.tile4_stream_bytes_sum / (double)s.tile4_selected) : 0.0;
+        std::cout << "\n  Encoded stream cost\n";
+        std::cout << "  block_types_bytes      " << s.block_types_bytes_sum
+                  << " (avg " << std::fixed << std::setprecision(2) << bt_bpb << " bits/block)\n";
+        if (s.block_type_runs_sum > 0) {
+            double avg_run = (double)s.total_blocks / (double)s.block_type_runs_sum;
+            std::cout << "  block_type_runs        " << s.block_type_runs_sum
+                      << " (avg run " << std::fixed << std::setprecision(2) << avg_run << ")\n";
+            std::cout << "    runs_short(<=2)      " << s.block_type_short_runs << "\n";
+            std::cout << "    runs_long(>=16)      " << s.block_type_long_runs << "\n";
+            std::cout << "    runs_dct/pal/cpy/t4  "
+                      << s.block_type_runs_dct << "/"
+                      << s.block_type_runs_palette << "/"
+                      << s.block_type_runs_copy << "/"
+                      << s.block_type_runs_tile4 << "\n";
+        }
+        std::cout << "  palette_stream_bytes   " << s.palette_stream_bytes_sum
+                  << " (avg " << std::fixed << std::setprecision(2) << pal_bpb << " bits/palette-block)\n";
+        std::cout << "  tile4_stream_bytes     " << s.tile4_stream_bytes_sum
+                  << " (avg " << std::fixed << std::setprecision(2) << tile4_bpb << " bits/tile4-block)\n";
+
+        std::cout << "\n  Copy stream diagnostics\n";
+        std::cout << "  copy_stream_count      " << s.copy_stream_count << "\n";
+        std::cout << "  copy_stream_mode0/1/2  "
+                  << s.copy_stream_mode0 << "/"
+                  << s.copy_stream_mode1 << "/"
+                  << s.copy_stream_mode2 << "\n";
+        std::cout << "  copy_ops_total         " << s.copy_ops_total << "\n";
+        if (s.copy_ops_total > 0) {
+            double small_pct = 100.0 * (double)s.copy_ops_small / (double)s.copy_ops_total;
+            std::cout << "    small/raw ops        " << s.copy_ops_small << "/" << s.copy_ops_raw
+                      << " (" << std::fixed << std::setprecision(2) << small_pct << "% small)\n";
+        }
+        if (s.copy_stream_count > 0) {
+            double avg_bytes_stream = (double)s.copy_stream_bytes_sum / (double)s.copy_stream_count;
+            std::cout << "  copy_stream_bytes      " << s.copy_stream_bytes_sum
+                      << " (avg " << std::fixed << std::setprecision(2) << avg_bytes_stream << " B/stream)\n";
+        }
+        if (s.copy_ops_total > 0) {
+            double bits_per_copy = 8.0 * (double)s.copy_stream_bytes_sum / (double)s.copy_ops_total;
+            std::cout << "  copy_effective_bits    "
+                      << std::fixed << std::setprecision(2) << bits_per_copy << " bits/copy-op\n";
+        }
+        std::cout << "  copy_payload_bits      " << s.copy_stream_payload_bits_sum << "\n";
+        std::cout << "  copy_overhead_bits     " << s.copy_stream_overhead_bits_sum << "\n";
+        if (s.copy_stream_mode2 > 0) {
+            double avg_dyn_bits = (double)s.copy_mode2_dynamic_bits_sum / (double)s.copy_stream_mode2;
+            std::cout << "  mode2_zero_bit_streams " << s.copy_mode2_zero_bit_streams << "\n";
+            std::cout << "  mode2_avg_dyn_bits     " << std::fixed << std::setprecision(2) << avg_dyn_bits << "\n";
+        }
     }
 }
 

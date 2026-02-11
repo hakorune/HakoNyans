@@ -69,6 +69,32 @@ public:
         uint64_t est_tile4_loss_bits_sum;   // tile4 candidate blocks where tile4 lost
         uint64_t est_palette_loss_bits_sum; // palette candidate blocks where palette lost
 
+        // Encoded stream diagnostics (actual bytes/bits).
+        uint64_t block_types_bytes_sum;
+        uint64_t block_type_runs_sum;
+        uint64_t block_type_short_runs; // run length <= 2
+        uint64_t block_type_long_runs;  // run length >= 16
+        uint64_t block_type_runs_dct;
+        uint64_t block_type_runs_palette;
+        uint64_t block_type_runs_copy;
+        uint64_t block_type_runs_tile4;
+
+        uint64_t palette_stream_bytes_sum;
+
+        uint64_t copy_stream_count;
+        uint64_t copy_stream_mode0;
+        uint64_t copy_stream_mode1;
+        uint64_t copy_stream_mode2;
+        uint64_t copy_stream_bytes_sum;
+        uint64_t copy_stream_payload_bits_sum;
+        uint64_t copy_stream_overhead_bits_sum;
+        uint64_t copy_ops_total;
+        uint64_t copy_ops_small;
+        uint64_t copy_ops_raw;
+        uint64_t copy_mode2_zero_bit_streams;
+        uint64_t copy_mode2_dynamic_bits_sum;
+        uint64_t tile4_stream_bytes_sum;
+
         LosslessModeDebugStats() { reset(); }
 
         void reset() {
@@ -99,6 +125,28 @@ public:
             est_copy_loss_bits_sum = 0;
             est_tile4_loss_bits_sum = 0;
             est_palette_loss_bits_sum = 0;
+            block_types_bytes_sum = 0;
+            block_type_runs_sum = 0;
+            block_type_short_runs = 0;
+            block_type_long_runs = 0;
+            block_type_runs_dct = 0;
+            block_type_runs_palette = 0;
+            block_type_runs_copy = 0;
+            block_type_runs_tile4 = 0;
+            palette_stream_bytes_sum = 0;
+            copy_stream_count = 0;
+            copy_stream_mode0 = 0;
+            copy_stream_mode1 = 0;
+            copy_stream_mode2 = 0;
+            copy_stream_bytes_sum = 0;
+            copy_stream_payload_bits_sum = 0;
+            copy_stream_overhead_bits_sum = 0;
+            copy_ops_total = 0;
+            copy_ops_small = 0;
+            copy_ops_raw = 0;
+            copy_mode2_zero_bit_streams = 0;
+            copy_mode2_dynamic_bits_sum = 0;
+            tile4_stream_bytes_sum = 0;
         }
     };
 
@@ -1308,6 +1356,62 @@ public:
         for (const auto& res : tile4_results) {
             tile4_data.push_back((uint8_t)((res.indices[1] << 4) | (res.indices[0] & 0x0F)));
             tile4_data.push_back((uint8_t)((res.indices[3] << 4) | (res.indices[2] & 0x0F)));
+        }
+
+        // Stream-level diagnostics for lossless mode decision tuning.
+        {
+            auto& s = tl_lossless_mode_debug_stats_;
+            s.block_types_bytes_sum += bt_data.size();
+            s.palette_stream_bytes_sum += pal_data.size();
+            s.tile4_stream_bytes_sum += tile4_data.size();
+
+            for (uint8_t v : bt_data) {
+                int run = ((v >> 2) & 0x3F) + 1;
+                uint8_t type = (v & 0x03);
+                s.block_type_runs_sum++;
+                if (run <= 2) s.block_type_short_runs++;
+                if (run >= 16) s.block_type_long_runs++;
+                switch (type) {
+                    case 0: s.block_type_runs_dct++; break;
+                    case 1: s.block_type_runs_palette++; break;
+                    case 2: s.block_type_runs_copy++; break;
+                    case 3: s.block_type_runs_tile4++; break;
+                    default: break;
+                }
+            }
+
+            s.copy_stream_bytes_sum += cpy_data.size();
+            s.copy_ops_total += copy_ops.size();
+            for (const auto& cp : copy_ops) {
+                if (CopyCodec::small_vector_index(cp) >= 0) s.copy_ops_small++;
+                else s.copy_ops_raw++;
+            }
+
+            if (!copy_ops.empty() && !cpy_data.empty()) {
+                s.copy_stream_count++;
+                uint8_t mode = cpy_data[0];
+                uint64_t payload_bits = 0;
+                if (mode == 0) {
+                    s.copy_stream_mode0++;
+                    payload_bits = (uint64_t)copy_ops.size() * 32ull;
+                } else if (mode == 1) {
+                    s.copy_stream_mode1++;
+                    payload_bits = (uint64_t)copy_ops.size() * 2ull;
+                } else if (mode == 2) {
+                    s.copy_stream_mode2++;
+                    if (cpy_data.size() >= 2) {
+                        uint8_t used_mask = cpy_data[1];
+                        int used_count = CopyCodec::popcount4(used_mask);
+                        int bits_dyn = CopyCodec::small_vector_bits(used_count);
+                        if (bits_dyn == 0) s.copy_mode2_zero_bit_streams++;
+                        s.copy_mode2_dynamic_bits_sum += (uint64_t)bits_dyn;
+                        payload_bits = (uint64_t)copy_ops.size() * (uint64_t)std::max(0, bits_dyn);
+                    }
+                }
+                uint64_t stream_bits = (uint64_t)cpy_data.size() * 8ull;
+                s.copy_stream_payload_bits_sum += payload_bits;
+                s.copy_stream_overhead_bits_sum += (stream_bits > payload_bits) ? (stream_bits - payload_bits) : 0ull;
+            }
         }
 
         // --- Step 5: Pack tile data (32-byte header) ---
