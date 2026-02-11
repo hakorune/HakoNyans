@@ -1371,7 +1371,9 @@ public:
 
         // --- Step 4: Encode block types, palette, copy, tile4 ---
         std::vector<uint8_t> bt_data = encode_block_types(block_types, true);
-        std::vector<uint8_t> pal_data = PaletteCodec::encode_palette_stream(palettes, palette_indices);
+        std::vector<uint8_t> pal_data = PaletteCodec::encode_palette_stream(
+            palettes, palette_indices, true
+        );
         if (!pal_data.empty()) {
             // Optional compact envelope for palette stream:
             // [0xA7][mode=1][raw_count:u32][encoded_raw_palette_stream]

@@ -81,6 +81,42 @@ void test_palette_codec() {
     std::cout << "  [PASS] Encode/Decode stream" << std::endl;
 }
 
+void test_palette_codec_v3_dict() {
+    std::cout << "Testing Palette Codec v3 dictionary..." << std::endl;
+
+    std::vector<Palette> palettes;
+    std::vector<std::vector<uint8_t>> indices;
+
+    Palette pa; pa.size = 4; pa.colors[0] = 10; pa.colors[1] = 20; pa.colors[2] = 30; pa.colors[3] = 40;
+    Palette pb; pb.size = 2; pb.colors[0] = 50; pb.colors[1] = 80;
+    Palette pc; pc.size = 4; pc.colors[0] = 1; pc.colors[1] = 2; pc.colors[2] = 3; pc.colors[3] = 4;
+
+    // Non-consecutive repeats of pa should benefit from dictionary refs in v3.
+    palettes.push_back(pa); indices.push_back(std::vector<uint8_t>(64, 0));
+    palettes.push_back(pb); indices.push_back(std::vector<uint8_t>(64, 1));
+    palettes.push_back(pa); indices.push_back(std::vector<uint8_t>(64, 2));
+    palettes.push_back(pc); indices.push_back(std::vector<uint8_t>(64, 3));
+    palettes.push_back(pa); indices.push_back(std::vector<uint8_t>(64, 1));
+
+    auto stream = PaletteCodec::encode_palette_stream(palettes, indices, true);
+    assert(!stream.empty());
+    assert(stream[0] == 0x41);  // v3 magic
+
+    std::vector<Palette> dec_pal;
+    std::vector<std::vector<uint8_t>> dec_ind;
+    PaletteCodec::decode_palette_stream(stream.data(), stream.size(), dec_pal, dec_ind, (int)palettes.size());
+
+    assert(dec_pal.size() == palettes.size());
+    assert(dec_ind.size() == indices.size());
+    for (size_t i = 0; i < palettes.size(); i++) {
+        assert(dec_pal[i] == palettes[i]);
+        assert(dec_ind[i].size() == 64);
+        assert(dec_ind[i][0] == indices[i][0]);
+    }
+
+    std::cout << "  [PASS] v3 dictionary stream roundtrip" << std::endl;
+}
+
 void test_integration() {
     std::cout << "Testing Integration (Encode -> Decode)..." << std::endl;
     
@@ -115,6 +151,7 @@ int main() {
     try {
         test_palette_extraction();
         test_palette_codec();
+        test_palette_codec_v3_dict();
         // test_integration(); // skipped for now until we expose a way to force palette
         std::cout << "All Step 2 tests passed!" << std::endl;
         return 0;
