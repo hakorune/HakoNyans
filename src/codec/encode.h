@@ -36,6 +36,50 @@ namespace hakonyans {
 
 class GrayscaleEncoder {
 public:
+    struct LosslessModeDebugStats {
+        uint64_t total_blocks;
+        uint64_t copy_candidates;
+        uint64_t palette_candidates;
+        uint64_t copy_palette_overlap;
+
+        uint64_t copy_selected;
+        uint64_t palette_selected;
+        uint64_t filter_selected;
+
+        uint64_t est_copy_bits_sum;      // candidate blocks only
+        uint64_t est_palette_bits_sum;   // candidate blocks only
+        uint64_t est_filter_bits_sum;    // all blocks
+        uint64_t est_selected_bits_sum;  // chosen mode only
+
+        LosslessModeDebugStats() { reset(); }
+
+        void reset() {
+            total_blocks = 0;
+            copy_candidates = 0;
+            palette_candidates = 0;
+            copy_palette_overlap = 0;
+            copy_selected = 0;
+            palette_selected = 0;
+            filter_selected = 0;
+            est_copy_bits_sum = 0;
+            est_palette_bits_sum = 0;
+            est_filter_bits_sum = 0;
+            est_selected_bits_sum = 0;
+        }
+    };
+
+    static void reset_lossless_mode_debug_stats() {
+        tl_lossless_mode_debug_stats_.reset();
+    }
+
+    static LosslessModeDebugStats get_lossless_mode_debug_stats() {
+        return tl_lossless_mode_debug_stats_;
+    }
+
+private:
+    inline static thread_local LosslessModeDebugStats tl_lossless_mode_debug_stats_;
+
+public:
     static std::vector<uint8_t> encode(const uint8_t* pixels, uint32_t width, uint32_t height, uint8_t quality = 75) {
         FileHeader header; header.width = width; header.height = height; header.bit_depth = 8;
         header.num_channels = 1; header.colorspace = 2; header.subsampling = 0;
@@ -470,6 +514,8 @@ public:
      * Encode a grayscale image losslessly.
      */
     static std::vector<uint8_t> encode_lossless(const uint8_t* pixels, uint32_t width, uint32_t height) {
+        reset_lossless_mode_debug_stats();
+
         FileHeader header;
         header.width = width; header.height = height;
         header.bit_depth = 8; header.num_channels = 1;
@@ -506,6 +552,8 @@ public:
      * Encode a color image losslessly using YCoCg-R.
      */
     static std::vector<uint8_t> encode_color_lossless(const uint8_t* rgb_data, uint32_t width, uint32_t height) {
+        reset_lossless_mode_debug_stats();
+
         // RGB -> YCoCg-R
         std::vector<int16_t> y_plane(width * height);
         std::vector<int16_t> co_plane(width * height);
@@ -776,6 +824,19 @@ public:
                 palette_bits = estimate_palette_bits(palette_candidate, transitions);
             }
 
+            auto& mode_stats = tl_lossless_mode_debug_stats_;
+            mode_stats.total_blocks++;
+            mode_stats.est_filter_bits_sum += (uint64_t)filter_bits;
+            if (copy_found) {
+                mode_stats.copy_candidates++;
+                mode_stats.est_copy_bits_sum += (uint64_t)copy_bits;
+            }
+            if (palette_found) {
+                mode_stats.palette_candidates++;
+                mode_stats.est_palette_bits_sum += (uint64_t)palette_bits;
+            }
+            if (copy_found && palette_found) mode_stats.copy_palette_overlap++;
+
             FileHeader::BlockType best_mode = FileHeader::BlockType::DCT;
             if (copy_bits <= palette_bits && copy_bits <= filter_bits) {
                 best_mode = FileHeader::BlockType::COPY;
@@ -785,10 +846,17 @@ public:
 
             block_types[i] = best_mode;
             if (best_mode == FileHeader::BlockType::COPY) {
+                mode_stats.copy_selected++;
+                mode_stats.est_selected_bits_sum += (uint64_t)copy_bits;
                 copy_ops.push_back(copy_candidate);
             } else if (best_mode == FileHeader::BlockType::PALETTE) {
+                mode_stats.palette_selected++;
+                mode_stats.est_selected_bits_sum += (uint64_t)palette_bits;
                 palettes.push_back(palette_candidate);
                 palette_indices.push_back(std::move(palette_index_candidate));
+            } else {
+                mode_stats.filter_selected++;
+                mode_stats.est_selected_bits_sum += (uint64_t)filter_bits;
             }
             // Filter mode keeps default DCT tag.
         }

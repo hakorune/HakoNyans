@@ -208,6 +208,41 @@ static void print_accounting(const std::string& title, const Accounting& a, bool
     print_row("TOTAL", a.total_file, a.total_file);
 }
 
+static void print_mode_stat_row(const std::string& key, uint64_t value, uint64_t total) {
+    double pct = (total > 0) ? (100.0 * (double)value / (double)total) : 0.0;
+    std::cout << "  " << std::left << std::setw(20) << key
+              << std::right << std::setw(10) << value
+              << std::setw(10) << std::fixed << std::setprecision(2) << pct << "%\n";
+}
+
+static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugStats& s) {
+    std::cout << "\nMode Selection Stats (Lossless)\n";
+    std::cout << "----------------------------------------------\n";
+    std::cout << "  total_blocks           " << s.total_blocks << "\n";
+    print_mode_stat_row("copy_candidates", s.copy_candidates, s.total_blocks);
+    print_mode_stat_row("palette_candidates", s.palette_candidates, s.total_blocks);
+    print_mode_stat_row("copy_palette_overlap", s.copy_palette_overlap, s.total_blocks);
+    print_mode_stat_row("copy_selected", s.copy_selected, s.total_blocks);
+    print_mode_stat_row("palette_selected", s.palette_selected, s.total_blocks);
+    print_mode_stat_row("filter_selected", s.filter_selected, s.total_blocks);
+
+    if (s.total_blocks > 0) {
+        double selected_bpb = (double)s.est_selected_bits_sum / (double)s.total_blocks;
+        double filter_bpb = (double)s.est_filter_bits_sum / (double)s.total_blocks;
+        double gain_pct = (s.est_filter_bits_sum > 0)
+            ? (100.0 * ((double)s.est_filter_bits_sum - (double)s.est_selected_bits_sum) / (double)s.est_filter_bits_sum)
+            : 0.0;
+
+        std::cout << "  est_selected_bits      " << s.est_selected_bits_sum << "\n";
+        std::cout << "  est_filter_bits        " << s.est_filter_bits_sum << "\n";
+        std::cout << "  est_bits_per_block     "
+                  << std::fixed << std::setprecision(2)
+                  << selected_bpb << " (selected) / " << filter_bpb << " (filter-only)\n";
+        std::cout << "  est_gain_vs_filter     "
+                  << std::fixed << std::setprecision(2) << gain_pct << "%\n";
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         std::cerr << "Usage: " << argv[0] << " <image.ppm> [--quality Q] [--lossless] [--lossy]\n";
@@ -237,8 +272,10 @@ int main(int argc, char** argv) {
 
     if (do_lossless) {
         auto hkn = GrayscaleEncoder::encode_color_lossless(ppm.rgb_data.data(), ppm.width, ppm.height);
+        auto mode_stats = GrayscaleEncoder::get_lossless_mode_debug_stats();
         auto a = analyze_file(hkn);
         print_accounting("Lossless", a, true);
+        print_lossless_mode_stats(mode_stats);
     }
 
     if (do_lossy) {
