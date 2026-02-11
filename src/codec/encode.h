@@ -107,6 +107,9 @@ public:
         uint64_t copy_stream_mode1;
         uint64_t copy_stream_mode2;
         uint64_t copy_stream_mode3;
+        uint64_t copy_wrap_mode0;
+        uint64_t copy_wrap_mode1;
+        uint64_t copy_wrap_mode2;
         uint64_t copy_mode3_run_tokens_sum;
         uint64_t copy_mode3_runs_sum;
         uint64_t copy_mode3_long_runs;
@@ -120,6 +123,10 @@ public:
         uint64_t copy_ops_raw;
         uint64_t copy_mode2_zero_bit_streams;
         uint64_t copy_mode2_dynamic_bits_sum;
+        uint64_t tile4_stream_mode0;
+        uint64_t tile4_stream_mode1;
+        uint64_t tile4_stream_mode2;
+        uint64_t tile4_stream_raw_bytes_sum;
         uint64_t tile4_stream_bytes_sum;
 
         // Phase 9n: filter stream wrapper telemetry
@@ -215,6 +222,9 @@ public:
             copy_stream_mode1 = 0;
             copy_stream_mode2 = 0;
             copy_stream_mode3 = 0;
+            copy_wrap_mode0 = 0;
+            copy_wrap_mode1 = 0;
+            copy_wrap_mode2 = 0;
             copy_mode3_run_tokens_sum = 0;
             copy_mode3_runs_sum = 0;
             copy_mode3_long_runs = 0;
@@ -228,6 +238,10 @@ public:
             copy_ops_raw = 0;
             copy_mode2_zero_bit_streams = 0;
             copy_mode2_dynamic_bits_sum = 0;
+            tile4_stream_mode0 = 0;
+            tile4_stream_mode1 = 0;
+            tile4_stream_mode2 = 0;
+            tile4_stream_raw_bytes_sum = 0;
             tile4_stream_bytes_sum = 0;
             filter_ids_mode0 = 0;
             filter_ids_mode1 = 0;
@@ -1218,7 +1232,7 @@ public:
         return 3;
     }
 
-    static int estimate_palette_bits(const Palette& p, int transitions) {
+    static int estimate_palette_bits(const Palette& p, int transitions, bool use_photo_mode_bias) {
         if (p.size == 0) return std::numeric_limits<int>::max();
         int bits2 = 4;   // block_type (2 bits * 2)
         bits2 += 16;     // per-block palette header (8 bits * 2)
@@ -1229,11 +1243,22 @@ public:
             // 2-color blocks are mask-based in PaletteCodec.
             // Lower transitions usually compress better via dictionary reuse.
             bits2 += (transitions <= 24) ? 48 : 128; // (24/64 bits * 2)
+            if (!use_photo_mode_bias && transitions <= 16) bits2 -= 16; // screen bias
             return bits2;
         }
 
         int bits_per_index = estimate_palette_index_bits_per_pixel((int)p.size);
         bits2 += 64 * bits_per_index * 2;
+        if (!use_photo_mode_bias) {
+            // UI/Anime often have repeated local index patterns that the palette stream dictionary
+            // and wrappers compress better than this coarse estimate suggests.
+            if (transitions <= 16) bits2 -= 96;
+            else if (transitions <= 24) bits2 -= 64;
+            else if (transitions <= 32) bits2 -= 32;
+        } else {
+            // Keep photo mode conservative for >2-color palettes.
+            bits2 += (int)p.size * 8;
+        }
         return bits2;
     }
 
@@ -1287,6 +1312,139 @@ public:
             best_bits2 = std::min(best_bits2, bits2);
         }
         return best_bits2;
+    }
+
+    static int bits_for_symbol_count(int count) {
+        if (count <= 1) return 0;
+        int bits = 0;
+        int v = 1;
+        while (v < count) {
+            v <<= 1;
+            bits++;
+        }
+        return bits;
+    }
+
+    static std::vector<uint8_t> pack_index_bits(const std::vector<uint8_t>& indices, int bits) {
+        std::vector<uint8_t> out;
+        if (bits <= 0 || indices.empty()) return out;
+        out.reserve((indices.size() * (size_t)bits + 7) / 8);
+        uint64_t acc = 0;
+        int acc_bits = 0;
+        const uint32_t mask = (1u << bits) - 1u;
+        for (uint8_t idx : indices) {
+            acc |= (uint64_t)((uint32_t)idx & mask) << acc_bits;
+            acc_bits += bits;
+            while (acc_bits >= 8) {
+                out.push_back((uint8_t)(acc & 0xFFu));
+                acc >>= 8;
+                acc_bits -= 8;
+            }
+        }
+        if (acc_bits > 0) out.push_back((uint8_t)(acc & 0xFFu));
+        return out;
+    }
+
+    // Screen-profile v1 candidate:
+    // [0xAD][mode:u8][bits:u8][reserved:u8][palette_count:u16][pixel_count:u32][raw_packed_size:u32]
+    // [palette:int16 * palette_count][payload]
+    // mode=0: raw packed index bytes, mode=1: rANS(payload), mode=2: LZ(payload)
+    static std::vector<uint8_t> encode_plane_lossless_screen_indexed_tile(
+        const int16_t* plane, uint32_t width, uint32_t height
+    ) {
+        if (!plane || width == 0 || height == 0) return {};
+        uint32_t pad_w = ((width + 7) / 8) * 8;
+        uint32_t pad_h = ((height + 7) / 8) * 8;
+        const uint32_t pixel_count = pad_w * pad_h;
+        if (pixel_count == 0) return {};
+
+        std::unordered_map<int16_t, uint32_t> freq;
+        freq.reserve(128);
+        for (uint32_t y = 0; y < pad_h; y++) {
+            uint32_t sy = std::min(y, height - 1);
+            for (uint32_t x = 0; x < pad_w; x++) {
+                uint32_t sx = std::min(x, width - 1);
+                int16_t v = plane[sy * width + sx];
+                freq[v]++;
+                if (freq.size() > 64) return {};
+            }
+        }
+        if (freq.empty()) return {};
+
+        std::vector<std::pair<int16_t, uint32_t>> freq_pairs(freq.begin(), freq.end());
+        std::sort(freq_pairs.begin(), freq_pairs.end(), [](const auto& a, const auto& b) {
+            if (a.second != b.second) return a.second > b.second;
+            return a.first < b.first;
+        });
+        if (freq_pairs.size() > 64) return {};
+
+        std::vector<int16_t> palette_vals;
+        palette_vals.reserve(freq_pairs.size());
+        std::unordered_map<int16_t, uint8_t> val_to_idx;
+        val_to_idx.reserve(freq_pairs.size() * 2);
+        for (size_t i = 0; i < freq_pairs.size(); i++) {
+            palette_vals.push_back(freq_pairs[i].first);
+            val_to_idx[freq_pairs[i].first] = (uint8_t)i;
+        }
+
+        const int bits_per_index = bits_for_symbol_count((int)palette_vals.size());
+        std::vector<uint8_t> indices;
+        indices.reserve(pixel_count);
+        for (uint32_t y = 0; y < pad_h; y++) {
+            uint32_t sy = std::min(y, height - 1);
+            for (uint32_t x = 0; x < pad_w; x++) {
+                uint32_t sx = std::min(x, width - 1);
+                int16_t v = plane[sy * width + sx];
+                auto it = val_to_idx.find(v);
+                if (it == val_to_idx.end()) return {};
+                indices.push_back(it->second);
+            }
+        }
+
+        auto packed = pack_index_bits(indices, bits_per_index);
+        std::vector<uint8_t> payload = packed;
+        uint8_t mode = 0;
+
+        if (!packed.empty()) {
+            auto packed_rans = encode_byte_stream(packed);
+            if (!packed_rans.empty() && packed_rans.size() < payload.size()) {
+                payload = std::move(packed_rans);
+                mode = 1;
+            }
+
+            auto packed_lz = TileLZ::compress(packed);
+            if (!packed_lz.empty() && packed_lz.size() < payload.size()) {
+                payload = std::move(packed_lz);
+                mode = 2;
+            }
+        }
+
+        std::vector<uint8_t> out;
+        out.reserve(14 + palette_vals.size() * 2 + payload.size());
+        out.push_back(FileHeader::WRAPPER_MAGIC_SCREEN_INDEXED);
+        out.push_back(mode);
+        out.push_back((uint8_t)bits_per_index);
+        out.push_back(0);
+        uint16_t pcount = (uint16_t)palette_vals.size();
+        out.push_back((uint8_t)(pcount & 0xFF));
+        out.push_back((uint8_t)((pcount >> 8) & 0xFF));
+        out.push_back((uint8_t)(pixel_count & 0xFF));
+        out.push_back((uint8_t)((pixel_count >> 8) & 0xFF));
+        out.push_back((uint8_t)((pixel_count >> 16) & 0xFF));
+        out.push_back((uint8_t)((pixel_count >> 24) & 0xFF));
+        uint32_t raw_packed_size = (uint32_t)packed.size();
+        out.push_back((uint8_t)(raw_packed_size & 0xFF));
+        out.push_back((uint8_t)((raw_packed_size >> 8) & 0xFF));
+        out.push_back((uint8_t)((raw_packed_size >> 16) & 0xFF));
+        out.push_back((uint8_t)((raw_packed_size >> 24) & 0xFF));
+
+        for (int16_t v : palette_vals) {
+            uint16_t uv = (uint16_t)v;
+            out.push_back((uint8_t)(uv & 0xFF));
+            out.push_back((uint8_t)((uv >> 8) & 0xFF));
+        }
+        out.insert(out.end(), payload.begin(), payload.end());
+        return out;
     }
 
     /**
@@ -1344,6 +1502,12 @@ public:
             int palette_transition_limit = 63;
             int64_t palette_variance_limit = 1040384;
         } mode_params;
+        if (!use_photo_mode_bias) {
+            // Screen-like profile: allow richer local palettes.
+            mode_params.palette_max_colors = 8;
+            mode_params.palette_transition_limit = 58;
+            mode_params.palette_variance_limit = 2621440;
+        }
 
         FileHeader::BlockType prev_mode = FileHeader::BlockType::DCT;
 
@@ -1485,7 +1649,9 @@ public:
                 copy_bits2 = estimate_copy_bits(copy_candidate, (int)pad_w, use_photo_mode_bias);
             }
             if (palette_found) {
-                palette_bits2 = estimate_palette_bits(palette_candidate, transitions);
+                palette_bits2 = estimate_palette_bits(
+                    palette_candidate, transitions, use_photo_mode_bias
+                );
             }
 
             if (use_photo_mode_bias) {
@@ -1966,13 +2132,16 @@ public:
         std::vector<uint8_t> pal_data = pal_raw;
         accumulate_palette_stream_diagnostics(pal_raw, tl_lossless_mode_debug_stats_);
         if (!pal_data.empty()) {
-            // Optional compact envelope for palette stream:
-            // [0xA7][mode=1][raw_count:u32][encoded_raw_palette_stream]
+            // Optional wrappers:
+            // [0xA7][mode=1][raw_count:u32][rANS payload]
+            // [0xA7][mode=2][raw_count:u32][LZ payload]
+            const size_t raw_size = pal_data.size();
+
             auto encoded_pal = encode_byte_stream(pal_data);
             if (!encoded_pal.empty()) {
                 std::vector<uint8_t> compact_pal;
                 compact_pal.reserve(1 + 1 + 4 + encoded_pal.size());
-                compact_pal.push_back(0xA7);
+                compact_pal.push_back(FileHeader::WRAPPER_MAGIC_PALETTE);
                 compact_pal.push_back(1);
                 uint32_t raw_count = (uint32_t)pal_data.size();
                 compact_pal.resize(compact_pal.size() + 4);
@@ -1985,12 +2154,106 @@ public:
                     pal_data = std::move(compact_pal);
                 }
             }
+
+            auto lz_pal = TileLZ::compress(pal_raw);
+            if (!lz_pal.empty()) {
+                std::vector<uint8_t> lz_wrapped;
+                lz_wrapped.reserve(1 + 1 + 4 + lz_pal.size());
+                lz_wrapped.push_back(FileHeader::WRAPPER_MAGIC_PALETTE);
+                lz_wrapped.push_back(2);
+                uint32_t raw_count = (uint32_t)pal_raw.size();
+                lz_wrapped.resize(lz_wrapped.size() + 4);
+                std::memcpy(lz_wrapped.data() + 2, &raw_count, 4);
+                lz_wrapped.insert(lz_wrapped.end(), lz_pal.begin(), lz_pal.end());
+                if (lz_wrapped.size() < pal_data.size()) {
+                    tl_lossless_mode_debug_stats_.palette_lz_used_count++;
+                    tl_lossless_mode_debug_stats_.palette_lz_saved_bytes_sum +=
+                        (uint64_t)(raw_size - lz_wrapped.size());
+                    pal_data = std::move(lz_wrapped);
+                }
+            }
         }
-        std::vector<uint8_t> cpy_data = CopyCodec::encode_copy_stream(copy_ops);
-        std::vector<uint8_t> tile4_data;
+        std::vector<uint8_t> cpy_raw = CopyCodec::encode_copy_stream(copy_ops);
+        std::vector<uint8_t> cpy_data = cpy_raw;
+        int copy_wrapper_mode = 0; // 0=raw, 1=rANS wrapper, 2=LZ wrapper
+        if (!cpy_raw.empty()) {
+            auto cpy_rans = encode_byte_stream(cpy_raw);
+            if (!cpy_rans.empty()) {
+                std::vector<uint8_t> wrapped;
+                wrapped.reserve(1 + 1 + 4 + cpy_rans.size());
+                wrapped.push_back(FileHeader::WRAPPER_MAGIC_COPY);
+                wrapped.push_back(1);
+                uint32_t raw_count = (uint32_t)cpy_raw.size();
+                wrapped.resize(wrapped.size() + 4);
+                std::memcpy(wrapped.data() + 2, &raw_count, 4);
+                wrapped.insert(wrapped.end(), cpy_rans.begin(), cpy_rans.end());
+                if (wrapped.size() < cpy_data.size()) {
+                    cpy_data = std::move(wrapped);
+                    copy_wrapper_mode = 1;
+                }
+            }
+
+            auto cpy_lz = TileLZ::compress(cpy_raw);
+            if (!cpy_lz.empty()) {
+                std::vector<uint8_t> wrapped;
+                wrapped.reserve(1 + 1 + 4 + cpy_lz.size());
+                wrapped.push_back(FileHeader::WRAPPER_MAGIC_COPY);
+                wrapped.push_back(2);
+                uint32_t raw_count = (uint32_t)cpy_raw.size();
+                wrapped.resize(wrapped.size() + 4);
+                std::memcpy(wrapped.data() + 2, &raw_count, 4);
+                wrapped.insert(wrapped.end(), cpy_lz.begin(), cpy_lz.end());
+                if (wrapped.size() < cpy_data.size()) {
+                    cpy_data = std::move(wrapped);
+                    copy_wrapper_mode = 2;
+                }
+            }
+
+            if (copy_wrapper_mode == 2) {
+                tl_lossless_mode_debug_stats_.copy_lz_used_count++;
+                tl_lossless_mode_debug_stats_.copy_lz_saved_bytes_sum +=
+                    (uint64_t)(cpy_raw.size() - cpy_data.size());
+            }
+        }
+        std::vector<uint8_t> tile4_raw;
         for (const auto& res : tile4_results) {
-            tile4_data.push_back((uint8_t)((res.indices[1] << 4) | (res.indices[0] & 0x0F)));
-            tile4_data.push_back((uint8_t)((res.indices[3] << 4) | (res.indices[2] & 0x0F)));
+            tile4_raw.push_back((uint8_t)((res.indices[1] << 4) | (res.indices[0] & 0x0F)));
+            tile4_raw.push_back((uint8_t)((res.indices[3] << 4) | (res.indices[2] & 0x0F)));
+        }
+        std::vector<uint8_t> tile4_data = tile4_raw;
+        int tile4_mode = 0; // 0=raw, 1=rANS, 2=LZ
+        if (!tile4_raw.empty()) {
+            auto tile4_rans = encode_byte_stream(tile4_raw);
+            if (!tile4_rans.empty()) {
+                std::vector<uint8_t> wrapped;
+                wrapped.reserve(1 + 1 + 4 + tile4_rans.size());
+                wrapped.push_back(FileHeader::WRAPPER_MAGIC_TILE4);
+                wrapped.push_back(1);
+                uint32_t raw_count = (uint32_t)tile4_raw.size();
+                wrapped.resize(wrapped.size() + 4);
+                std::memcpy(wrapped.data() + 2, &raw_count, 4);
+                wrapped.insert(wrapped.end(), tile4_rans.begin(), tile4_rans.end());
+                if (wrapped.size() < tile4_data.size()) {
+                    tile4_data = std::move(wrapped);
+                    tile4_mode = 1;
+                }
+            }
+
+            auto tile4_lz = TileLZ::compress(tile4_raw);
+            if (!tile4_lz.empty()) {
+                std::vector<uint8_t> wrapped;
+                wrapped.reserve(1 + 1 + 4 + tile4_lz.size());
+                wrapped.push_back(FileHeader::WRAPPER_MAGIC_TILE4);
+                wrapped.push_back(2);
+                uint32_t raw_count = (uint32_t)tile4_raw.size();
+                wrapped.resize(wrapped.size() + 4);
+                std::memcpy(wrapped.data() + 2, &raw_count, 4);
+                wrapped.insert(wrapped.end(), tile4_lz.begin(), tile4_lz.end());
+                if (wrapped.size() < tile4_data.size()) {
+                    tile4_data = std::move(wrapped);
+                    tile4_mode = 2;
+                }
+            }
         }
 
         // Stream-level diagnostics for lossless mode decision tuning.
@@ -2021,10 +2284,15 @@ public:
                 if (CopyCodec::small_vector_index(cp) >= 0) s.copy_ops_small++;
                 else s.copy_ops_raw++;
             }
+            if (!copy_ops.empty()) {
+                if (copy_wrapper_mode == 1) s.copy_wrap_mode1++;
+                else if (copy_wrapper_mode == 2) s.copy_wrap_mode2++;
+                else s.copy_wrap_mode0++;
+            }
 
-            if (!copy_ops.empty() && !cpy_data.empty()) {
+            if (!copy_ops.empty() && !cpy_raw.empty()) {
                 s.copy_stream_count++;
-                uint8_t mode = cpy_data[0];
+                uint8_t mode = cpy_raw[0];
                 uint64_t payload_bits = 0;
                 if (mode == 0) {
                     s.copy_stream_mode0++;
@@ -2034,8 +2302,8 @@ public:
                     payload_bits = (uint64_t)copy_ops.size() * 2ull;
                 } else if (mode == 2) {
                     s.copy_stream_mode2++;
-                    if (cpy_data.size() >= 2) {
-                        uint8_t used_mask = cpy_data[1];
+                    if (cpy_raw.size() >= 2) {
+                        uint8_t used_mask = cpy_raw[1];
                         int used_count = CopyCodec::popcount4(used_mask);
                         int bits_dyn = CopyCodec::small_vector_bits(used_count);
                         if (bits_dyn == 0) s.copy_mode2_zero_bit_streams++;
@@ -2044,21 +2312,28 @@ public:
                     }
                 } else if (mode == 3) {
                     s.copy_stream_mode3++;
-                    if (cpy_data.size() >= 2) {
-                        size_t num_tokens = cpy_data.size() - 2; // header is 2 bytes
+                    if (cpy_raw.size() >= 2) {
+                        size_t num_tokens = cpy_raw.size() - 2; // header is 2 bytes
                         s.copy_mode3_run_tokens_sum += num_tokens;
                         // Parse tokens to count runs and long runs
-                        for (size_t ti = 2; ti < cpy_data.size(); ti++) {
-                            int run = (cpy_data[ti] & 0x3F) + 1;
+                        for (size_t ti = 2; ti < cpy_raw.size(); ti++) {
+                            int run = (cpy_raw[ti] & 0x3F) + 1;
                             s.copy_mode3_runs_sum += (uint64_t)run;
                             if (run >= 16) s.copy_mode3_long_runs++;
                         }
                     }
-                    payload_bits = (uint64_t)(cpy_data.size() - 2) * 8ull; // tokens are payload
+                    payload_bits = (uint64_t)(cpy_raw.size() - 2) * 8ull; // tokens are payload
                 }
                 uint64_t stream_bits = (uint64_t)cpy_data.size() * 8ull;
                 s.copy_stream_payload_bits_sum += payload_bits;
                 s.copy_stream_overhead_bits_sum += (stream_bits > payload_bits) ? (stream_bits - payload_bits) : 0ull;
+            }
+
+            s.tile4_stream_raw_bytes_sum += tile4_raw.size();
+            if (!tile4_raw.empty()) {
+                if (tile4_mode == 1) s.tile4_stream_mode1++;
+                else if (tile4_mode == 2) s.tile4_stream_mode2++;
+                else s.tile4_stream_mode0++;
             }
         }
 
@@ -2124,6 +2399,17 @@ public:
         if (!pal_data.empty()) tile_data.insert(tile_data.end(), pal_data.begin(), pal_data.end());
         if (!cpy_data.empty()) tile_data.insert(tile_data.end(), cpy_data.begin(), cpy_data.end());
         if (!tile4_data.empty()) tile_data.insert(tile_data.end(), tile4_data.begin(), tile4_data.end());
+
+        if (!use_photo_mode_bias && width * height >= 4096) {
+            auto screen_tile = encode_plane_lossless_screen_indexed_tile(data, width, height);
+            if (!screen_tile.empty()) {
+                uint64_t s = (uint64_t)screen_tile.size();
+                uint64_t b = (uint64_t)tile_data.size();
+                if (s * 100ull <= b * 98ull) {
+                    return screen_tile;
+                }
+            }
+        }
         return tile_data;
     }
 

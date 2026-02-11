@@ -593,10 +593,16 @@ Phase 9 P0（コア4項目）+ チューニング2項目 完了！🏆
 - [x] Phase 9p-2: Photo-aware gate（predictor modeの適用制御）✅ (2026-02-12)
 - [x] Phase 9p-3: filter_lo predictor telemetry + DoD検証 ✅ (2026-02-12)
   - 実装指示書: `docs/PHASE9P_FILTER_LO_ROW_PREDICTOR_INSTRUCTIONS.md`
-- [ ] Phase 9q-1: filter_lo context split mode（filter_id別サブストリーム）
-- [ ] Phase 9q-2: Photo-only gate + fallback（legacyとの最小選択）
-- [ ] Phase 9q-3: context split telemetry + DoD検証
+- [x] Phase 9q-1: filter_lo context split mode（filter_id別サブストリーム）✅ (2026-02-12)
+- [x] Phase 9q-2: Photo-only gate + fallback（legacyとの最小選択）✅ (2026-02-12)
+- [x] Phase 9q-3: context split telemetry + DoD検証 ✅ (2026-02-12)
   - 実装指示書: `docs/PHASE9Q_FILTER_LO_CONTEXT_SPLIT_INSTRUCTIONS.md`
+- [x] Phase 9r-1: tile4 stream wrapper（raw/rANS/LZ最小選択）✅ (2026-02-12)
+- [x] Phase 9r-2: palette stream wrapper（lossless経路でraw/rANS/LZ最小選択の統一）✅ (2026-02-12)
+- [x] Phase 9r-3: telemetry + DoD検証（UI/Anime中心）✅ (2026-02-12)
+- [x] Phase 9s-1: copy stream wrapper（raw/rANS/LZ最小選択）✅ (2026-02-12)
+- [x] Phase 9s-2: screen-profile v1（global palette + index map）設計/実装 ✅ (2026-02-12)
+- [ ] Phase 9s-3: UI/Anime 30枚ベンチで PNG 同等ライン検証
 
 ---
 
@@ -674,6 +680,81 @@ UI/Anime には有効だが、Photoでは `filter_lo` が依然支配的。次�
 
 **結論**:
 mode3は機能実装としては完了したが、Photoでは採用されず圧縮改善は未達。次は `filter_id` 文脈分割による `filter_lo` エントロピー低減へ進む。
+
+---
+
+### Phase 9r: Tile4/Palette wrapper 最適化 実装結果 ✅ (2026-02-12)
+
+**実装内容**:
+- `tile4 stream` に wrapper 形式を追加（`raw / rANS / LZ` の最小選択）
+- `palette stream`（lossless経路）を `raw / rANS / LZ` の最小選択に統一
+- `headers.h` に `WRAPPER_MAGIC_TILE4 (0xAC)` を追加、バージョンを `0x000D` に更新
+- `decode.h` に tile4 wrapper の復号対応（mode1=rANS, mode2=LZ）
+- `bench_bit_accounting` に `tile4_raw_bytes`, `tile4_stream_mode0/1/2` を追加
+
+**検証結果**:
+- `ctest`: **17/17 PASS**
+- `bench_bit_accounting`:
+  - `vscode`: `tile4` **3504B -> 565B**（-83.9%）
+  - `vscode`: `palette` **6597B -> 1324B**（-79.9%）
+  - `anime_girl_portrait`: `tile4` **374B -> 290B**（-22.5%）
+  - `nature_01`: `tile4` **9010B -> 5417B**（-39.9%）
+- `bench_png_compare` カテゴリ平均:
+  - UI: **+37% -> +5%**（大幅改善）
+  - Anime: **+28% -> +27%**（微改善）
+  - Photo: **-32% 維持**
+
+**結論**:
+`tile4` の生ペイロードは主要ボトルネックの1つだった。低リスクの wrapper 圧縮で UI の差分を大きく縮小できた。次は `palette stream` の lossless 経路統一（9r-2）を実施。
+
+---
+
+### Phase 9s-1: Copy stream wrapper 最適化 実装結果 ✅ (2026-02-12)
+
+**実装内容**:
+- `copy stream` に wrapper 形式を追加（`raw / rANS / LZ` の最小選択）
+- `decode.h` を mode1=rANS / mode2=LZ の復号に対応
+- `bench_bit_accounting` に `copy_wrapper_mode0/1/2` を追加
+
+**検証結果**:
+- `ctest`: **17/17 PASS**
+- `bench_bit_accounting`:
+  - `vscode`: `copy` **8419B -> 770B**（-90.9%）
+  - `anime_girl_portrait`: `copy` **2830B -> 714B**（-74.8%）
+  - `nature_01`: `copy` **7647B -> 6957B**（-9.0%）
+- `bench_png_compare` カテゴリ平均:
+  - UI: **+5% -> -34%**（PNG比で逆転）
+  - Anime: **+27% -> +10%**（大幅改善）
+  - Game: **+20% -> -11%**（PNG比で逆転）
+  - Photo: **-32% 維持**
+- `bench_decode`: **287 MiB/s**（目標100 MiB/s超を維持）
+
+**結論**:
+copy payload は未圧縮部分が大きく、wrapper最小選択で一気に削減できた。`UI/Game` はカテゴリ平均で PNG 比優位に入った。次は `anime_sunset` など残る高難度ケースに対して `screen-profile v1` を進める。
+
+---
+
+### Phase 9s-2: Screen-profile v1（global palette + index map）✅ (2026-02-12)
+
+**実装内容**:
+- 新タイル形式 `WRAPPER_MAGIC_SCREEN_INDEXED (0xAD)` を追加
+  - 形式: global palette（`int16` 値）+ packed index map（raw/rANS/LZ最小選択）
+- `encode_plane_lossless()` に screen-indexed 候補生成と最小選択を追加（screen-likeかつサイズ優位時のみ採用）
+- `decode_plane_lossless()` に screen-indexed 復号を追加
+- `bench_bit_accounting` に `screen_index` 項目を追加
+- `tests/test_lossless_round2.cpp` に screen-indexed roundtrip テストを追加
+
+**検証結果**:
+- `ctest`: **17/17 PASS**
+- `bench_png_compare` カテゴリ平均:
+  - UI: **-35%**（PNGより小さい）
+  - Game: **-11%**（PNGより小さい）
+  - Anime: **+10%**（残課題）
+  - Photo: **-32%**（維持）
+- `bench_decode`: **20.9ms / 283.7 MiB/s**（目標 >100 MiB/s維持）
+
+**補足**:
+- 本サンプルでは `anime_sunset` が未達（PNG比 +32%）で、`9s-3` でのしきい値調整と追加分岐（screen-profile判定強化）が必要。
 
 ---
 
@@ -824,15 +905,20 @@ MEDの効果（Photo/Natural）を維持しつつ、UI/Anime側の将来回帰�
 4. [x] Phase 9n-1/2/3: `filter_ids/filter_hi` wrapper最適化 ✅
 5. [x] Phase 9o-1/2/3: `filter_lo` delta/LZ最適化 ✅
 6. [x] Phase 9p-1/2/3: `filter_lo` row predictor + gate + telemetry ✅
-7. [ ] Phase 9q-1: `filter_lo` context split mode（filter_id別サブストリーム）
-8. [ ] Phase 9q-2: Photo-only gate + fallback（legacy最小選択）
-9. [ ] Phase 9q-3: telemetry + DoD検証（Photo中心）
-10. [ ] `lossless_png_compare` 再計測（UI/Anime/Photo 各30枚）
-11. [ ] Photo decodeのホットパス計測（`perf` / 自前timer）と上位3ボトルネック確定
-12. [ ] Photo向け decode最適化（CfL gate強化 → IDCT+dequant AVX2 → token分岐削減）
-13. [ ] Lossy画質回帰チェック（Artoria/UI/自然画像の目視 + PSNR/SSIM）
-14. [ ] Paper用テーブル更新（`Dec(ms)`統一、サイズ・画質・速度を同一セットで再生成）
-15. [ ] 投稿判定レビュー（勝ち筋/弱点/今後課題を1ページに要約）
+7. [x] Phase 9q-1: `filter_lo` context split mode（filter_id別サブストリーム）✅
+8. [x] Phase 9q-2: Photo-only gate + fallback（legacy最小選択）✅
+9. [x] Phase 9q-3: telemetry + DoD検証（Photo中心）✅
+10. [x] Phase 9r-1: `tile4 stream` wrapper（raw/rANS/LZ最小選択）✅
+11. [x] Phase 9r-2: `palette stream` wrapper（lossless経路でraw/rANS/LZ最小選択）✅
+12. [x] Phase 9r-3: telemetry + DoD検証（UI/Anime中心）✅
+13. [x] Phase 9s-1: `copy stream` wrapper（raw/rANS/LZ最小選択）✅
+14. [x] Phase 9s-2: `screen-profile v1`（global palette + index map）✅
+15. [ ] Phase 9s-3: UI/Anime 30枚の再計測とフォールバック条件確定
+16. [ ] Photo decodeのホットパス計測（`perf` / 自前timer）と上位3ボトルネック確定
+17. [ ] Photo向け decode最適化（CfL gate強化 → IDCT+dequant AVX2 → token分岐削減）
+18. [ ] Lossy画質回帰チェック（Artoria/UI/自然画像の目視 + PSNR/SSIM）
+19. [ ] Paper用テーブル更新（`Dec(ms)`統一、サイズ・画質・速度を同一セットで再生成）
+20. [ ] 投稿判定レビュー（勝ち筋/弱点/今後課題を1ページに要約）
 
 **受け入れ基準（DoD）**:
 - [ ] `ctest` 全PASS維持

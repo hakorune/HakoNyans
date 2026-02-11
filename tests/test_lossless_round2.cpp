@@ -943,6 +943,52 @@ void test_filter_lo_mode4_malformed() {
     PASS();
 }
 
+// ============================================================
+// Test 26: Screen-indexed tile roundtrip (Phase 9s)
+// ============================================================
+void test_screen_indexed_tile_roundtrip() {
+    TEST("Screen-indexed tile roundtrip (global palette + index map)");
+
+    const int W = 64, H = 64;
+    std::vector<int16_t> plane(W * H, 0);
+    const int16_t palette_vals[8] = {-120, -64, -32, -8, 8, 32, 64, 120};
+    std::mt19937 rng(20260212);
+    std::uniform_int_distribution<int> dist(0, 7);
+
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            // Random small palette pattern: weak for local Copy, good for global index map.
+            int idx = dist(rng);
+            plane[y * W + x] = palette_vals[idx];
+        }
+    }
+
+    auto tile = GrayscaleEncoder::encode_plane_lossless(plane.data(), W, H, false);
+    if (tile.empty()) {
+        FAIL("Encoded tile is empty");
+        return;
+    }
+    if (tile[0] != FileHeader::WRAPPER_MAGIC_SCREEN_INDEXED) {
+        FAIL("Screen-indexed tile mode was not selected");
+        return;
+    }
+
+    auto decoded = GrayscaleDecoder::decode_plane_lossless(
+        tile.data(), tile.size(), W, H, FileHeader::VERSION
+    );
+    if (decoded.size() != plane.size()) {
+        FAIL("Decoded plane size mismatch");
+        return;
+    }
+    for (size_t i = 0; i < plane.size(); i++) {
+        if (decoded[i] != plane[i]) {
+            FAIL("Plane mismatch at index " + std::to_string(i));
+            return;
+        }
+    }
+    PASS();
+}
+
 int main() {
     std::cout << "=== Phase 8 Round 2: Lossless Codec Tests ===" << std::endl;
 
@@ -971,6 +1017,7 @@ int main() {
     test_filter_lo_mode4_roundtrip();
     test_filter_lo_mode4_sparse_contexts();
     test_filter_lo_mode4_malformed();
+    test_screen_indexed_tile_roundtrip();
 
     std::cout << "\n=== Results: " << tests_passed << "/" << tests_run << " passed ===" << std::endl;
     return (tests_passed == tests_run) ? 0 : 1;

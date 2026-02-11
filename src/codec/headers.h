@@ -33,7 +33,7 @@ struct FileHeader {
     uint8_t  reserved[16];  // 将来拡張用
     
     static constexpr uint32_t MAGIC = 0x484B4E00;       // 'HKN\0'
-    static constexpr uint16_t VERSION = 0x000C;         // v0.12 (filter_lo context split)
+    static constexpr uint16_t VERSION = 0x000E;         // v0.14 (screen-indexed tile mode)
     static constexpr uint16_t MIN_SUPPORTED_VERSION = 0x0003;
     static constexpr uint16_t VERSION_BAND_GROUP_CDF = 0x0004;
     static constexpr uint16_t VERSION_TILE_MATCH4 = 0x0005;
@@ -44,6 +44,8 @@ struct FileHeader {
     static constexpr uint16_t VERSION_FILTER_LO_DELTA = 0x000A;
     static constexpr uint16_t VERSION_FILTER_LO_PRED  = 0x000B;
     static constexpr uint16_t VERSION_FILTER_LO_CONTEXT_SPLIT = 0x000C;
+    static constexpr uint16_t VERSION_TILE4_WRAPPER = 0x000D;
+    static constexpr uint16_t VERSION_SCREEN_INDEXED_TILE = 0x000E;
     
     enum class BlockType : uint8_t {
         DCT = 0,
@@ -54,10 +56,12 @@ struct FileHeader {
 
     static constexpr uint8_t WRAPPER_MAGIC_BLOCK_TYPES = 0xA6; // Both Compact v2 and LZ
     static constexpr uint8_t WRAPPER_MAGIC_PALETTE     = 0xA7; // Both Compact v3 and LZ
-    static constexpr uint8_t WRAPPER_MAGIC_COPY        = 0xA8; // LZ only
+    static constexpr uint8_t WRAPPER_MAGIC_COPY        = 0xA8; // rANS or LZ
     static constexpr uint8_t WRAPPER_MAGIC_FILTER_IDS  = 0xA9; // rANS or LZ
     static constexpr uint8_t WRAPPER_MAGIC_FILTER_HI   = 0xAA; // Sparse mode
     static constexpr uint8_t WRAPPER_MAGIC_FILTER_LO   = 0xAB; // Delta / LZ / Predictor / Context-split
+    static constexpr uint8_t WRAPPER_MAGIC_TILE4       = 0xAC; // rANS or LZ
+    static constexpr uint8_t WRAPPER_MAGIC_SCREEN_INDEXED = 0xAD; // global palette + packed index map
 
     
     FileHeader() {

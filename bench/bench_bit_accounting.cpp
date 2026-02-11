@@ -33,6 +33,7 @@ struct Accounting {
     size_t palette = 0;
     size_t copy = 0;
     size_t tile4 = 0;
+    size_t screen_index = 0;
     size_t unknown = 0;
 };
 
@@ -106,6 +107,31 @@ static void add_lossy_tile(Accounting& a, const uint8_t* tile_data, size_t tile_
 }
 
 static void add_lossless_tile(Accounting& a, const uint8_t* tile_data, size_t tile_size) {
+    if (tile_size >= 14 && tile_data[0] == FileHeader::WRAPPER_MAGIC_SCREEN_INDEXED) {
+        auto read_u16 = [](const uint8_t* p) -> uint16_t {
+            return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+        };
+        auto read_u32 = [](const uint8_t* p) -> uint32_t {
+            return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+                   ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+        };
+        uint16_t palette_count = read_u16(tile_data + 4);
+        uint32_t raw_packed_size = read_u32(tile_data + 10);
+        size_t palette_bytes = (size_t)palette_count * 2ull;
+        size_t header_bytes = 14;
+        if (header_bytes + palette_bytes > tile_size) {
+            a.unknown += tile_size;
+            return;
+        }
+        a.tile_header += header_bytes;
+        a.palette += palette_bytes;
+        a.screen_index += (tile_size - header_bytes - palette_bytes);
+        if (raw_packed_size == 0 && tile_size > header_bytes + palette_bytes) {
+            a.unknown += 0;
+        }
+        return;
+    }
+
     if (tile_size < 32) {
         a.unknown += tile_size;
         return;
@@ -158,7 +184,7 @@ static Accounting analyze_file(const std::vector<uint8_t>& hkn) {
         a.file_header + a.chunk_dir + a.qmat + a.tile_header +
         a.dc + a.ac + a.pindex + a.qdelta + a.cfl +
         a.filter_ids + a.filter_lo + a.filter_hi +
-        a.block_types + a.palette + a.copy + a.tile4 + a.unknown;
+        a.block_types + a.palette + a.copy + a.tile4 + a.screen_index + a.unknown;
     if (a.total_file > accounted) a.unknown += (a.total_file - accounted);
     return a;
 }
@@ -206,6 +232,7 @@ static void print_accounting(const std::string& title, const Accounting& a, bool
     print_row("palette", a.palette, a.total_file);
     print_row("copy", a.copy, a.total_file);
     print_row("tile4", a.tile4, a.total_file);
+    print_row("screen_index", a.screen_index, a.total_file);
     print_row("unknown", a.unknown, a.total_file);
     std::cout << "----------------------------------------------\n";
     print_row("TOTAL", a.total_file, a.total_file);
@@ -348,6 +375,16 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
         }
         std::cout << "  tile4_stream_bytes     " << s.tile4_stream_bytes_sum
                   << " (avg " << std::fixed << std::setprecision(2) << tile4_bpb << " bits/tile4-block)\n";
+        if (s.tile4_stream_raw_bytes_sum > 0) {
+            double savings = 100.0 * (1.0 - (double)s.tile4_stream_bytes_sum / (double)s.tile4_stream_raw_bytes_sum);
+            std::cout << "  tile4_raw_bytes        " << s.tile4_stream_raw_bytes_sum
+                      << " (wrapper " << std::fixed << std::setprecision(1) << savings << "% savings)\n";
+        }
+        if (s.tile4_stream_mode0 + s.tile4_stream_mode1 + s.tile4_stream_mode2 > 0) {
+            std::cout << "  tile4_stream_mode0/1/2 " << s.tile4_stream_mode0
+                      << "/" << s.tile4_stream_mode1
+                      << "/" << s.tile4_stream_mode2 << "\n";
+        }
 
         std::cout << "\n  Palette stream diagnostics\n";
         std::cout << "  palette_stream_v2/v3   "
@@ -386,6 +423,10 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
                   << s.copy_stream_mode1 << "/"
                   << s.copy_stream_mode2 << "/"
                   << s.copy_stream_mode3 << "\n";
+        std::cout << "  copy_wrapper_mode0/1/2 " 
+                  << s.copy_wrap_mode0 << "/"
+                  << s.copy_wrap_mode1 << "/"
+                  << s.copy_wrap_mode2 << "\n";
         std::cout << "  copy_ops_total         " << s.copy_ops_total << "\n";
         if (s.copy_ops_total > 0) {
             double small_pct = 100.0 * (double)s.copy_ops_small / (double)s.copy_ops_total;
