@@ -112,6 +112,53 @@ public:
     }
 
 public:
+    struct BandPIndexBundle {
+        bool has_low = false;
+        bool has_mid = false;
+        bool has_high = false;
+        PIndex low;
+        PIndex mid;
+        PIndex high;
+    };
+
+    static bool parse_band_pindex_blob(
+        const uint8_t* data, size_t size,
+        size_t low_stream_size, size_t mid_stream_size, size_t high_stream_size,
+        BandPIndexBundle& out
+    ) {
+        if (size == 0) return false;
+        if (size < 12) return false;
+
+        uint32_t low_sz = 0, mid_sz = 0, high_sz = 0;
+        std::memcpy(&low_sz, data, 4);
+        std::memcpy(&mid_sz, data + 4, 4);
+        std::memcpy(&high_sz, data + 8, 4);
+        size_t expected = 12ull + (size_t)low_sz + (size_t)mid_sz + (size_t)high_sz;
+        if (expected != size) return false;
+
+        const uint8_t* ptr = data + 12;
+        try {
+            if (low_sz > 0) {
+                out.low = PIndexCodec::deserialize(std::span<const uint8_t>(ptr, low_sz));
+                out.has_low = (out.low.total_bytes == low_stream_size && out.low.total_tokens > 0);
+            }
+            ptr += low_sz;
+            if (mid_sz > 0) {
+                out.mid = PIndexCodec::deserialize(std::span<const uint8_t>(ptr, mid_sz));
+                out.has_mid = (out.mid.total_bytes == mid_stream_size && out.mid.total_tokens > 0);
+            }
+            ptr += mid_sz;
+            if (high_sz > 0) {
+                out.high = PIndexCodec::deserialize(std::span<const uint8_t>(ptr, high_sz));
+                out.has_high = (out.high.total_bytes == high_stream_size && out.high.total_tokens > 0);
+            }
+        } catch (...) {
+            return false;
+        }
+
+        return out.has_low || out.has_mid || out.has_high;
+    }
+
     static std::vector<uint8_t> decode_plane(
         const uint8_t* td, size_t ts, uint32_t pw, uint32_t ph,
         const uint16_t deq[64], const std::vector<uint8_t>* y_ref = nullptr,
@@ -137,17 +184,34 @@ public:
             const uint8_t* low_ptr = ptr; ptr += sz[1];
             const uint8_t* mid_ptr = ptr; ptr += sz[2];
             const uint8_t* high_ptr = ptr; ptr += sz[3];
-            // P-Index slot is reserved for future band-wise checkpoints.
+            const uint8_t* pindex_ptr = ptr;
             ptr += sz[4];
 
+            BandPIndexBundle band_pi;
+            bool has_band_pindex = false;
+            if (sz[4] > 0) {
+                has_band_pindex = parse_band_pindex_blob(
+                    pindex_ptr, sz[4], sz[1], sz[2], sz[3], band_pi
+                );
+            }
+
             // Decode 3 AC bands in parallel (independent streams).
-            auto f_low = std::async(std::launch::async, [low_ptr, &sz]() {
+            auto f_low = std::async(std::launch::async, [=, &sz, &band_pi]() {
+                if (has_band_pindex && band_pi.has_low) {
+                    return decode_stream_parallel(low_ptr, sz[1], band_pi.low);
+                }
                 return decode_stream(low_ptr, sz[1]);
             });
-            auto f_mid = std::async(std::launch::async, [mid_ptr, &sz]() {
+            auto f_mid = std::async(std::launch::async, [=, &sz, &band_pi]() {
+                if (has_band_pindex && band_pi.has_mid) {
+                    return decode_stream_parallel(mid_ptr, sz[2], band_pi.mid);
+                }
                 return decode_stream(mid_ptr, sz[2]);
             });
-            auto f_high = std::async(std::launch::async, [high_ptr, &sz]() {
+            auto f_high = std::async(std::launch::async, [=, &sz, &band_pi]() {
+                if (has_band_pindex && band_pi.has_high) {
+                    return decode_stream_parallel(high_ptr, sz[3], band_pi.high);
+                }
                 return decode_stream(high_ptr, sz[3]);
             });
             ac_low_tokens = f_low.get();

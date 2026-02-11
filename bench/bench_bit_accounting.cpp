@@ -35,6 +35,12 @@ struct Accounting {
     size_t unknown = 0;
 };
 
+static size_t estimate_pindex_cps(size_t bytes) {
+    if (bytes < 12) return 0;
+    if (((bytes - 12) % 40) != 0) return 0;
+    return (bytes - 12) / 40;
+}
+
 static void add_lossy_tile(Accounting& a, const uint8_t* tile_data, size_t tile_size, bool has_band_cdf) {
     if (!has_band_cdf && tile_size < 32) {
         a.unknown += tile_size;
@@ -54,8 +60,24 @@ static void add_lossy_tile(Accounting& a, const uint8_t* tile_data, size_t tile_
         a.ac_high += sz[3];
         a.ac += (size_t)sz[1] + (size_t)sz[2] + (size_t)sz[3];
         a.pindex += sz[4];
-        if (sz[4] >= 12 && ((sz[4] - 12) % 40 == 0)) {
-            a.pindex_checkpoints += (sz[4] - 12) / 40;
+        if (sz[4] >= 12) {
+            // v3 band pindex blob:
+            // [low_sz u32][mid_sz u32][high_sz u32][low][mid][high]
+            size_t pi_off = 40ull + (size_t)sz[0] + (size_t)sz[1] + (size_t)sz[2] + (size_t)sz[3];
+            if (pi_off + 12 <= tile_size) {
+                uint32_t band_pi_sz[3] = {};
+                std::memcpy(band_pi_sz, tile_data + pi_off, 12);
+                size_t expected = 12ull + (size_t)band_pi_sz[0] + (size_t)band_pi_sz[1] + (size_t)band_pi_sz[2];
+                if (expected == sz[4]) {
+                    a.pindex_checkpoints += estimate_pindex_cps(band_pi_sz[0]);
+                    a.pindex_checkpoints += estimate_pindex_cps(band_pi_sz[1]);
+                    a.pindex_checkpoints += estimate_pindex_cps(band_pi_sz[2]);
+                } else {
+                    a.pindex_checkpoints += estimate_pindex_cps(sz[4]);
+                }
+            } else {
+                a.pindex_checkpoints += estimate_pindex_cps(sz[4]);
+            }
         }
         a.qdelta += sz[5];
         a.cfl += sz[6];
@@ -71,9 +93,7 @@ static void add_lossy_tile(Accounting& a, const uint8_t* tile_data, size_t tile_
         a.dc += sz[0];
         a.ac += sz[1];
         a.pindex += sz[2];
-        if (sz[2] >= 12 && ((sz[2] - 12) % 40 == 0)) {
-            a.pindex_checkpoints += (sz[2] - 12) / 40;
-        }
+        a.pindex_checkpoints += estimate_pindex_cps(sz[2]);
         a.qdelta += sz[3];
         a.cfl += sz[4];
         a.block_types += sz[5];

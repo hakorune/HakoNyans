@@ -293,9 +293,20 @@ public:
         auto dc_stream = encode_tokens(dc_tokens, build_cdf(dc_tokens));
         std::vector<uint8_t> tile_data;
         if (use_band_group_cdf) {
-            auto ac_low_stream = encode_tokens(ac_low_tokens, build_cdf(ac_low_tokens));
-            auto ac_mid_stream = encode_tokens(ac_mid_tokens, build_cdf(ac_mid_tokens));
-            auto ac_high_stream = encode_tokens(ac_high_tokens, build_cdf(ac_high_tokens));
+            std::vector<uint8_t> pindex_low, pindex_mid, pindex_high;
+            auto ac_low_stream = encode_tokens(
+                ac_low_tokens, build_cdf(ac_low_tokens), pi ? &pindex_low : nullptr,
+                target_pindex_meta_ratio_percent
+            );
+            auto ac_mid_stream = encode_tokens(
+                ac_mid_tokens, build_cdf(ac_mid_tokens), pi ? &pindex_mid : nullptr,
+                target_pindex_meta_ratio_percent
+            );
+            auto ac_high_stream = encode_tokens(
+                ac_high_tokens, build_cdf(ac_high_tokens), pi ? &pindex_high : nullptr,
+                target_pindex_meta_ratio_percent
+            );
+            pindex_data = serialize_band_pindex_blob(pindex_low, pindex_mid, pindex_high);
             // TileHeader v3 (lossy): 10 fields (40 bytes)
             uint32_t sz[10] = {
                 (uint32_t)dc_stream.size(), 
@@ -368,6 +379,26 @@ public:
         return std::clamp(interval, 64, 4096);
     }
 
+    static std::vector<uint8_t> serialize_band_pindex_blob(
+        const std::vector<uint8_t>& low,
+        const std::vector<uint8_t>& mid,
+        const std::vector<uint8_t>& high
+    ) {
+        if (low.empty() && mid.empty() && high.empty()) return {};
+        std::vector<uint8_t> out;
+        out.resize(12);
+        uint32_t low_sz = (uint32_t)low.size();
+        uint32_t mid_sz = (uint32_t)mid.size();
+        uint32_t high_sz = (uint32_t)high.size();
+        std::memcpy(&out[0], &low_sz, 4);
+        std::memcpy(&out[4], &mid_sz, 4);
+        std::memcpy(&out[8], &high_sz, 4);
+        out.insert(out.end(), low.begin(), low.end());
+        out.insert(out.end(), mid.begin(), mid.end());
+        out.insert(out.end(), high.begin(), high.end());
+        return out;
+    }
+
     static std::vector<uint8_t> encode_tokens(
         const std::vector<Token>& t,
         const CDFTable& c,
@@ -384,11 +415,15 @@ public:
         for (const auto& tok : t) if (tok.raw_bits_count > 0) { raw_data.push_back(tok.raw_bits_count); raw_data.push_back(tok.raw_bits & 0xFF); raw_data.push_back((tok.raw_bits >> 8) & 0xFF); raw_count++; }
         size_t rc_offset = output.size(); output.resize(rc_offset + 4); std::memcpy(&output[rc_offset], &raw_count, 4); output.insert(output.end(), raw_data.begin(), raw_data.end());
         if (out_pi) {
-            int interval = calculate_pindex_interval(
-                t.size(), output.size(), target_pindex_meta_ratio_percent
-            );
-            auto pindex = PIndexBuilder::build(rb, c, t.size(), (uint32_t)interval);
-            *out_pi = PIndexCodec::serialize(pindex);
+            if (t.empty()) {
+                out_pi->clear();
+            } else {
+                int interval = calculate_pindex_interval(
+                    t.size(), output.size(), target_pindex_meta_ratio_percent
+                );
+                auto pindex = PIndexBuilder::build(rb, c, t.size(), (uint32_t)interval);
+                *out_pi = PIndexCodec::serialize(pindex);
+            }
         }
         return output;
     }
