@@ -213,7 +213,15 @@ public:
             }
         }
         if (!any_applied) return {};
-        // Keep legacy payload for wire compatibility with older decoders.
+
+        auto adaptive = serialize_cfl_adaptive(cfl_params);
+        const size_t legacy_size = cfl_params.size() * 2;
+        // If sizes collide, keep legacy to avoid decode-side ambiguity.
+        if (!adaptive.empty() && adaptive.size() != legacy_size) {
+            return adaptive;
+        }
+
+        // Safe fallback for ambiguous sizes.
         return serialize_cfl_legacy(cfl_params);
     }
 
@@ -421,6 +429,7 @@ public:
                     IntraBCSearch::search(padded.data(), pad_w, pad_h, bx, by, 64, cp);
                     copy_ops.push_back(cp);
                  }
+                 if (y_ref) cfl_params.push_back({0.0f, 128.0f, 0.0f, 0.0f});
                  continue;
             } else if (selected_type == FileHeader::BlockType::PALETTE) {
                 // Try to extract palette (redundant if we just did it, but safe)
@@ -428,6 +437,7 @@ public:
                 if (p.size > 0) {
                     palettes.push_back(p);
                     palette_indices.push_back(PaletteExtractor::map_indices(block, p));
+                    if (y_ref) cfl_params.push_back({0.0f, 128.0f, 0.0f, 0.0f});
                     continue; 
                 } else {
                     // Start of fallback to DCT
@@ -453,30 +463,35 @@ public:
                 int alpha_q8, beta;
                 compute_cfl_block_adaptive(yu, cu, alpha_q8, beta);
                 
-                int64_t mse_cfl = 0;
+                // Reconstruct exactly as the decoder would (centered model)
+                int a_q6 = (int)std::lround(std::clamp((float)alpha_q8 / 256.0f * 64.0f, -128.0f, 127.0f));
+                int b_center = (int)std::lround(std::clamp((float)beta, 0.0f, 255.0f));
+
+                int64_t mse_cfl_recon = 0;
                 for (int k=0; k<64; k++) {
-                    int p = (alpha_q8 * (yu[k] - 128) + 128) >> 8;
-                    p += beta;
+                    // Decoder formula: p = (a6 * (py - 128) + 32) >> 6 + b
+                    int p = (a_q6 * (yu[k] - 128) + 32) >> 6;
+                    p += b_center;
                     int err = (int)cu[k] - std::clamp(p, 0, 255);
-                    mse_cfl += (int64_t)err * err;
+                    mse_cfl_recon += (int64_t)err * err;
                 }
 
-                // Adaptive Decision: MSE based.
-                // 1024 margin means average error reduction of 4.0 per pixel.
-                if (mse_cfl < mse_no_cfl - 1024) {
+                // Adaptive Decision: MSE based on EXACT decoder predictor.
+                if (mse_cfl_recon < mse_no_cfl - 1024) {
                     cfl_applied = true;
-                    cfl_alpha_q8 = alpha_q8;
-                    cfl_beta = beta;
+                    cfl_alpha_q8 = (a_q6 * 256) / 64; 
+                    cfl_beta = b_center;
+                    
                     for (int k=0; k<64; k++) {
-                        int p = (cfl_alpha_q8 * (yu[k] - 128) + 128) >> 8;
-                        p += cfl_beta;
+                        int p = (a_q6 * (yu[k] - 128) + 32) >> 6;
+                        p += b_center;
                         block[k] = (int16_t)std::clamp((int)cu[k] - p, -128, 127);
                     }
                 }
             }
             
             if (y_ref) {
-                cfl_params.push_back({(float)cfl_alpha_q8/256.0f, (float)cfl_beta, cfl_applied ? 1.0f : 0.0f, 0.0f});
+                cfl_params.push_back({(float)cfl_alpha_q8 / 256.0f, (float)cfl_beta, cfl_applied ? 1.0f : 0.0f, 0.0f});
             }
 
             int16_t dct_out[64], zigzag[64]; DCT::forward(block, dct_out); Zigzag::scan(dct_out, zigzag);
