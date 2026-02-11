@@ -32,13 +32,24 @@ public:
     };
 
     /**
-     * Build quantization table for given quality
-     * @param quality 1..100 (1=worst, 100=best)
-     * @param quant Output quantization table (zigzag order)
+     * Base quantization matrix (chrominance, quality=50)
+     * Based on JPEG Annex K
      */
-    static void build_quant_table(int quality, uint16_t quant[64]) {
+    static constexpr uint16_t base_quant_chroma[64] = {
+        17, 18, 24, 47, 99, 99, 99, 99,
+        18, 21, 26, 66, 99, 99, 99, 99,
+        24, 26, 56, 99, 99, 99, 99, 99,
+        47, 66, 99, 99, 99, 99, 99, 99,
+        99, 99, 99, 99, 99, 99, 99, 99,
+        99, 99, 99, 99, 99, 99, 99, 99,
+        99, 99, 99, 99, 99, 99, 99, 99,
+        99, 99, 99, 99, 99, 99, 99, 99
+    };
+
+private:
+    static void build_quant_table_internal(int quality, const uint16_t base[64], uint16_t quant[64]) {
         quality = std::clamp(quality, 1, 100);
-        
+
         // JPEG quality scaling
         float scale;
         if (quality < 50) {
@@ -46,11 +57,40 @@ public:
         } else {
             scale = 200.0f - quality * 2.0f;
         }
-        
+
         for (int i = 0; i < 64; i++) {
-            int q = static_cast<int>((base_quant_luma[i] * scale + 50.0f) / 100.0f);
+            int q = static_cast<int>((base[i] * scale + 50.0f) / 100.0f);
             quant[i] = std::clamp(q, 1, 255);
         }
+    }
+
+public:
+
+    /**
+     * Build quantization table for given quality
+     * @param quality 1..100 (1=worst, 100=best)
+     * @param quant Output quantization table (zigzag order)
+     */
+    static void build_quant_table(int quality, uint16_t quant[64]) {
+        build_quant_table_internal(quality, base_quant_luma, quant);
+    }
+
+    /**
+     * Build quantization table with optional chroma matrix
+     * @param quality 1..100 (1=worst, 100=best)
+     * @param quant Output quantization table (zigzag order)
+     * @param chroma true=use chroma base matrix, false=luma
+     */
+    static void build_quant_table(int quality, uint16_t quant[64], bool chroma) {
+        build_quant_table_internal(quality, chroma ? base_quant_chroma : base_quant_luma, quant);
+    }
+
+    /**
+     * Build luma + chroma quantization tables
+     */
+    static void build_quant_tables(int quality_luma, int quality_chroma, uint16_t quant_y[64], uint16_t quant_c[64]) {
+        build_quant_table_internal(quality_luma, base_quant_luma, quant_y);
+        build_quant_table_internal(quality_chroma, base_quant_chroma, quant_c);
     }
 
     /**

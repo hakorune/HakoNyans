@@ -61,13 +61,21 @@ public:
         if (hdr.flags & 1) return decode_color_lossless(hkn, w, h);
         ChunkDirectory dir = ChunkDirectory::deserialize(&hkn[48], hkn.size() - 48);
         const ChunkEntry* qm_e = dir.find("QMAT"); QMATChunk qm = QMATChunk::deserialize(&hkn[qm_e->offset], qm_e->size);
-        uint16_t deq[64]; std::memcpy(deq, qm.quant_y, 128);
+        uint16_t deq_y[64], deq_cb[64], deq_cr[64];
+        std::memcpy(deq_y, qm.quant_y, 128);
+        if (qm.num_tables == 3) {
+            std::memcpy(deq_cb, qm.quant_cb, 128);
+            std::memcpy(deq_cr, qm.quant_cr, 128);
+        } else {
+            std::memcpy(deq_cb, qm.quant_y, 128);
+            std::memcpy(deq_cr, qm.quant_y, 128);
+        }
         const ChunkEntry* t0 = dir.find("TIL0"), *t1 = dir.find("TIL1"), *t2 = dir.find("TIL2");
         bool is_420 = (hdr.subsampling == 1), is_cfl = (hdr.flags & 2);
         int cw = is_420 ? (w + 1) / 2 : w, ch = is_420 ? (h + 1) / 2 : h;
         uint32_t pyw = hdr.padded_width(), pyh = hdr.padded_height();
         uint32_t pcw = ((cw + 7) / 8) * 8, pch = ((ch + 7) / 8) * 8;
-        auto yp_v = decode_plane(&hkn[t0->offset], t0->size, pyw, pyh, deq);
+        auto yp_v = decode_plane(&hkn[t0->offset], t0->size, pyw, pyh, deq_y);
         std::vector<uint8_t> y_ref;
         if (is_cfl) {
             if (is_420) {
@@ -77,8 +85,8 @@ public:
                 y_ref = pad_image(y_ds.data(), ydw, ydh, pcw, pch);
             } else y_ref = yp_v;
         }
-        auto f1 = std::async(std::launch::async, [=, &hkn, &y_ref]() { return decode_plane(&hkn[t1->offset], t1->size, pcw, pch, deq, is_cfl ? &y_ref : nullptr); });
-        auto f2 = std::async(std::launch::async, [=, &hkn, &y_ref]() { return decode_plane(&hkn[t2->offset], t2->size, pcw, pch, deq, is_cfl ? &y_ref : nullptr); });
+        auto f1 = std::async(std::launch::async, [=, &hkn, &y_ref]() { return decode_plane(&hkn[t1->offset], t1->size, pcw, pch, deq_cb, is_cfl ? &y_ref : nullptr); });
+        auto f2 = std::async(std::launch::async, [=, &hkn, &y_ref]() { return decode_plane(&hkn[t2->offset], t2->size, pcw, pch, deq_cr, is_cfl ? &y_ref : nullptr); });
         auto cb_raw = f1.get(); auto cr_raw = f2.get();
         std::vector<uint8_t> y_p(w * h), cb_p(w * h), cr_p(w * h);
         for (int y = 0; y < h; y++) std::memcpy(&y_p[y * w], &yp_v[y * pyw], w);

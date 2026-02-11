@@ -63,9 +63,11 @@ public:
         header.num_channels = 3; header.colorspace = 0; header.subsampling = use_420 ? 1 : 0;
         header.tile_cols = 1; header.tile_rows = 1; header.quality = quality; header.pindex_density = 2;
         if (use_cfl) header.flags |= 2;
-        uint16_t quant[64]; QuantTable::build_quant_table(quality, quant);
+        uint16_t quant_y[64], quant_c[64];
+        int chroma_quality = std::clamp((int)quality - 12, 1, 100);
+        QuantTable::build_quant_tables(quality, chroma_quality, quant_y, quant_c);
         uint32_t pad_w_y = header.padded_width(), pad_h_y = header.padded_height();
-        auto tile_y = encode_plane(y_plane.data(), width, height, pad_w_y, pad_h_y, quant, true, true, nullptr, 0, nullptr, nullptr, enable_screen_profile);
+        auto tile_y = encode_plane(y_plane.data(), width, height, pad_w_y, pad_h_y, quant_y, true, true, nullptr, 0, nullptr, nullptr, enable_screen_profile);
         std::vector<uint8_t> tile_cb, tile_cr;
         if (use_420) {
             int cb_w, cb_h; std::vector<uint8_t> cb_420, cr_420, y_ds;
@@ -73,13 +75,19 @@ public:
             downsample_420(cr_plane.data(), width, height, cr_420, cb_w, cb_h);
             uint32_t pad_w_c = ((cb_w + 7) / 8) * 8, pad_h_c = ((cb_h + 7) / 8) * 8;
             if (use_cfl) { downsample_420(y_plane.data(), width, height, y_ds, cb_w, cb_h); }
-            tile_cb = encode_plane(cb_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, quant, true, true, use_cfl ? &y_ds : nullptr, 0, nullptr, nullptr, enable_screen_profile);
-            tile_cr = encode_plane(cr_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, quant, true, true, use_cfl ? &y_ds : nullptr, 1, nullptr, nullptr, enable_screen_profile);
+            tile_cb = encode_plane(cb_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, quant_c, true, true, use_cfl ? &y_ds : nullptr, 0, nullptr, nullptr, enable_screen_profile);
+            tile_cr = encode_plane(cr_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, quant_c, true, true, use_cfl ? &y_ds : nullptr, 1, nullptr, nullptr, enable_screen_profile);
         } else {
-            tile_cb = encode_plane(cb_plane.data(), width, height, pad_w_y, pad_h_y, quant, true, true, use_cfl ? &y_plane : nullptr, 0, nullptr, nullptr, enable_screen_profile);
-            tile_cr = encode_plane(cr_plane.data(), width, height, pad_w_y, pad_h_y, quant, true, true, use_cfl ? &y_plane : nullptr, 1, nullptr, nullptr, enable_screen_profile);
+            tile_cb = encode_plane(cb_plane.data(), width, height, pad_w_y, pad_h_y, quant_c, true, true, use_cfl ? &y_plane : nullptr, 0, nullptr, nullptr, enable_screen_profile);
+            tile_cr = encode_plane(cr_plane.data(), width, height, pad_w_y, pad_h_y, quant_c, true, true, use_cfl ? &y_plane : nullptr, 1, nullptr, nullptr, enable_screen_profile);
         }
-        QMATChunk qmat; qmat.quality = quality; std::memcpy(qmat.quant_y, quant, 128); auto qmat_data = qmat.serialize();
+        QMATChunk qmat;
+        qmat.quality = quality;
+        qmat.num_tables = 3;
+        std::memcpy(qmat.quant_y, quant_y, 128);
+        std::memcpy(qmat.quant_cb, quant_c, 128);
+        std::memcpy(qmat.quant_cr, quant_c, 128);
+        auto qmat_data = qmat.serialize();
         ChunkDirectory dir; dir.add("QMAT", 0, qmat_data.size()); dir.add("TIL0", 0, tile_y.size()); dir.add("TIL1", 0, tile_cb.size()); dir.add("TIL2", 0, tile_cr.size());
         auto dir_data = dir.serialize(); size_t offset = 48 + dir_data.size();
         for (int i = 0; i < 4; i++) { dir.entries[i].offset = offset; offset += (i==0?qmat_data.size():(i==1?tile_y.size():(i==2?tile_cb.size():tile_cr.size()))); }
@@ -439,24 +447,56 @@ public:
             CopyParams(-8, 0), CopyParams(0, -8), CopyParams(-8, -8), CopyParams(8, -8)
         };
 
+        struct LosslessModeParams {
+            int palette_max_colors = 2;
+            int palette_transition_limit = 63;
+            int64_t palette_variance_limit = 1040384;
+        } mode_params;
+
         for (int i = 0; i < nb; i++) {
             int bx = i % nx, by = i / nx;
-            int16_t block[64];
-            for (int y = 0; y < 8; y++)
-                for (int x = 0; x < 8; x++)
-                    block[y * 8 + x] = padded[(by * 8 + y) * pad_w + (bx * 8 + x)];
+            int cur_x = bx * 8;
+            int cur_y = by * 8;
 
-            // A. Try local Copy first (compact-code vectors only).
+            int16_t block[64];
+            int64_t sum = 0, sum_sq = 0;
+            int transitions = 0;
+            bool palette_range_ok = true;
+            int unique_cnt = 0;
+
+            for (int y = 0; y < 8; y++) {
+                for (int x = 0; x < 8; x++) {
+                    int idx = y * 8 + x;
+                    int16_t v = padded[(cur_y + y) * pad_w + (cur_x + x)];
+                    block[idx] = v;
+                    sum += v;
+                    sum_sq += (int64_t)v * (int64_t)v;
+                    if (v < -128 || v > 127) palette_range_ok = false;
+                    if (idx > 0 && block[idx - 1] != v) transitions++;
+                }
+            }
+
+            {
+                int16_t vals[64];
+                std::memcpy(vals, block, sizeof(vals));
+                std::sort(vals, vals + 64);
+                unique_cnt = 1;
+                for (int k = 1; k < 64; k++) {
+                    if (vals[k] != vals[k - 1]) unique_cnt++;
+                }
+            }
+
+            int64_t variance_proxy = sum_sq - ((sum * sum) / 64); // 64 * variance
+
+            // Copy candidate (exact match only).
+            bool copy_found = false;
+            CopyParams copy_candidate;
             if (i > 0) {
-                bool found_copy = false;
-                int cur_x = bx * 8;
-                int cur_y = by * 8;
                 for (const auto& cand : kLosslessCopyCandidates) {
                     int src_x = cur_x + cand.dx;
                     int src_y = cur_y + cand.dy;
                     if (src_x < 0 || src_y < 0) continue;
                     if (src_x + 7 >= (int)pad_w || src_y + 7 >= (int)pad_h) continue;
-                    // Causal dependency only (must be already reconstructed at decode time).
                     if (!(src_y < cur_y || (src_y == cur_y && src_x < cur_x))) continue;
 
                     bool match = true;
@@ -470,35 +510,52 @@ public:
                         }
                     }
                     if (match) {
-                        block_types[i] = FileHeader::BlockType::COPY;
-                        copy_ops.push_back(cand);
-                        found_copy = true;
+                        copy_found = true;
+                        copy_candidate = cand;
                         break;
                     }
                 }
-                if (found_copy) continue;
+            }
+
+            // Palette candidate.
+            bool palette_found = false;
+            Palette palette_candidate;
+            std::vector<uint8_t> palette_index_candidate;
+            if (palette_range_ok && unique_cnt <= mode_params.palette_max_colors) {
+                palette_candidate = PaletteExtractor::extract(block, mode_params.palette_max_colors);
+                if (palette_candidate.size > 0 && palette_candidate.size <= mode_params.palette_max_colors) {
+                    bool transition_ok = (transitions <= mode_params.palette_transition_limit) || (palette_candidate.size <= 1);
+                    bool variance_ok = variance_proxy <= mode_params.palette_variance_limit;
+                    if (transition_ok && variance_ok) {
+                        palette_found = true;
+                        palette_index_candidate = PaletteExtractor::map_indices(block, palette_candidate);
+                    }
+                }
+            }
+
+            // Mode decision:
+            //   Copy (exact) -> Palette (guarded) -> Filter.
+            // Keep Copy-first behavior for screen content; guard against noisy palette blocks.
+            FileHeader::BlockType best_mode = FileHeader::BlockType::DCT;
+            if (copy_found) {
+                best_mode = FileHeader::BlockType::COPY;
+            } else if (palette_found) {
+                // Guard only pathological two-color checker-like blocks.
+                bool noisy_palette2 =
+                    (palette_candidate.size == 2) &&
+                    (transitions > mode_params.palette_transition_limit) &&
+                    (variance_proxy > mode_params.palette_variance_limit);
+                if (!noisy_palette2) best_mode = FileHeader::BlockType::PALETTE;
             }
 
-            // B. Try Palette (cost-effective only for ≤2 unique values)
-            {
-                bool palette_ok = true;
-                for (int k = 0; k < 64; k++) {
-                    if (block[k] < -128 || block[k] > 127) {
-                        palette_ok = false;
-                        break;
-                    }
-                }
-                if (palette_ok) {
-                    Palette p = PaletteExtractor::extract(block, 2);
-                    if (p.size > 0 && p.size <= 2) {
-                        block_types[i] = FileHeader::BlockType::PALETTE;
-                        palettes.push_back(p);
-                        palette_indices.push_back(PaletteExtractor::map_indices(block, p));
-                        continue;
-                    }
-                }
+            block_types[i] = best_mode;
+            if (best_mode == FileHeader::BlockType::COPY) {
+                copy_ops.push_back(copy_candidate);
+            } else if (best_mode == FileHeader::BlockType::PALETTE) {
+                palettes.push_back(palette_candidate);
+                palette_indices.push_back(std::move(palette_index_candidate));
             }
-            // C. Filter (default) — block_types[i] stays DCT
+            // Filter mode keeps default DCT tag.
         }
 
         // --- Step 2: Custom filtering (block-type aware, full image context) ---

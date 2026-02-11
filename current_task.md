@@ -321,7 +321,7 @@ NyANS-P（Parallel Interleaved rANS + P-Index）を中核エントロピーエ�
 
 ---
 
-## Phase 9候補（未実装）
+## Phase 9候補（進行中）
 
 ### Phase 9a: Lossless Auto Profile（設計）✅ 完了
 **目標**: 画像タイプに応じて Copy/Palette/Filter を自動最適化し、UIワーストケースを改善
@@ -347,3 +347,32 @@ NyANS-P（Parallel Interleaved rANS + P-Index）を中核エントロピーエ�
 - [ ] Copy辞書 multi-candidate 化（`hash -> vector<pos>`）
 - [ ] block_types の 9文脈エントロピー最適化
 - [ ] Tile palette dictionary / delta palette（要フォーマット拡張）
+
+### Phase 9d: Compression Rate Strategy（設計）✅ 完了
+**目標**: 圧縮率改善ロードマップを P0/P1/P2 で体系化し、RD基準で比較可能にする
+
+- [x] 戦略ドキュメント作成 — `docs/PHASE9_COMPRESSION_STRATEGY.md`
+- [x] 優先施策 A（P0/P1/P2）整理
+- [x] 効果見積もり B（改善率/速度影響/リスク）整理
+- [x] 実装ロードマップ C（短期/中期/互換運用）整理
+- [x] 検証計画 D（RDカーブ/アブレーション/成功基準）整理
+
+### Phase 9e: P0 圧縮改善（実装）✅ 完了 (2026-02-11)
+**目標**: P0の低リスク施策を実装し、互換を維持したまま圧縮改善の土台を追加
+
+- [x] **Bit Accounting 追加** — `bench/bench_bit_accounting.cpp`
+  - lossless/lossy の byte 内訳（header/stream/block_types/palette/copy）を可視化
+- [x] **Lossy 量子化刷新** — luma/chroma 分離量子化
+  - `src/codec/quant.h`: chroma matrix + `build_quant_tables()`
+  - `src/codec/encode.h`: chroma quality を luma から分離（`quality-12`）
+  - `src/codec/decode.h`: `QMAT num_tables==3` 対応（旧1テーブルも互換維持）
+- [x] **Lossless mode 判定基盤整理** — `encode_plane_lossless()`
+  - Copy candidate / Palette candidate / Filter fallback を明確化
+  - 既存圧縮率を崩さない保守的ガードで運用
+- [x] **検証**
+  - `ctest`: 17/17 PASS
+  - `bench_png_compare`: 既存レンジ維持（UI 3.20x, Photo 0.78x）
+
+**次の実装候補（P0残タスク）**:
+- [ ] P-Index密度オート（メタ比率 1〜2% ガード）
+- [ ] lossless mode 判定の本格 bit-estimation（ablation前提）
