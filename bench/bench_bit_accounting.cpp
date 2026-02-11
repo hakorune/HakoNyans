@@ -23,6 +23,7 @@ struct Accounting {
     size_t ac_mid = 0;
     size_t ac_high = 0;
     size_t pindex = 0;
+    size_t pindex_checkpoints = 0;
     size_t qdelta = 0;
     size_t cfl = 0;
     size_t filter_ids = 0;
@@ -53,6 +54,9 @@ static void add_lossy_tile(Accounting& a, const uint8_t* tile_data, size_t tile_
         a.ac_high += sz[3];
         a.ac += (size_t)sz[1] + (size_t)sz[2] + (size_t)sz[3];
         a.pindex += sz[4];
+        if (sz[4] >= 12 && ((sz[4] - 12) % 40 == 0)) {
+            a.pindex_checkpoints += (sz[4] - 12) / 40;
+        }
         a.qdelta += sz[5];
         a.cfl += sz[6];
         a.block_types += sz[7];
@@ -67,6 +71,9 @@ static void add_lossy_tile(Accounting& a, const uint8_t* tile_data, size_t tile_
         a.dc += sz[0];
         a.ac += sz[1];
         a.pindex += sz[2];
+        if (sz[2] >= 12 && ((sz[2] - 12) % 40 == 0)) {
+            a.pindex_checkpoints += (sz[2] - 12) / 40;
+        }
         a.qdelta += sz[3];
         a.cfl += sz[4];
         a.block_types += sz[5];
@@ -164,7 +171,12 @@ static void print_accounting(const std::string& title, const Accounting& a, bool
         } else {
             print_row("ac_stream", a.ac, a.total_file);
         }
-        print_row("pindex", a.pindex, a.total_file);
+        print_row("PINDEX", a.pindex, a.total_file);
+        if (a.pindex > 0) {
+            std::cout << std::left << std::setw(18) << "pindex_cps"
+                      << std::right << std::setw(12) << a.pindex_checkpoints
+                      << std::setw(10) << "-" << "\n";
+        }
         print_row("qdelta", a.qdelta, a.total_file);
         print_row("cfl", a.cfl, a.total_file);
     }

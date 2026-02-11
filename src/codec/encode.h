@@ -41,7 +41,12 @@ public:
         header.tile_cols = 1; header.tile_rows = 1; header.quality = quality; header.pindex_density = 2;
         uint32_t pad_w = header.padded_width(), pad_h = header.padded_height();
         uint16_t quant[64]; QuantTable::build_quant_table(quality, quant);
-        auto tile_data = encode_plane(pixels, width, height, pad_w, pad_h, quant, true, true);
+        int target_pi_meta_ratio = (quality >= 90) ? 1 : 2;
+        auto tile_data = encode_plane(
+            pixels, width, height, pad_w, pad_h, quant,
+            true, true, nullptr, 0, nullptr, nullptr, false, true,
+            target_pi_meta_ratio
+        );
         QMATChunk qmat; qmat.quality = quality; qmat.num_tables = 1; std::memcpy(qmat.quant_y, quant, 128);
         auto qmat_data = qmat.serialize();
         ChunkDirectory dir; dir.add("QMAT", 0, qmat_data.size()); dir.add("TIL0", 0, tile_data.size());
@@ -61,6 +66,7 @@ public:
         std::vector<uint8_t> y_plane(width * height), cb_plane(width * height), cr_plane(width * height);
         for (uint32_t i = 0; i < width * height; i++) rgb_to_ycbcr(rgb_data[i*3], rgb_data[i*3+1], rgb_data[i*3+2], y_plane[i], cb_plane[i], cr_plane[i]);
         bool use_band_group_cdf = (quality <= 70);
+        int target_pi_meta_ratio = (quality >= 90) ? 1 : 2;
         FileHeader header; header.width = width; header.height = height; header.bit_depth = 8;
         header.num_channels = 3; header.colorspace = 0; header.subsampling = use_420 ? 1 : 0;
         header.tile_cols = 1; header.tile_rows = 1; header.quality = quality; header.pindex_density = 2;
@@ -70,7 +76,11 @@ public:
         int chroma_quality = std::clamp((int)quality - 12, 1, 100);
         QuantTable::build_quant_tables(quality, chroma_quality, quant_y, quant_c);
         uint32_t pad_w_y = header.padded_width(), pad_h_y = header.padded_height();
-        auto tile_y = encode_plane(y_plane.data(), width, height, pad_w_y, pad_h_y, quant_y, true, true, nullptr, 0, nullptr, nullptr, enable_screen_profile, use_band_group_cdf);
+        auto tile_y = encode_plane(
+            y_plane.data(), width, height, pad_w_y, pad_h_y, quant_y,
+            true, true, nullptr, 0, nullptr, nullptr,
+            enable_screen_profile, use_band_group_cdf, target_pi_meta_ratio
+        );
         std::vector<uint8_t> tile_cb, tile_cr;
         if (use_420) {
             int cb_w, cb_h; std::vector<uint8_t> cb_420, cr_420, y_ds;
@@ -78,11 +88,27 @@ public:
             downsample_420(cr_plane.data(), width, height, cr_420, cb_w, cb_h);
             uint32_t pad_w_c = ((cb_w + 7) / 8) * 8, pad_h_c = ((cb_h + 7) / 8) * 8;
             if (use_cfl) { downsample_420(y_plane.data(), width, height, y_ds, cb_w, cb_h); }
-            tile_cb = encode_plane(cb_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, quant_c, true, true, use_cfl ? &y_ds : nullptr, 0, nullptr, nullptr, enable_screen_profile, use_band_group_cdf);
-            tile_cr = encode_plane(cr_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, quant_c, true, true, use_cfl ? &y_ds : nullptr, 1, nullptr, nullptr, enable_screen_profile, use_band_group_cdf);
+            tile_cb = encode_plane(
+                cb_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, quant_c,
+                true, true, use_cfl ? &y_ds : nullptr, 0, nullptr, nullptr,
+                enable_screen_profile, use_band_group_cdf, target_pi_meta_ratio
+            );
+            tile_cr = encode_plane(
+                cr_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, quant_c,
+                true, true, use_cfl ? &y_ds : nullptr, 1, nullptr, nullptr,
+                enable_screen_profile, use_band_group_cdf, target_pi_meta_ratio
+            );
         } else {
-            tile_cb = encode_plane(cb_plane.data(), width, height, pad_w_y, pad_h_y, quant_c, true, true, use_cfl ? &y_plane : nullptr, 0, nullptr, nullptr, enable_screen_profile, use_band_group_cdf);
-            tile_cr = encode_plane(cr_plane.data(), width, height, pad_w_y, pad_h_y, quant_c, true, true, use_cfl ? &y_plane : nullptr, 1, nullptr, nullptr, enable_screen_profile, use_band_group_cdf);
+            tile_cb = encode_plane(
+                cb_plane.data(), width, height, pad_w_y, pad_h_y, quant_c,
+                true, true, use_cfl ? &y_plane : nullptr, 0, nullptr, nullptr,
+                enable_screen_profile, use_band_group_cdf, target_pi_meta_ratio
+            );
+            tile_cr = encode_plane(
+                cr_plane.data(), width, height, pad_w_y, pad_h_y, quant_c,
+                true, true, use_cfl ? &y_plane : nullptr, 1, nullptr, nullptr,
+                enable_screen_profile, use_band_group_cdf, target_pi_meta_ratio
+            );
         }
         QMATChunk qmat;
         qmat.quality = quality;
@@ -108,7 +134,8 @@ public:
         const std::vector<FileHeader::BlockType>* block_types_in = nullptr,
         const std::vector<CopyParams>* copy_params_in = nullptr,
         bool enable_screen_profile = false,
-        bool use_band_group_cdf = true
+        bool use_band_group_cdf = true,
+        int target_pindex_meta_ratio_percent = 2
     ) {
         std::vector<uint8_t> padded = pad_image(pixels, width, height, pad_w, pad_h);
         std::vector<uint8_t> y_padded; if (y_ref) y_padded = pad_image(y_ref->data(), (y_ref->size() > width*height/2 ? width : (width+1)/2), (y_ref->size() > width*height/2 ? height : (height+1)/2), pad_w, pad_h);
@@ -294,7 +321,10 @@ public:
             if (sz[8]>0) tile_data.insert(tile_data.end(), pal_data.begin(), pal_data.end());
             if (sz[9]>0) tile_data.insert(tile_data.end(), cpy_data.begin(), cpy_data.end());
         } else {
-            auto ac_stream = encode_tokens(ac_tokens, build_cdf(ac_tokens), pi ? &pindex_data : nullptr);
+            auto ac_stream = encode_tokens(
+                ac_tokens, build_cdf(ac_tokens), pi ? &pindex_data : nullptr,
+                target_pindex_meta_ratio_percent
+            );
             // TileHeader v2 (legacy): 8 fields (32 bytes)
             uint32_t sz[8] = {
                 (uint32_t)dc_stream.size(),
@@ -320,17 +350,46 @@ public:
     }
 
     static CDFTable build_cdf(const std::vector<Token>& t) { std::vector<uint32_t> f(76, 1); for (const auto& x : t) { int sym = static_cast<int>(x.type); if (sym < 76) f[sym]++; } return CDFBuilder().build_from_freq(f); }
-    static std::vector<uint8_t> encode_tokens(const std::vector<Token>& t, const CDFTable& c, std::vector<uint8_t>* out_pi = nullptr) {
+    static int calculate_pindex_interval(
+        size_t token_count,
+        size_t encoded_token_stream_bytes,
+        int target_meta_ratio_percent = 2
+    ) {
+        if (token_count == 0 || encoded_token_stream_bytes == 0) return 4096;
+        target_meta_ratio_percent = std::clamp(target_meta_ratio_percent, 1, 10);
+        double target_meta_bytes = (double)encoded_token_stream_bytes * (double)target_meta_ratio_percent / 100.0;
+        // P-Index serialization: 12-byte header + 40 bytes/checkpoint.
+        double target_checkpoints = (target_meta_bytes - 12.0) / 40.0;
+        if (target_checkpoints < 1.0) target_checkpoints = 1.0;
+        double raw_interval = (double)token_count / target_checkpoints;
+        int interval = (int)std::llround(raw_interval);
+        interval = std::clamp(interval, 64, 4096);
+        interval = ((interval + 7) / 8) * 8;  // PIndexBuilder expects 8-aligned token interval.
+        return std::clamp(interval, 64, 4096);
+    }
+
+    static std::vector<uint8_t> encode_tokens(
+        const std::vector<Token>& t,
+        const CDFTable& c,
+        std::vector<uint8_t>* out_pi = nullptr,
+        int target_pindex_meta_ratio_percent = 2
+    ) {
         std::vector<uint8_t> output; int alpha = c.alphabet_size; std::vector<uint8_t> cdf_data(alpha * 4);
         for (int i = 0; i < alpha; i++) { uint32_t f = c.freq[i]; std::memcpy(&cdf_data[i * 4], &f, 4); }
         uint32_t cdf_size = cdf_data.size(); output.resize(4); std::memcpy(output.data(), &cdf_size, 4); output.insert(output.end(), cdf_data.begin(), cdf_data.end());
         uint32_t token_count = t.size(); size_t count_offset = output.size(); output.resize(count_offset + 4); std::memcpy(&output[count_offset], &token_count, 4);
         FlatInterleavedEncoder encoder; for (const auto& tok : t) encoder.encode_symbol(c, static_cast<uint8_t>(tok.type)); auto rb = encoder.finish();
-        if (out_pi) { auto pindex = PIndexBuilder::build(rb, c, t.size(), 1024); *out_pi = PIndexCodec::serialize(pindex); }
         uint32_t rans_size = rb.size(); size_t rs_offset = output.size(); output.resize(rs_offset + 4); std::memcpy(&output[rs_offset], &rans_size, 4); output.insert(output.end(), rb.begin(), rb.end());
         std::vector<uint8_t> raw_data; uint32_t raw_count = 0;
         for (const auto& tok : t) if (tok.raw_bits_count > 0) { raw_data.push_back(tok.raw_bits_count); raw_data.push_back(tok.raw_bits & 0xFF); raw_data.push_back((tok.raw_bits >> 8) & 0xFF); raw_count++; }
         size_t rc_offset = output.size(); output.resize(rc_offset + 4); std::memcpy(&output[rc_offset], &raw_count, 4); output.insert(output.end(), raw_data.begin(), raw_data.end());
+        if (out_pi) {
+            int interval = calculate_pindex_interval(
+                t.size(), output.size(), target_pindex_meta_ratio_percent
+            );
+            auto pindex = PIndexBuilder::build(rb, c, t.size(), (uint32_t)interval);
+            *out_pi = PIndexCodec::serialize(pindex);
+        }
         return output;
     }
 
