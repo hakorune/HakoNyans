@@ -539,6 +539,50 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
         }
 
     }
+
+    // Phase 9s-3: Screen-indexed gating telemetry
+    {
+        uint64_t sc_total = s.screen_candidate_count;
+        if (sc_total > 0) {
+            std::cout << "\n  Screen-indexed gating diagnostics\n";
+            std::cout << "  screen_candidates      " << sc_total << "\n";
+            std::cout << "  screen_selected        " << s.screen_selected_count << "\n";
+            
+            auto print_reject = [](const std::string& key, uint64_t val, uint64_t total) {
+                double pct = (total > 0) ? (100.0 * (double)val / (double)total) : 0.0;
+                std::cout << "    " << std::left << std::setw(21) << key
+                          << std::right << std::setw(8) << val
+                          << std::setw(9) << std::fixed << std::setprecision(2) << pct << "%\n";
+            };
+            uint64_t rejected_total = s.screen_rejected_pre_gate + s.screen_rejected_cost_gate;
+            std::cout << "  screen_rejected        " << rejected_total << "\n";
+            print_reject("pre_gate", s.screen_rejected_pre_gate, rejected_total);
+            print_reject("cost_gate", s.screen_rejected_cost_gate, rejected_total);
+            
+            if (s.screen_mode0_reject_count > 0) {
+                std::cout << "    (mode0_too_big)      " << s.screen_mode0_reject_count << "\n";
+            }
+            
+            uint64_t gate_total = s.screen_ui_like_count + s.screen_anime_like_count;
+            if (gate_total > 0) {
+                 std::cout << "  screen_profile_types   UI:" << s.screen_ui_like_count 
+                           << " Anime:" << s.screen_anime_like_count << "\n";
+            }
+            
+            auto print_gain = [](const std::string& key, uint64_t val) {
+                 std::cout << "  " << std::left << std::setw(23) << key << val << "\n";
+            };
+            
+            if (s.screen_selected_count > 0) {
+                 double avg_pal = (double)s.screen_palette_count_sum / (double)sc_total;
+                 std::cout << "  avg_palette_count      " << std::fixed << std::setprecision(1) << avg_pal << "\n";
+                 print_gain("total_gain_bytes", s.screen_gain_bytes_sum);
+            }
+            if (s.screen_rejected_cost_gate > 0) {
+                 print_gain("total_avoided_bloat", s.screen_loss_bytes_sum);
+            }
+        }
+    }
 }
 
 int main(int argc, char** argv) {

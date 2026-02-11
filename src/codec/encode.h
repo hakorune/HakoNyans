@@ -158,6 +158,19 @@ public:
         uint64_t filter_lo_ctx_nonempty_tiles;
         uint64_t filter_lo_ctx_bytes_sum[6];
 
+        // Phase 9s-3: Screen-indexed gating telemetry
+        uint64_t screen_candidate_count;
+        uint64_t screen_selected_count;
+        uint64_t screen_rejected_pre_gate;
+        uint64_t screen_rejected_cost_gate;
+        uint64_t screen_mode0_reject_count;
+        uint64_t screen_ui_like_count;
+        uint64_t screen_anime_like_count;
+        uint64_t screen_palette_count_sum;
+        uint64_t screen_bits_per_index_sum;
+        uint64_t screen_gain_bytes_sum;
+        uint64_t screen_loss_bytes_sum;
+
         LosslessModeDebugStats() { reset(); }
 
         void reset() {
@@ -266,6 +279,17 @@ public:
             std::memset(filter_lo_ctx_bytes_sum, 0, sizeof(filter_lo_ctx_bytes_sum));
             filter_lo_raw_bytes_sum = 0;
             filter_lo_compressed_bytes_sum = 0;
+            screen_candidate_count = 0;
+            screen_selected_count = 0;
+            screen_rejected_pre_gate = 0;
+            screen_rejected_cost_gate = 0;
+            screen_mode0_reject_count = 0;
+            screen_ui_like_count = 0;
+            screen_anime_like_count = 0;
+            screen_palette_count_sum = 0;
+            screen_bits_per_index_sum = 0;
+            screen_gain_bytes_sum = 0;
+            screen_loss_bytes_sum = 0;
         }
     };
 
@@ -2400,14 +2424,84 @@ public:
         if (!cpy_data.empty()) tile_data.insert(tile_data.end(), cpy_data.begin(), cpy_data.end());
         if (!tile4_data.empty()) tile_data.insert(tile_data.end(), tile4_data.begin(), tile4_data.end());
 
-        if (!use_photo_mode_bias && width * height >= 4096) {
+        // Phase 9s-3: Enhanced Gating for Screen-Indexed Mode
+        tl_lossless_mode_debug_stats_.screen_candidate_count++;
+
+        bool screen_pre_gate_pass = true;
+        // 1. Pre-gate: Reject if photo mode bias is active (means low copy hit rate)
+        if (use_photo_mode_bias) screen_pre_gate_pass = false;
+
+        // 2. Pre-gate: Reject small tiles (overhead dominates)
+        if (width * height < 4096) screen_pre_gate_pass = false;
+
+        if (!screen_pre_gate_pass) {
+            tl_lossless_mode_debug_stats_.screen_rejected_pre_gate++;
+        } else {
             auto screen_tile = encode_plane_lossless_screen_indexed_tile(data, width, height);
-            if (!screen_tile.empty()) {
-                uint64_t s = (uint64_t)screen_tile.size();
-                uint64_t b = (uint64_t)tile_data.size();
-                if (s * 100ull <= b * 98ull) {
-                    return screen_tile;
-                }
+            
+            if (screen_tile.empty() || screen_tile.size() < 14) {
+                 tl_lossless_mode_debug_stats_.screen_rejected_pre_gate++;
+            } else {
+                 // Parse header to check properties
+                 uint8_t screen_mode = screen_tile[1];
+                 uint16_t palette_count = (uint16_t)screen_tile[4] | ((uint16_t)screen_tile[5] << 8);
+                 uint32_t packed_size = (uint32_t)screen_tile[10] | ((uint32_t)screen_tile[11] << 8) |
+                                        ((uint32_t)screen_tile[12] << 16) | ((uint32_t)screen_tile[13] << 24);
+
+                 tl_lossless_mode_debug_stats_.screen_palette_count_sum += palette_count;
+                 
+                 int bits_per_index = 0;
+                 if (palette_count <= 2) bits_per_index = 1;
+                 else if (palette_count <= 4) bits_per_index = 2;
+                 else if (palette_count <= 16) bits_per_index = 4;
+                 else if (palette_count <= 64) bits_per_index = 6;
+                 else bits_per_index = 8;
+                 
+                 tl_lossless_mode_debug_stats_.screen_bits_per_index_sum += bits_per_index;
+
+                 // 3. Pre-gate strict checks
+                 bool reject_strict = false;
+                 if (palette_count > 48) reject_strict = true;
+                 if (bits_per_index > 6) reject_strict = true; 
+                 // Rate limit raw mode (mode=0) if it's large, to avoid bloat
+                 if (screen_mode == 0 && packed_size > 2048) {
+                      reject_strict = true;
+                      tl_lossless_mode_debug_stats_.screen_mode0_reject_count++;
+                 }
+
+                 if (reject_strict) {
+                     tl_lossless_mode_debug_stats_.screen_rejected_pre_gate++;
+                 } else {
+                      size_t legacy_size = tile_data.size();
+                      size_t screen_size = screen_tile.size();
+                      
+                      // Cost-gate: Category detection
+                      bool is_ui_like = (palette_count <= 24 && bits_per_index <= 5);
+                      bool is_anime_like = !is_ui_like;
+                      
+                      if (is_ui_like) tl_lossless_mode_debug_stats_.screen_ui_like_count++;
+                      else tl_lossless_mode_debug_stats_.screen_anime_like_count++;
+                      
+                      bool adopt = false;
+                      if (is_ui_like) {
+                          // UI: Require 1% gain
+                          if (screen_size * 100ull <= legacy_size * 99ull) adopt = true;
+                      } else {
+                          // Anime: Require 3% gain (conservative)
+                          if (screen_size * 100ull <= legacy_size * 97ull) adopt = true;
+                      }
+                      
+                      if (adopt) {
+                          tl_lossless_mode_debug_stats_.screen_selected_count++;
+                          if (legacy_size > screen_size)
+                              tl_lossless_mode_debug_stats_.screen_gain_bytes_sum += (legacy_size - screen_size);
+                          return screen_tile;
+                      } else {
+                          tl_lossless_mode_debug_stats_.screen_rejected_cost_gate++;
+                          if (screen_size > legacy_size)
+                              tl_lossless_mode_debug_stats_.screen_loss_bytes_sum += (screen_size - legacy_size);
+                      }
+                 }
             }
         }
         return tile_data;

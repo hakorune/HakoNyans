@@ -914,6 +914,16 @@ MEDの効果（Photo/Natural）を維持しつつ、UI/Anime側の将来回帰�
 13. [x] Phase 9s-1: `copy stream` wrapper（raw/rANS/LZ最小選択）✅
 14. [x] Phase 9s-2: `screen-profile v1`（global palette + index map）✅
 15. [ ] Phase 9s-3: UI/Anime 30枚の再計測とフォールバック条件確定
+   - 指示書: `docs/PHASE9S3_UI_ANIME_GATING_INSTRUCTIONS.md`
+   - 実装スコープ:
+     - `screen-profile v1` の採用しきい値を UI/Anime 向けに再調整
+     - タイル単位 fallback（`screen-indexed` vs `legacy lossless`）を追加
+     - `anime_sunset` など未達ケースを優先して mode 採用ログを追加
+   - 受け入れ基準:
+     - UIカテゴリ平均 `PNG_bytes / HKN_bytes <= 1.20`
+     - Animeカテゴリ平均 `PNG_bytes / HKN_bytes <= 1.05`
+     - Photoカテゴリは悪化禁止（中央値 `<= +1%`）
+     - `ctest` 全PASS、`bench_decode` スループット -5%以内
 16. [ ] Photo decodeのホットパス計測（`perf` / 自前timer）と上位3ボトルネック確定
 17. [ ] Photo向け decode最適化（CfL gate強化 → IDCT+dequant AVX2 → token分岐削減）
 18. [ ] Lossy画質回帰チェック（Artoria/UI/自然画像の目視 + PSNR/SSIM）
