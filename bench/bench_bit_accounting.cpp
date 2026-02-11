@@ -332,8 +332,44 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
         }
         std::cout << "  palette_stream_bytes   " << s.palette_stream_bytes_sum
                   << " (avg " << std::fixed << std::setprecision(2) << pal_bpb << " bits/palette-block)\n";
+        if (s.palette_stream_raw_bytes_sum > 0) {
+            double raw_bpb = (s.palette_selected > 0)
+                ? (8.0 * (double)s.palette_stream_raw_bytes_sum / (double)s.palette_selected) : 0.0;
+            std::cout << "  palette_raw_bytes      " << s.palette_stream_raw_bytes_sum
+                      << " (avg " << std::fixed << std::setprecision(2) << raw_bpb << " bits/palette-block)\n";
+        }
         std::cout << "  tile4_stream_bytes     " << s.tile4_stream_bytes_sum
                   << " (avg " << std::fixed << std::setprecision(2) << tile4_bpb << " bits/tile4-block)\n";
+
+        std::cout << "\n  Palette stream diagnostics\n";
+        std::cout << "  palette_stream_v2/v3   "
+                  << s.palette_stream_v2_count << "/"
+                  << s.palette_stream_v3_count << "\n";
+        std::cout << "  mask_dict_streams      " << s.palette_stream_mask_dict_count
+                  << " (entries " << s.palette_stream_mask_dict_entries << ")\n";
+        std::cout << "  palette_dict_streams   " << s.palette_stream_palette_dict_count
+                  << " (entries " << s.palette_stream_palette_dict_entries << ")\n";
+        if (s.palette_blocks_parsed > 0) {
+            double prev_pct = 100.0 * (double)s.palette_blocks_prev_reuse / (double)s.palette_blocks_parsed;
+            double dict_ref_pct = 100.0 * (double)s.palette_blocks_dict_ref / (double)s.palette_blocks_parsed;
+            double raw_pct = 100.0 * (double)s.palette_blocks_raw_colors / (double)s.palette_blocks_parsed;
+            std::cout << "  palette_blocks_parsed  " << s.palette_blocks_parsed << "\n";
+            std::cout << "    prev/dict/raw        "
+                      << s.palette_blocks_prev_reuse << "/"
+                      << s.palette_blocks_dict_ref << "/"
+                      << s.palette_blocks_raw_colors
+                      << " (" << std::fixed << std::setprecision(2)
+                      << prev_pct << "% / " << dict_ref_pct << "% / " << raw_pct << "%)\n";
+            std::cout << "    size<=2 / size>2     "
+                      << s.palette_blocks_two_color << " / " << s.palette_blocks_multi_color << "\n";
+        }
+        if (s.palette_stream_compact_count > 0) {
+            std::cout << "  compact_palette_used   " << s.palette_stream_compact_count
+                      << " (saved " << s.palette_stream_compact_saved_bytes_sum << " bytes)\n";
+        }
+        if (s.palette_parse_errors > 0) {
+            std::cout << "  palette_parse_errors   " << s.palette_parse_errors << "\n";
+        }
 
         std::cout << "\n  Copy stream diagnostics\n";
         std::cout << "  copy_stream_count      " << s.copy_stream_count << "\n";

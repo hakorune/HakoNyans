@@ -80,6 +80,22 @@ public:
         uint64_t block_type_runs_tile4;
 
         uint64_t palette_stream_bytes_sum;
+        uint64_t palette_stream_raw_bytes_sum;
+        uint64_t palette_stream_v2_count;
+        uint64_t palette_stream_v3_count;
+        uint64_t palette_stream_mask_dict_count;
+        uint64_t palette_stream_mask_dict_entries;
+        uint64_t palette_stream_palette_dict_count;
+        uint64_t palette_stream_palette_dict_entries;
+        uint64_t palette_blocks_parsed;
+        uint64_t palette_blocks_prev_reuse;
+        uint64_t palette_blocks_dict_ref;
+        uint64_t palette_blocks_raw_colors;
+        uint64_t palette_blocks_two_color;
+        uint64_t palette_blocks_multi_color;
+        uint64_t palette_parse_errors;
+        uint64_t palette_stream_compact_count;
+        uint64_t palette_stream_compact_saved_bytes_sum;
 
         uint64_t copy_stream_count;
         uint64_t copy_stream_mode0;
@@ -134,6 +150,22 @@ public:
             block_type_runs_copy = 0;
             block_type_runs_tile4 = 0;
             palette_stream_bytes_sum = 0;
+            palette_stream_raw_bytes_sum = 0;
+            palette_stream_v2_count = 0;
+            palette_stream_v3_count = 0;
+            palette_stream_mask_dict_count = 0;
+            palette_stream_mask_dict_entries = 0;
+            palette_stream_palette_dict_count = 0;
+            palette_stream_palette_dict_entries = 0;
+            palette_blocks_parsed = 0;
+            palette_blocks_prev_reuse = 0;
+            palette_blocks_dict_ref = 0;
+            palette_blocks_raw_colors = 0;
+            palette_blocks_two_color = 0;
+            palette_blocks_multi_color = 0;
+            palette_parse_errors = 0;
+            palette_stream_compact_count = 0;
+            palette_stream_compact_saved_bytes_sum = 0;
             copy_stream_count = 0;
             copy_stream_mode0 = 0;
             copy_stream_mode1 = 0;
@@ -803,6 +835,104 @@ public:
         return (compact.size() < raw.size()) ? compact : raw;
     }
 
+    static void accumulate_palette_stream_diagnostics(
+        const std::vector<uint8_t>& pal_raw,
+        LosslessModeDebugStats& s
+    ) {
+        if (pal_raw.empty()) return;
+
+        s.palette_stream_raw_bytes_sum += pal_raw.size();
+
+        size_t pos = 0;
+        bool is_v2 = false;
+        bool is_v3 = false;
+        uint8_t flags = 0;
+        auto bits_for_palette_size = [](int p_size) -> int {
+            if (p_size <= 1) return 0;
+            if (p_size <= 2) return 1;
+            if (p_size <= 4) return 2;
+            return 3;
+        };
+
+        auto fail = [&]() {
+            s.palette_parse_errors++;
+            return;
+        };
+
+        if (pal_raw[0] == 0x40 || pal_raw[0] == 0x41) {
+            is_v2 = true;
+            is_v3 = (pal_raw[0] == 0x41);
+            if (is_v3) s.palette_stream_v3_count++;
+            else s.palette_stream_v2_count++;
+            pos = 1;
+            if (pos >= pal_raw.size()) return fail();
+            flags = pal_raw[pos++];
+
+            if (flags & 0x01) {
+                if (pos >= pal_raw.size()) return fail();
+                uint8_t dict_count = pal_raw[pos++];
+                s.palette_stream_mask_dict_count++;
+                s.palette_stream_mask_dict_entries += dict_count;
+                size_t need = (size_t)dict_count * 8;
+                if (pos + need > pal_raw.size()) return fail();
+                pos += need;
+            }
+
+            if (is_v3 && (flags & 0x02)) {
+                if (pos >= pal_raw.size()) return fail();
+                uint8_t pal_dict_count = pal_raw[pos++];
+                s.palette_stream_palette_dict_count++;
+                s.palette_stream_palette_dict_entries += pal_dict_count;
+                for (uint8_t i = 0; i < pal_dict_count; i++) {
+                    if (pos >= pal_raw.size()) return fail();
+                    uint8_t psz = pal_raw[pos++];
+                    if (psz == 0 || psz > 8) return fail();
+                    if (pos + psz > pal_raw.size()) return fail();
+                    pos += psz;
+                }
+            }
+        }
+
+        while (pos < pal_raw.size()) {
+            uint8_t head = pal_raw[pos++];
+            bool use_prev = (head & 0x80) != 0;
+            bool use_dict_ref = is_v3 && !use_prev && ((head & 0x40) != 0);
+            int p_size = (head & 0x07) + 1;
+
+            s.palette_blocks_parsed++;
+            if (use_prev) s.palette_blocks_prev_reuse++;
+            else if (use_dict_ref) s.palette_blocks_dict_ref++;
+            else s.palette_blocks_raw_colors++;
+
+            if (p_size <= 2) s.palette_blocks_two_color++;
+            else s.palette_blocks_multi_color++;
+
+            if (!use_prev) {
+                if (use_dict_ref) {
+                    if (pos >= pal_raw.size()) return fail();
+                    pos += 1;
+                } else {
+                    if (pos + (size_t)p_size > pal_raw.size()) return fail();
+                    pos += (size_t)p_size;
+                }
+            }
+
+            if (!is_v2 || p_size <= 1) continue;
+
+            if (p_size == 2) {
+                size_t need = (flags & 0x01) ? 1 : 8;
+                if (pos + need > pal_raw.size()) return fail();
+                pos += need;
+                continue;
+            }
+
+            int bits = bits_for_palette_size(p_size);
+            size_t idx_bytes = (size_t)((64 * bits + 7) / 8);
+            if (pos + idx_bytes > pal_raw.size()) return fail();
+            pos += idx_bytes;
+        }
+    }
+
     // ========================================================================
     // Lossless encoding
     // ========================================================================
@@ -1371,9 +1501,11 @@ public:
 
         // --- Step 4: Encode block types, palette, copy, tile4 ---
         std::vector<uint8_t> bt_data = encode_block_types(block_types, true);
-        std::vector<uint8_t> pal_data = PaletteCodec::encode_palette_stream(
+        std::vector<uint8_t> pal_raw = PaletteCodec::encode_palette_stream(
             palettes, palette_indices, true
         );
+        std::vector<uint8_t> pal_data = pal_raw;
+        accumulate_palette_stream_diagnostics(pal_raw, tl_lossless_mode_debug_stats_);
         if (!pal_data.empty()) {
             // Optional compact envelope for palette stream:
             // [0xA7][mode=1][raw_count:u32][encoded_raw_palette_stream]
@@ -1388,6 +1520,9 @@ public:
                 std::memcpy(compact_pal.data() + 2, &raw_count, 4);
                 compact_pal.insert(compact_pal.end(), encoded_pal.begin(), encoded_pal.end());
                 if (compact_pal.size() < pal_data.size()) {
+                    tl_lossless_mode_debug_stats_.palette_stream_compact_count++;
+                    tl_lossless_mode_debug_stats_.palette_stream_compact_saved_bytes_sum +=
+                        (uint64_t)(pal_data.size() - compact_pal.size());
                     pal_data = std::move(compact_pal);
                 }
             }
