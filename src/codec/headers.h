@@ -33,13 +33,14 @@ struct FileHeader {
     uint8_t  reserved[16];  // 将来拡張用
     
     static constexpr uint32_t MAGIC = 0x484B4E00;       // 'HKN\0'
-    static constexpr uint16_t VERSION = 0x0008;         // v0.8 (copy stream mode3 RLE)
+    static constexpr uint16_t VERSION = 0x0009;         // v0.9 (filter stream wrapper)
     static constexpr uint16_t MIN_SUPPORTED_VERSION = 0x0003;
     static constexpr uint16_t VERSION_BAND_GROUP_CDF = 0x0004;
     static constexpr uint16_t VERSION_TILE_MATCH4 = 0x0005;
     static constexpr uint16_t VERSION_BLOCK_TYPES_V2 = 0x0006;
     static constexpr uint16_t VERSION_PALETTE_V3 = 0x0007;
     static constexpr uint16_t VERSION_COPY_MODE3 = 0x0008;
+    static constexpr uint16_t VERSION_FILTER_WRAPPER = 0x0009;
     
     enum class BlockType : uint8_t {
         DCT = 0,
@@ -51,6 +52,8 @@ struct FileHeader {
     static constexpr uint8_t WRAPPER_MAGIC_BLOCK_TYPES = 0xA6; // Both Compact v2 and LZ
     static constexpr uint8_t WRAPPER_MAGIC_PALETTE     = 0xA7; // Both Compact v3 and LZ
     static constexpr uint8_t WRAPPER_MAGIC_COPY        = 0xA8; // LZ only
+    static constexpr uint8_t WRAPPER_MAGIC_FILTER_IDS  = 0xA9; // rANS or LZ
+    static constexpr uint8_t WRAPPER_MAGIC_FILTER_HI   = 0xAA; // Sparse mode
 
     
     FileHeader() {

@@ -44,8 +44,9 @@
 - ✅ Palette v3 辞書 + 診断カウンタ（Phase 9l-0）
 - ✅ タイル内 LZ 系トークン導入（Phase 9l-1/2/3）
 - ✅ 9l-debug（block_types Mode1 symbol-range bug修正 + steady_clock化）
+- ✅ Copy stream Mode3 RLE entropy coding（Phase 9m）
 - ⏳ 可逆色変換の拡張（YCoCg-R 固定から）
-- ⏳ Copy stream entropy最適化（Phase 9m）
+- ⏳ Filter stream entropy最適化（Phase 9n）
 
 ### Phase 9l 実装結果（2026-02-12）
 
@@ -60,14 +61,25 @@
 - 実装指示書: `docs/PHASE9L_LZ_STREAM_PRIORITY_INSTRUCTIONS.md`
 - デバッグ指示書: `docs/PHASE9L_LZ_DEBUG_INSTRUCTIONS.md`
 
-### Phase 9m 次アクション（2026-02-12）
+### Phase 9m 実装結果（2026-02-12）
 
-- 現状ボトルネックは `copy stream`（UIで3割超）。
-- 次は `copy stream` の符号化そのものを改善する:
-  1. Mode3: small-vector ID の entropy coding（4値）
-  2. RLE token: 同一vector連続のrun-length化
-  3. tileごとに mode1/2/3/RLE の最小サイズ選択
-- 新規指示書: `docs/PHASE9M_COPY_STREAM_ENTROPY_INSTRUCTIONS.md`
+- `copy stream` に mode3（RLE token）を追加し、mode0/1/2/3 の4-way最小選択を導入。
+- `ctest`: 17/17 PASS
+- `bench_bit_accounting`（lossless, 1920x1080）:
+  - `vscode`: `copy_stream_bytes` 11271B -> 8419B（-25.3%）
+  - `anime_girl_portrait`: 24151B -> 2830B（-88.3%）
+  - `nature_01`: 11812B -> 7647B（-35.3%）
+- `nature_01` total size は -0.45% 改善（悪化なし）。
+- 速度面は `bench_decode` で 300MiB/s 帯を維持。
+
+### Phase 9n 次アクション（2026-02-12）
+
+- `copy stream` の次ボトルネックは `filter_ids/filter_lo/filter_hi`。
+- 次は filter stream 側の圧縮を改善する:
+  1. `filter_ids` wrapper（legacy rANS と LZ wrapper の最小選択）
+  2. `filter_hi` sparseモード（zero-mask + nonzero values）
+  3. tileごとの filter stream mode 自動選択（legacy/sparse/lz）
+- 新規指示書: `docs/PHASE9N_FILTER_STREAM_WRAPPER_INSTRUCTIONS.md`
 
 ## 直近の開発過程（9h-2 / 9h-3 / 9i-1 / 9j / 9j-2）
 
@@ -128,9 +140,9 @@
 
 ### P1（圧縮率をさらに伸ばす）
 
-6. Copy stream Mode3（small-vector entropy coding）
-7. Copy stream RLE token（同一vector run-length）
-8. Copy stream mode自動選択（mode1/2/3/RLE）
+6. Filter stream wrapper最適化（filter_ids の mode最小選択）
+7. Filter_hi sparseモード（zero-mask + nonzero values）
+8. Filter stream mode自動選択（legacy/sparse/lz）
 9. Lossless 可逆色変換の追加（YCoCg-R 固定から拡張）
 10. Lossy CfL（Chroma from Luma）導入
 
@@ -151,9 +163,9 @@
 | Band-group CDF | P0 | -3%〜-10% | 写真/アニメ | 小 | ほぼ0 | 低リスク |
 | 可逆色変換追加 | P1 | -5%〜-20% | 写真/混在UI | 中 | 微小 | 仕様拡張寄り |
 | MED predictor追加 | P1 | -5%〜-15% | 写真 | 小 | 小 | 実装軽量 |
-| copy mode3（entropy） | P1 | -3%〜-12% | UI/アニメ/ゲーム | 中 | 小 | copy比率が高い画像で有効 |
-| copy run-length token | P1 | -2%〜-8% | UI/アニメ | 小〜中 | 小 | 同一vector連続で有効 |
-| copy mode自動選択 | P1 | -1%〜-5% | 全カテゴリ | 小 | 小 | 悪化回避ガード |
+| filter_ids wrapper最適化 | P1 | -1%〜-5% | UI/Anime/Photo | 小〜中 | 小 | rANS/LZの自動選択 |
+| filter_hi sparseモード | P1 | -2%〜-10% | Photo/Anime | 中 | 小 | hi-byteが疎な画像で有効 |
+| filter stream自動選択 | P1 | -1%〜-6% | 全カテゴリ | 小 | 小 | 悪化回避ガード |
 | CfL | P1 | -3%〜-7% | 写真/アニメ | 中 | 小 | 色ずれ管理が必要 |
 | Lossy palette/intra-copy | P2 | -10%〜-40%* | UI/アニメ | 大 | 小〜中 | *ケース依存 |
 

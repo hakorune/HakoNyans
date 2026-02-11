@@ -1164,6 +1164,28 @@ tile内の補助ストリームに LZ wrapper を導入し、UI系のメタデ�
 
 ---
 
+### Phase 9m: Copy stream Mode3（RLE entropy coding）(2026-02-12)
+
+`copy stream` の4-way最小選択（mode0/1/2/3）を導入し、同一ベクトル連続をRLE token化。
+
+**主な変更**:
+1. `src/codec/copy.h` に mode3 実装（`[mode=3][used_mask][run_tokens...]`）
+2. `src/codec/headers.h` を `VERSION=0x0008` に更新、`VERSION_COPY_MODE3` 追加
+3. `src/codec/encode.h` に mode3テレメトリ追加
+4. `bench/bench_bit_accounting.cpp` に mode0/1/2/3 と run統計の可視化追加
+5. `tests/test_lossless_round2.cpp` に mode3系テスト3件を追加（long run/mixed/malformed）
+
+**検証結果**:
+- `ctest`: 17/17 PASS
+- `bench_bit_accounting`:
+  - `vscode`: `copy_stream_bytes` 11271B -> 8419B（-25.3%）
+  - `anime_girl_portrait`: 24151B -> 2830B（-88.3%）
+  - `nature_01`: 11812B -> 7647B（-35.3%）
+- `nature_01` total size: 932061B -> 927896B（-0.45%）
+- `bench_decode`: 300MiB/s帯を維持
+
+---
+
 ## 🏆 技術的ハイライト
 
 ### 1. NyANS-P エントロピーエンジン

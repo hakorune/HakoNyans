@@ -577,10 +577,34 @@ Phase 9 P0（コア4項目）+ チューニング2項目 完了！🏆
 - [x] Phase 9l-3: LZ導入（palette stream/index map）✅ (2026-02-12)
 - [x] Phase 9l-debug: 停止バグ修正 + 計測clock安定化（steady_clock）✅ (2026-02-12)
   - 実装指示書: `docs/PHASE9L_LZ_STREAM_PRIORITY_INSTRUCTIONS.md`
-- [ ] Phase 9m-1: Copy stream Mode3（small-vector entropy coding）
-- [ ] Phase 9m-2: Copy stream RLEトークン（連続ベクトル圧縮）
-- [ ] Phase 9m-3: Copy stream mode自動選択（mode1/2/3/RLE）
+- [x] Phase 9m-1: Copy stream Mode3（small-vector entropy coding）✅ (2026-02-12)
+- [x] Phase 9m-2: Copy stream RLEトークン（連続ベクトル圧縮）✅ (2026-02-12)
+- [x] Phase 9m-3: Copy stream mode自動選択（mode1/2/3/RLE）✅ (2026-02-12)
   - 実装指示書: `docs/PHASE9M_COPY_STREAM_ENTROPY_INSTRUCTIONS.md`
+- [ ] Phase 9n-1: filter_ids stream wrapper最適化（rANS/LZ自動選択）
+- [ ] Phase 9n-2: filter_hi sparseモード（zero-mask + values）追加
+- [ ] Phase 9n-3: filter stream mode自動選択（legacy/sparse/lz）
+  - 実装指示書: `docs/PHASE9N_FILTER_STREAM_WRAPPER_INSTRUCTIONS.md`
+
+---
+
+### Phase 9m: Copy stream Mode3 実装結果 ✅ (2026-02-12)
+
+**実装内容**:
+- `copy stream` に mode3（RLE token）を追加し、mode0/1/2/3 の4-way最小選択を導入
+- `src/codec/copy.h` に mode3 encode/decode 実装
+- `bench_bit_accounting` に mode3統計（run token/平均run長/long run）を追加
+
+**検証結果**:
+- `ctest`: **17/17 PASS**
+- `bench_bit_accounting`:
+  - `vscode`: `copy_stream_bytes` **11271B -> 8419B (-25.3%)**
+  - `anime_girl_portrait`: **24151B -> 2830B (-88.3%)**
+  - `nature_01`: **11812B -> 7647B (-35.3%)**
+- `nature_01` total size: **-0.45%**（悪化なし）
+
+**結論**:
+copy stream の圧縮効率は大幅改善。次ボトルネックは `filter_ids/filter_lo/filter_hi`。
 
 ---
 
@@ -710,7 +734,7 @@ MEDの効果（Photo/Natural）を維持しつつ、UI/Anime側の将来回帰�
 
 ---
 
-### 直近実行セット: Beyond PNG（Copy stream最適化ルート）🚧
+### 直近実行セット: Beyond PNG（Filter stream最適化ルート）🚧
 
 **ゴール（投稿判定ライン）**:
 - `Lossless vs PNG`:
@@ -727,15 +751,16 @@ MEDの効果（Photo/Natural）を維持しつつ、UI/Anime側の将来回帰�
 **実行タスク（順序固定）**:
 1. [x] Phase 9l-1/2/3: tile-local LZ導入（copy/block_types/palette）✅
 2. [x] Phase 9l-debug: block_types Mode1 symbol-range bug修正、anime timeout解消 ✅
-3. [ ] Phase 9m-1: `copy stream` entropy mode（Mode3）導入
-4. [ ] Phase 9m-2: `copy stream` run-length token導入（同一vector連続圧縮）
-5. [ ] Phase 9m-3: tileごとのcopy mode最適選択（mode1/2/3/RLE）
-6. [ ] `lossless_png_compare` 再計測（UI/Anime/Photo 各30枚）
-7. [ ] Photo decodeのホットパス計測（`perf` / 自前timer）と上位3ボトルネック確定
-8. [ ] Photo向け decode最適化（CfL gate強化 → IDCT+dequant AVX2 → token分岐削減）
-9. [ ] Lossy画質回帰チェック（Artoria/UI/自然画像の目視 + PSNR/SSIM）
-10. [ ] Paper用テーブル更新（`Dec(ms)`統一、サイズ・画質・速度を同一セットで再生成）
-11. [ ] 投稿判定レビュー（勝ち筋/弱点/今後課題を1ページに要約）
+3. [x] Phase 9m-1/2/3: `copy stream` mode3 + RLE + 自動選択 ✅
+4. [ ] Phase 9n-1: `filter_ids` wrapper（rANS/LZの最小サイズ選択）
+5. [ ] Phase 9n-2: `filter_hi` sparseモード（zero-mask + nonzero values）
+6. [ ] Phase 9n-3: tileごとのfilter stream mode最適選択（legacy/sparse/lz）
+7. [ ] `lossless_png_compare` 再計測（UI/Anime/Photo 各30枚）
+8. [ ] Photo decodeのホットパス計測（`perf` / 自前timer）と上位3ボトルネック確定
+9. [ ] Photo向け decode最適化（CfL gate強化 → IDCT+dequant AVX2 → token分岐削減）
+10. [ ] Lossy画質回帰チェック（Artoria/UI/自然画像の目視 + PSNR/SSIM）
+11. [ ] Paper用テーブル更新（`Dec(ms)`統一、サイズ・画質・速度を同一セットで再生成）
+12. [ ] 投稿判定レビュー（勝ち筋/弱点/今後課題を1ページに要約）
 
 **受け入れ基準（DoD）**:
 - [ ] `ctest` 全PASS維持

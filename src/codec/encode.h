@@ -122,6 +122,18 @@ public:
         uint64_t copy_mode2_dynamic_bits_sum;
         uint64_t tile4_stream_bytes_sum;
 
+        // Phase 9n: filter stream wrapper telemetry
+        uint64_t filter_ids_mode0;
+        uint64_t filter_ids_mode1;
+        uint64_t filter_ids_mode2;
+        uint64_t filter_ids_raw_bytes_sum;
+        uint64_t filter_ids_compressed_bytes_sum;
+        uint64_t filter_hi_sparse_count;
+        uint64_t filter_hi_dense_count;
+        uint64_t filter_hi_zero_ratio_sum;
+        uint64_t filter_hi_raw_bytes_sum;
+        uint64_t filter_hi_compressed_bytes_sum;
+
         LosslessModeDebugStats() { reset(); }
 
         void reset() {
@@ -200,6 +212,16 @@ public:
             copy_mode2_zero_bit_streams = 0;
             copy_mode2_dynamic_bits_sum = 0;
             tile4_stream_bytes_sum = 0;
+            filter_ids_mode0 = 0;
+            filter_ids_mode1 = 0;
+            filter_ids_mode2 = 0;
+            filter_ids_raw_bytes_sum = 0;
+            filter_ids_compressed_bytes_sum = 0;
+            filter_hi_sparse_count = 0;
+            filter_hi_dense_count = 0;
+            filter_hi_zero_ratio_sum = 0;
+            filter_hi_raw_bytes_sum = 0;
+            filter_hi_compressed_bytes_sum = 0;
         }
     };
 
@@ -1607,7 +1629,55 @@ public:
                 hi_bytes[i] = (uint8_t)((zz >> 8) & 0xFF);
             }
             lo_stream = encode_byte_stream(lo_bytes);
-            hi_stream = encode_byte_stream(hi_bytes);
+
+            // --- Phase 9n: filter_hi sparse mode ---
+            size_t zero_count = 0;
+            for (uint8_t b : hi_bytes) if (b == 0) zero_count++;
+            double zero_ratio = (double)zero_count / (double)hi_bytes.size();
+            tl_lossless_mode_debug_stats_.filter_hi_raw_bytes_sum += hi_bytes.size();
+            tl_lossless_mode_debug_stats_.filter_hi_zero_ratio_sum += (uint64_t)(zero_ratio * 100.0);
+
+            auto hi_rans = encode_byte_stream(hi_bytes);
+
+            if (zero_ratio >= 0.75 && hi_bytes.size() >= 32) {
+                // Try sparse: [0xAA][nz_lo][nz_mid][nz_hi][zero_mask][nonzero_rANS]
+                size_t mask_size = (hi_bytes.size() + 7) / 8;
+                std::vector<uint8_t> zero_mask(mask_size, 0);
+                std::vector<uint8_t> nonzero_vals;
+                nonzero_vals.reserve(hi_bytes.size() - zero_count);
+
+                for (size_t i = 0; i < hi_bytes.size(); i++) {
+                    if (hi_bytes[i] != 0) {
+                        zero_mask[i / 8] |= (1u << (i % 8));
+                        nonzero_vals.push_back(hi_bytes[i]);
+                    }
+                }
+
+                std::vector<uint8_t> sparse_stream;
+                sparse_stream.push_back(FileHeader::WRAPPER_MAGIC_FILTER_HI);
+                uint32_t nz_count = (uint32_t)nonzero_vals.size();
+                sparse_stream.push_back((uint8_t)(nz_count & 0xFF));
+                sparse_stream.push_back((uint8_t)((nz_count >> 8) & 0xFF));
+                sparse_stream.push_back((uint8_t)((nz_count >> 16) & 0xFF));
+                sparse_stream.insert(sparse_stream.end(), zero_mask.begin(), zero_mask.end());
+
+                if (!nonzero_vals.empty()) {
+                    auto nz_rans = encode_byte_stream(nonzero_vals);
+                    sparse_stream.insert(sparse_stream.end(), nz_rans.begin(), nz_rans.end());
+                }
+
+                if (sparse_stream.size() < hi_rans.size()) {
+                    hi_stream = std::move(sparse_stream);
+                    tl_lossless_mode_debug_stats_.filter_hi_sparse_count++;
+                } else {
+                    hi_stream = std::move(hi_rans);
+                    tl_lossless_mode_debug_stats_.filter_hi_dense_count++;
+                }
+            } else {
+                hi_stream = std::move(hi_rans);
+                tl_lossless_mode_debug_stats_.filter_hi_dense_count++;
+            }
+            tl_lossless_mode_debug_stats_.filter_hi_compressed_bytes_sum += hi_stream.size();
         }
 
         // --- Step 4: Encode block types, palette, copy, tile4 ---
@@ -1714,9 +1784,49 @@ public:
             }
         }
 
-        // --- Step 5: Pack tile data (32-byte header) ---
+        // --- Step 5: Compress filter_ids (Phase 9n) ---
+        tl_lossless_mode_debug_stats_.filter_ids_raw_bytes_sum += filter_ids.size();
+        std::vector<uint8_t> filter_ids_packed;
+
+        if (filter_ids.size() >= 8) {
+            // Try rANS
+            auto fid_rans = encode_byte_stream(filter_ids);
+            size_t rans_wrapped_size = 2 + fid_rans.size(); // [magic][mode=1][data]
+
+            // Try LZ
+            auto fid_lz = TileLZ::compress(filter_ids);
+            size_t lz_wrapped_size = 2 + fid_lz.size(); // [magic][mode=2][data]
+
+            size_t raw_size = filter_ids.size();
+            size_t best_size = raw_size;
+            int best_mode = 0;
+
+            if (rans_wrapped_size < best_size) { best_size = rans_wrapped_size; best_mode = 1; }
+            if (lz_wrapped_size < best_size)   { best_size = lz_wrapped_size; best_mode = 2; }
+
+            if (best_mode == 1) {
+                filter_ids_packed.push_back(FileHeader::WRAPPER_MAGIC_FILTER_IDS);
+                filter_ids_packed.push_back(1); // mode=rANS
+                filter_ids_packed.insert(filter_ids_packed.end(), fid_rans.begin(), fid_rans.end());
+                tl_lossless_mode_debug_stats_.filter_ids_mode1++;
+            } else if (best_mode == 2) {
+                filter_ids_packed.push_back(FileHeader::WRAPPER_MAGIC_FILTER_IDS);
+                filter_ids_packed.push_back(2); // mode=LZ
+                filter_ids_packed.insert(filter_ids_packed.end(), fid_lz.begin(), fid_lz.end());
+                tl_lossless_mode_debug_stats_.filter_ids_mode2++;
+            } else {
+                filter_ids_packed = filter_ids; // raw
+                tl_lossless_mode_debug_stats_.filter_ids_mode0++;
+            }
+        } else {
+            filter_ids_packed = filter_ids; // too small to wrap
+            tl_lossless_mode_debug_stats_.filter_ids_mode0++;
+        }
+        tl_lossless_mode_debug_stats_.filter_ids_compressed_bytes_sum += filter_ids_packed.size();
+
+        // --- Step 6: Pack tile data (32-byte header) ---
         uint32_t hdr[8] = {
-            (uint32_t)filter_ids.size(),
+            (uint32_t)filter_ids_packed.size(),
             (uint32_t)lo_stream.size(),
             (uint32_t)hi_stream.size(),
             filter_pixel_count,
@@ -1729,7 +1839,7 @@ public:
         std::vector<uint8_t> tile_data;
         tile_data.resize(32);
         std::memcpy(tile_data.data(), hdr, 32);
-        tile_data.insert(tile_data.end(), filter_ids.begin(), filter_ids.end());
+        tile_data.insert(tile_data.end(), filter_ids_packed.begin(), filter_ids_packed.end());
         tile_data.insert(tile_data.end(), lo_stream.begin(), lo_stream.end());
         tile_data.insert(tile_data.end(), hi_stream.begin(), hi_stream.end());
         if (!bt_data.empty()) tile_data.insert(tile_data.end(), bt_data.begin(), bt_data.end());

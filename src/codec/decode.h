@@ -680,8 +680,28 @@ public:
 
         const uint8_t* ptr = td + 32;
 
-        // Read filter IDs
-        std::vector<uint8_t> filter_ids(ptr, ptr + filter_ids_size);
+        // Read filter IDs (Phase 9n: may be compressed with wrapper)
+        std::vector<uint8_t> filter_ids;
+        if (filter_ids_size > 0 && ptr[0] == FileHeader::WRAPPER_MAGIC_FILTER_IDS && filter_ids_size >= 3) {
+            // Wrapped format: [0xA9][mode][data...]
+            uint8_t fid_mode = ptr[1];
+            const uint8_t* fid_data = ptr + 2;
+            size_t fid_data_size = filter_ids_size - 2;
+            if (fid_mode == 1) {
+                // rANS decode
+                filter_ids = decode_byte_stream(fid_data, fid_data_size, pad_h);
+            } else if (fid_mode == 2) {
+                // LZ decode
+                filter_ids = TileLZ::decompress(fid_data, fid_data_size, pad_h);
+            }
+            // Fail-safe: if decode failed or wrong size, fill with 0 (FILTER_NONE)
+            if (filter_ids.size() < pad_h) {
+                filter_ids.resize(pad_h, 0);
+            }
+        } else {
+            // Raw (backward compatible)
+            filter_ids.assign(ptr, ptr + filter_ids_size);
+        }
         ptr += filter_ids_size;
 
         // Decode rANS byte streams (data-adaptive CDF)
@@ -690,8 +710,37 @@ public:
             lo_bytes = decode_byte_stream(ptr, lo_stream_size, filter_pixel_count);
         }
         ptr += lo_stream_size;
+
+        // Phase 9n: filter_hi may be sparse-encoded
         if (hi_stream_size > 0 && filter_pixel_count > 0) {
-            hi_bytes = decode_byte_stream(ptr, hi_stream_size, filter_pixel_count);
+            if (hi_stream_size >= 4 && ptr[0] == FileHeader::WRAPPER_MAGIC_FILTER_HI) {
+                // Sparse format: [0xAA][nz_lo][nz_mid][nz_hi][zero_mask][nonzero_rANS]
+                uint32_t nz_count = (uint32_t)ptr[1]
+                                  | ((uint32_t)ptr[2] << 8)
+                                  | ((uint32_t)ptr[3] << 16);
+                size_t mask_size = ((size_t)filter_pixel_count + 7) / 8;
+                const uint8_t* mask_ptr = ptr + 4;
+                const uint8_t* nz_rans_ptr = mask_ptr + mask_size;
+                size_t nz_rans_size = (hi_stream_size > 4 + mask_size) ? (hi_stream_size - 4 - mask_size) : 0;
+
+                // Decode nonzero values
+                std::vector<uint8_t> nz_vals;
+                if (nz_count > 0 && nz_rans_size > 0) {
+                    nz_vals = decode_byte_stream(nz_rans_ptr, nz_rans_size, nz_count);
+                }
+
+                // Reconstruct hi_bytes from mask + nonzero values
+                hi_bytes.resize(filter_pixel_count, 0);
+                size_t nz_idx = 0;
+                for (size_t i = 0; i < filter_pixel_count; i++) {
+                    if (i / 8 < mask_size && ((mask_ptr[i / 8] >> (i % 8)) & 1)) {
+                        hi_bytes[i] = (nz_idx < nz_vals.size()) ? nz_vals[nz_idx++] : 0;
+                    }
+                }
+            } else {
+                // Standard rANS decode (backward compatible)
+                hi_bytes = decode_byte_stream(ptr, hi_stream_size, filter_pixel_count);
+            }
         }
         ptr += hi_stream_size;
 

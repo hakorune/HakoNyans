@@ -418,6 +418,36 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
             std::cout << "  mode3_long_runs(>=16)  " << s.copy_mode3_long_runs << "\n";
         }
     }
+
+    // Filter stream diagnostics (Phase 9n)
+    {
+        uint64_t fid_total = s.filter_ids_mode0 + s.filter_ids_mode1 + s.filter_ids_mode2;
+        if (fid_total > 0 || s.filter_hi_sparse_count + s.filter_hi_dense_count > 0) {
+            std::cout << "\n  Filter stream diagnostics\n";
+            std::cout << "  filter_ids_mode0/1/2   "
+                      << s.filter_ids_mode0 << "/"
+                      << s.filter_ids_mode1 << "/"
+                      << s.filter_ids_mode2 << "\n";
+            if (s.filter_ids_raw_bytes_sum > 0) {
+                double savings = 100.0 * (1.0 - (double)s.filter_ids_compressed_bytes_sum / (double)s.filter_ids_raw_bytes_sum);
+                std::cout << "  filter_ids_bytes       raw=" << s.filter_ids_raw_bytes_sum
+                          << " compressed=" << s.filter_ids_compressed_bytes_sum
+                          << " (" << std::fixed << std::setprecision(1) << savings << "% savings)\n";
+            }
+            uint64_t fhi_total = s.filter_hi_sparse_count + s.filter_hi_dense_count;
+            std::cout << "  filter_hi_sparse/dense " << s.filter_hi_sparse_count << "/" << s.filter_hi_dense_count << "\n";
+            if (fhi_total > 0) {
+                std::cout << "  filter_hi_avg_zero_ratio " << std::fixed << std::setprecision(1)
+                          << (double)s.filter_hi_zero_ratio_sum / (double)fhi_total << "%\n";
+            }
+            if (s.filter_hi_raw_bytes_sum > 0) {
+                double savings = 100.0 * (1.0 - (double)s.filter_hi_compressed_bytes_sum / (double)s.filter_hi_raw_bytes_sum);
+                std::cout << "  filter_hi_bytes        raw=" << s.filter_hi_raw_bytes_sum
+                          << " compressed=" << s.filter_hi_compressed_bytes_sum
+                          << " (" << std::fixed << std::setprecision(1) << savings << "% savings)\n";
+            }
+        }
+    }
 }
 
 int main(int argc, char** argv) {
