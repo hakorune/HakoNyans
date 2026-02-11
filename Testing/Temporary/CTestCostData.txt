@@ -1,1 +1,18 @@
+rans_simple 14 0.000265582
+interleaved 14 0.000605861
+avx2_rans 14 0.00168549
+parallel 14 0.0906418
+phase5_components 14 0.000166225
+codec_gray 14 0.000458137
+codec_color 14 0.000985594
+adaptive_quant 14 0.000366654
+subsampling_420 14 0.000785388
+cfl 15 0.000725165
+band_cdf 14 0.000725709
+screen_profile_step1 14 0.000294521
+screen_profile_step2 14 0.00016643
+screen_profile_step3 14 0.00025049
+screen_profile_step4 14 0.000325682
+lossless_round1 15 0.0208207
+lossless_round2 15 0.00235938
 ---

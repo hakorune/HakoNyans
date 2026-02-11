@@ -1,0 +1,37 @@
+Image: ../test_images/photo/nature_01.ppm (1920x1080)
+
+=== Lossless ===
+Component                Bytes    Share
+----------------------------------------------
+file_header                 48      0.01%
+chunk_dir                   64      0.01%
+qmat                         0      0.00%
+tile_header                 96      0.01%
+filter_ids                3240      0.34%
+filter_lo               849303     90.24%
+filter_hi                34482      3.66%
+block_types              24417      2.59%
+palette                   8657      0.92%
+copy                     11812      1.26%
+tile4                     9010      0.96%
+unknown                      0      0.00%
+----------------------------------------------
+TOTAL                   941129    100.00%
+
+Mode Selection Stats (Lossless)
+----------------------------------------------
+  total_blocks           97200
+  copy_candidates          47233     48.59%
+  palette_candidates       57506     59.16%
+  copy_palette_overlap     43676     44.93%
+  copy_selected            47233     48.59%
+  tile4_selected            4505      4.63%
+  palette_selected          3061      3.15%
+  filter_any_selected      42401     43.62%
+  filter_med_rows              1253
+  est_copy_bits_sum      393926 (avg 8.34 bits/candidate)
+  est_palette_bits_sum   1459442 (avg 25.38 bits/candidate)
+  est_selected_bits      4931406
+  est_filter_bits        6445096
+  est_bits_per_block     50.73 (selected) / 66.31 (filter-only)
+  est_gain_vs_filter     23.49%

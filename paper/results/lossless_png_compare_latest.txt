@@ -1,0 +1,83 @@
+=== PNG vs HKN Lossless Benchmark ===
+=====================================
+
+Processing UI/browser... done (PNG:9KB, HKN:21KB)
+Processing UI/vscode... done (PNG:11KB, HKN:49KB)
+Processing UI/terminal... done (PNG:9KB, HKN:27KB)
+Processing Anime/anime_girl... done (PNG:8KB, HKN:37KB)
+Processing Anime/anime_sunset... done (PNG:10KB, HKN:39KB)
+Processing Photo/nature_01... done (PNG:1251KB, HKN:919KB)
+Processing Photo/nature_02... done (PNG:1412KB, HKN:992KB)
+Processing Game/minecraft_2d... done (PNG:8KB, HKN:31KB)
+Processing Game/retro... done (PNG:9KB, HKN:38KB)
+Processing Natural/kodim01... done (PNG:5KB, HKN:125KB)
+Processing Natural/kodim02... done (PNG:2KB, HKN:27KB)
+Processing Natural/kodim03... done (PNG:117KB, HKN:453KB)
+Processing Natural/hd_01... done (PNG:8KB, HKN:991KB)
+
+================================================================================
+                         PNG vs HKN Lossless Comparison                      
+================================================================================
+Image                      PNG(KB)   HKN(KB)     Size%     PNG Dec     HKN Dec  Category  
+--------------------------------------------------------------------------------
+browser                       10.0      21.5    +115%      12.31ms      13.14msUI          
+vscode                        11.4      50.0    +337%      12.05ms      15.21msUI          
+terminal                       9.7      27.9    +189%      11.42ms      14.19msUI          
+anime_girl                     9.0      37.6    +318%      11.40ms      14.02msAnime       
+anime_sunset                  10.4      39.9    +283%      13.25ms      14.62msAnime       
+nature_01                   1251.4     919.1     -26%      16.37ms      42.11msPhoto       
+nature_02                   1412.6     992.6     -29%      19.51ms      48.59msPhoto       
+minecraft_2d                   8.8      31.3    +257%      11.18ms      13.32msGame        
+retro                          9.4      38.9    +314%      12.11ms      13.07msGame        
+kodim01                        5.1     125.8   +2376%       1.33ms       7.74msNatural     
+kodim02                        2.2      27.8   +1190%       2.03ms       3.43msNatural     
+kodim03                      117.6     453.2    +285%       2.88ms      14.36msNatural     
+hd_01                          8.6     991.2  +11453%      10.44ms      53.99msNatural     
+================================================================================
+
+=== Category Averages ===
+Anime            +300%     0.42x enc     0.86x dec (n=2)
+Game             +285%     0.44x enc     0.88x dec (n=2)
+Natural         +3826%     0.76x enc     0.29x dec (n=4)
+Photo             -28%     2.80x enc     0.40x dec (n=2)
+UI               +214%     0.44x enc     0.84x dec (n=3)
+
+=== Markdown Table for BENCHMARKS.md ===
+
+## PNG vs HKN Lossless Comparison
+
+**Date**: Feb 11 2026
+**Hardware**: x86_64 (AVX2 enabled)
+**Test Conditions**: PNG level 9 vs HKN Lossless (YCoCg-R + filters)
+
+### Overall Results
+
+| Image | Category | PNG (KB) | HKN (KB) | Size Ratio | Enc Speedup | Dec Speedup |
+|-------|----------|----------|----------|------------|-------------|-------------|
+| browser | UI | 10.0 | 21.5 | 2.16x ❌ | 0.44x | 0.94x |
+| vscode | UI | 11.4 | 50.0 | 4.38x ❌ | 0.44x | 0.79x |
+| terminal | UI | 9.7 | 27.9 | 2.89x ❌ | 0.44x | 0.80x |
+| anime_girl | Anime | 9.0 | 37.6 | 4.18x ❌ | 0.42x | 0.81x |
+| anime_sunset | Anime | 10.4 | 39.9 | 3.84x ❌ | 0.41x | 0.91x |
+| nature_01 | Photo | 1251.4 | 919.1 | 0.73x ✅ | 2.21x | 0.39x |
+| nature_02 | Photo | 1412.6 | 992.6 | 0.70x ✅ | 3.39x | 0.40x |
+| minecraft_2d | Game | 8.8 | 31.3 | 3.57x ❌ | 0.42x | 0.84x |
+| retro | Game | 9.4 | 38.9 | 4.14x ❌ | 0.45x | 0.93x |
+| kodim01 | Natural | 5.1 | 125.8 | 24.77x ❌ | 0.30x | 0.17x |
+| kodim02 | Natural | 2.2 | 27.8 | 12.90x ❌ | 0.33x | 0.59x |
+| kodim03 | Natural | 117.6 | 453.2 | 3.85x ❌ | 2.71x | 0.20x |
+| hd_01 | Natural | 8.6 | 991.2 | 115.54x ❌ | -0.30x | 0.19x |
+
+### Category Analysis
+
+| Category | Images | Avg Size Ratio | Avg Enc Speedup | Avg Dec Speedup |
+|----------|--------|----------------|-----------------|-----------------|
+| Anime | 2 | 4.01x ❌ | 0.42x | 0.86x |
+| Game | 2 | 3.86x ❌ | 0.44x | 0.88x |
+| Natural | 4 | 39.26x ❌ | 0.76x | 0.29x |
+| Photo | 2 | 0.72x ✅ | 2.80x | 0.40x |
+| UI | 3 | 3.14x ❌ | 0.44x | 0.84x |
+
+=== Interpretation ===
+Size Ratio: <1.0 = HKN smaller (better), >1.0 = PNG smaller
+Enc/Dec Speedup: >1.0 = HKN faster (better)

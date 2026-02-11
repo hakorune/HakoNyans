@@ -1,0 +1,6 @@
+category,count,avg_size_ratio_hkn_over_png,avg_enc_speedup_hkn_vs_png,avg_dec_speedup_hkn_vs_png,avg_png_dec_ms,avg_hkn_dec_ms
+Anime,2,4.0072,0.0,0.8597,12.325,14.32
+Game,2,3.8476,0.0,0.8829,11.645,13.195
+Natural,4,39.1031,0.0,0.2894,4.17,19.88
+Photo,2,0.7186,0.0,0.3951,17.94,45.35
+UI,3,3.1374,0.0,0.8446,11.9267,14.18

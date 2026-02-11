@@ -1,0 +1,37 @@
+Image: ../test_images/kodak/hd_01.ppm (1920x1080)
+
+=== Lossless ===
+Component                Bytes    Share
+----------------------------------------------
+file_header                 48      0.00%
+chunk_dir                   64      0.01%
+qmat                         0      0.00%
+tile_header                 96      0.01%
+filter_ids                3240      0.32%
+filter_lo               906014     89.26%
+filter_hi                89227      8.79%
+block_types               8772      0.86%
+palette                    341      0.03%
+copy                       597      0.06%
+tile4                     6590      0.65%
+unknown                      0      0.00%
+----------------------------------------------
+TOTAL                  1014989    100.00%
+
+Mode Selection Stats (Lossless)
+----------------------------------------------
+  total_blocks           97200
+  copy_candidates           3216      3.31%
+  palette_candidates        1393      1.43%
+  copy_palette_overlap       172      0.18%
+  copy_selected             3216      3.31%
+  tile4_selected            3295      3.39%
+  palette_selected            47      0.05%
+  filter_any_selected      90642     93.25%
+  filter_med_rows                31
+  est_copy_bits_sum      30242 (avg 9.40 bits/candidate)
+  est_palette_bits_sum   65192 (avg 46.80 bits/candidate)
+  est_selected_bits      7099224
+  est_filter_bits        7403329
+  est_bits_per_block     73.04 (selected) / 76.17 (filter-only)
+  est_gain_vs_filter     4.11%

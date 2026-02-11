@@ -1,0 +1,7 @@
+=== HakoNyans Decode Benchmark ===
+Resolution: 1920x1080 (Full HD)
+HKN Size: 550695 bytes (Ratio: 8.85248%)
+Average Decode Time: 19.6499 ms
+Throughput:         301.915 MiB/s
+
+Target >100 MiB/s ACHIEVED!

@@ -364,6 +364,151 @@ void test_tile_match4_roundtrip() {
     else { FAIL("No TILE_MATCH4-selected seed found"); }
 }
 
+// ============================================================
+// Test 10: Copy Mode3 Long Run Roundtrip
+// ============================================================
+void test_copy_mode3_long_runs() {
+    TEST("Copy mode3 long-run roundtrip (2-symbol, runs of 50)");
+
+    // 2-symbol case: alternating long runs → mode 3 should win
+    // mode2 with 2 symbols = 2 + (1000*1 + 7)/8 = 127 bytes
+    // mode3 = 2 + 20 tokens = 22 bytes
+    std::vector<CopyParams> ops;
+    for (int i = 0; i < 10; i++) {
+        for (int j = 0; j < 50; j++) ops.push_back(CopyParams(-8, 0));  // left x50
+        for (int j = 0; j < 50; j++) ops.push_back(CopyParams(0, -8));  // up x50
+    }
+    auto encoded = CopyCodec::encode_copy_stream(ops);
+
+    // Verify mode 3 selected
+    if (encoded.empty() || encoded[0] != 3) {
+        FAIL("Expected mode 3 but got mode " + std::to_string(encoded.empty() ? -1 : (int)encoded[0]));
+        return;
+    }
+
+    std::vector<CopyParams> decoded;
+    CopyCodec::decode_copy_stream(encoded.data(), encoded.size(), decoded, (int)ops.size());
+
+    if (decoded.size() != ops.size()) {
+        FAIL("Decoded size " + std::to_string(decoded.size()) + " != " + std::to_string(ops.size()));
+        return;
+    }
+    for (size_t i = 0; i < decoded.size(); i++) {
+        if (!(decoded[i] == ops[i])) {
+            FAIL("Mismatch at index " + std::to_string(i));
+            return;
+        }
+    }
+
+    // Also verify single-symbol case roundtrips correctly (mode 2 wins there, but should still work)
+    std::vector<CopyParams> ops1(1000, CopyParams(-8, 0));
+    auto enc1 = CopyCodec::encode_copy_stream(ops1);
+    std::vector<CopyParams> dec1;
+    CopyCodec::decode_copy_stream(enc1.data(), enc1.size(), dec1, 1000);
+    if (dec1.size() != 1000) {
+        FAIL("Single-symbol roundtrip: size " + std::to_string(dec1.size()) + " != 1000");
+        return;
+    }
+    for (size_t i = 0; i < dec1.size(); i++) {
+        if (!(dec1[i] == ops1[i])) {
+            FAIL("Single-symbol mismatch at " + std::to_string(i));
+            return;
+        }
+    }
+
+    PASS();
+}
+
+// ============================================================
+// Test 11: Copy Mode3 Mixed Runs (short/long)
+// ============================================================
+void test_copy_mode3_mixed_runs() {
+    TEST("Copy mode3 mixed runs (short+long)");
+
+    std::vector<CopyParams> ops;
+    // Short runs: 1-3 each
+    ops.push_back(CopyParams(-8, 0));  // left x1
+    ops.push_back(CopyParams(0, -8));  // up x1
+    ops.push_back(CopyParams(0, -8));  // up x1 (cont)
+    ops.push_back(CopyParams(-8, -8)); // upleft x1
+
+    // Long run: 64 (max single token)
+    for (int i = 0; i < 64; i++) ops.push_back(CopyParams(-8, 0));
+
+    // Another mixed
+    for (int i = 0; i < 5; i++) ops.push_back(CopyParams(8, -8)); // upright x5
+    for (int i = 0; i < 3; i++) ops.push_back(CopyParams(-8, 0)); // left x3
+
+    // Exceed 64 (should split into multiple tokens)
+    for (int i = 0; i < 100; i++) ops.push_back(CopyParams(0, -8));
+
+    auto encoded = CopyCodec::encode_copy_stream(ops);
+    std::vector<CopyParams> decoded;
+    CopyCodec::decode_copy_stream(encoded.data(), encoded.size(), decoded, (int)ops.size());
+
+    if (decoded.size() != ops.size()) {
+        FAIL("Size: " + std::to_string(decoded.size()) + " != " + std::to_string(ops.size()));
+        return;
+    }
+    for (size_t i = 0; i < decoded.size(); i++) {
+        if (!(decoded[i] == ops[i])) {
+            FAIL("Mismatch at " + std::to_string(i));
+            return;
+        }
+    }
+    PASS();
+}
+
+// ============================================================
+// Test 12: Copy Mode3 Malformed Payload (no crash)
+// ============================================================
+void test_copy_mode3_malformed() {
+    TEST("Copy mode3 malformed payload (safe failure)");
+
+    // Case 1: Truncated (mode=3, used_mask, no tokens)
+    {
+        uint8_t data[] = {3, 0x03}; // mode 3, used_mask=0x03, no tokens
+        std::vector<CopyParams> out;
+        CopyCodec::decode_copy_stream(data, 2, out, 100);
+        // Should produce 100 entries (padded) or fewer, but no crash
+        if (out.size() != 100) {
+            FAIL("Truncated: expected 100 padded entries, got " + std::to_string(out.size()));
+            return;
+        }
+    }
+
+    // Case 2: Invalid symbol code (code >= used_count)
+    {
+        // used_mask=0x01 means only code 0 is valid, but token has code=3
+        uint8_t data[] = {3, 0x01, 0xC5}; // mode 3, mask=1, token: code=3, run=6
+        std::vector<CopyParams> out;
+        CopyCodec::decode_copy_stream(data, 3, out, 6);
+        // Should not crash (fail-safe: maps invalid code to 0)
+        if (out.size() != 6) {
+            FAIL("Invalid code: expected 6, got " + std::to_string(out.size()));
+            return;
+        }
+    }
+
+    // Case 3: mode=3 with no used_mask byte (size too small)
+    {
+        uint8_t data[] = {3}; // Just mode byte
+        std::vector<CopyParams> out;
+        CopyCodec::decode_copy_stream(data, 1, out, 50);
+        // Should produce 0 entries (early return)
+    }
+
+    // Case 4: used_mask=0 (no symbols)
+    {
+        uint8_t data[] = {3, 0x00, 0x05};
+        std::vector<CopyParams> out;
+        CopyCodec::decode_copy_stream(data, 3, out, 10);
+        // Should early return with 0 entries
+    }
+
+    PASS();
+}
+
 int main() {
     std::cout << "=== Phase 8 Round 2: Lossless Codec Tests ===" << std::endl;
 
@@ -376,6 +521,9 @@ int main() {
     test_header_flags();
     test_med_filter_photo_gate();
     test_tile_match4_roundtrip();
+    test_copy_mode3_long_runs();
+    test_copy_mode3_mixed_runs();
+    test_copy_mode3_malformed();
 
     std::cout << "\n=== Results: " << tests_passed << "/" << tests_run << " passed ===" << std::endl;
     return (tests_passed == tests_run) ? 0 : 1;

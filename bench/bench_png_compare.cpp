@@ -111,9 +111,9 @@ BenchmarkResult benchmark_image(const TestImage& test_img, const std::string& ba
     std::vector<uint8_t> hkn_data;
 
     for (int i = 0; i < WARMUP + RUNS; i++) {
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         hkn_data = GrayscaleEncoder::encode_color_lossless(ppm.rgb_data.data(), ppm.width, ppm.height);
-        auto end = std::chrono::high_resolution_clock::now();
+        auto end = std::chrono::steady_clock::now();
         double ms = std::chrono::duration<double, std::milli>(end - start).count();
         if (i >= WARMUP) {
             hkn_enc_times.push_back(ms);
@@ -127,9 +127,9 @@ BenchmarkResult benchmark_image(const TestImage& test_img, const std::string& ba
     std::vector<double> hkn_dec_times;
     for (int i = 0; i < WARMUP + RUNS; i++) {
         int dec_w, dec_h;
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         auto decoded = GrayscaleDecoder::decode_color_lossless(hkn_data, dec_w, dec_h);
-        auto end = std::chrono::high_resolution_clock::now();
+        auto end = std::chrono::steady_clock::now();
         double ms = std::chrono::duration<double, std::milli>(end - start).count();
         if (i >= WARMUP) {
             hkn_dec_times.push_back(ms);
@@ -159,8 +159,8 @@ void print_results(const std::vector<BenchmarkResult>& results) {
               << std::right << std::setw(10) << "PNG(KB)"
               << std::setw(10) << "HKN(KB)"
               << std::setw(10) << "Size%"
-              << std::setw(10) << "Enc"
-              << std::setw(10) << "Dec"
+              << std::setw(12) << "PNG Dec"
+              << std::setw(12) << "HKN Dec"
               << std::left << std::setw(12) << "  Category" << std::endl;
     std::cout << "--------------------------------------------------------------------------------\n";
 
@@ -177,8 +177,8 @@ void print_results(const std::vector<BenchmarkResult>& results) {
                   << std::right << std::setw(10) << std::fixed << std::setprecision(1) << (r.png_size / 1024.0)
                   << std::setw(10) << (r.hkn_size / 1024.0)
                   << std::setw(9) << size_str
-                  << std::setw(9) << std::setprecision(2) << r.enc_speedup << "x"
-                  << std::setw(9) << std::setprecision(2) << r.dec_speedup << "x"
+                  << std::setw(11) << std::setprecision(2) << r.png_dec_ms << "ms"
+                  << std::setw(11) << std::setprecision(2) << r.hkn_dec_ms << "ms"
                   << std::left << std::setw(12) << r.category << std::endl;
     }
     std::cout << "================================================================================\n";

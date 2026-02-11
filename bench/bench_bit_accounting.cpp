@@ -318,6 +318,10 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
         std::cout << "\n  Encoded stream cost\n";
         std::cout << "  block_types_bytes      " << s.block_types_bytes_sum
                   << " (avg " << std::fixed << std::setprecision(2) << bt_bpb << " bits/block)\n";
+        if (s.block_types_lz_used_count > 0) {
+            std::cout << "    lz_tiles/saved       " 
+                      << s.block_types_lz_used_count << " / " << s.block_types_lz_saved_bytes_sum << " bytes\n";
+        }
         if (s.block_type_runs_sum > 0) {
             double avg_run = (double)s.total_blocks / (double)s.block_type_runs_sum;
             std::cout << "  block_type_runs        " << s.block_type_runs_sum
@@ -332,6 +336,10 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
         }
         std::cout << "  palette_stream_bytes   " << s.palette_stream_bytes_sum
                   << " (avg " << std::fixed << std::setprecision(2) << pal_bpb << " bits/palette-block)\n";
+        if (s.palette_lz_used_count > 0) {
+             std::cout << "    lz_tiles/saved       " 
+                       << s.palette_lz_used_count << " / " << s.palette_lz_saved_bytes_sum << " bytes\n";
+        }
         if (s.palette_stream_raw_bytes_sum > 0) {
             double raw_bpb = (s.palette_selected > 0)
                 ? (8.0 * (double)s.palette_stream_raw_bytes_sum / (double)s.palette_selected) : 0.0;
@@ -373,10 +381,11 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
 
         std::cout << "\n  Copy stream diagnostics\n";
         std::cout << "  copy_stream_count      " << s.copy_stream_count << "\n";
-        std::cout << "  copy_stream_mode0/1/2  "
+        std::cout << "  copy_stream_mode0/1/2/3  "
                   << s.copy_stream_mode0 << "/"
                   << s.copy_stream_mode1 << "/"
-                  << s.copy_stream_mode2 << "\n";
+                  << s.copy_stream_mode2 << "/"
+                  << s.copy_stream_mode3 << "\n";
         std::cout << "  copy_ops_total         " << s.copy_ops_total << "\n";
         if (s.copy_ops_total > 0) {
             double small_pct = 100.0 * (double)s.copy_ops_small / (double)s.copy_ops_total;
@@ -387,6 +396,7 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
             double avg_bytes_stream = (double)s.copy_stream_bytes_sum / (double)s.copy_stream_count;
             std::cout << "  copy_stream_bytes      " << s.copy_stream_bytes_sum
                       << " (avg " << std::fixed << std::setprecision(2) << avg_bytes_stream << " B/stream)\n";
+            std::cout << "    lz_used/saved        " << s.copy_lz_used_count << " / " << s.copy_lz_saved_bytes_sum << " bytes\n";
         }
         if (s.copy_ops_total > 0) {
             double bits_per_copy = 8.0 * (double)s.copy_stream_bytes_sum / (double)s.copy_ops_total;
@@ -399,6 +409,13 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
             double avg_dyn_bits = (double)s.copy_mode2_dynamic_bits_sum / (double)s.copy_stream_mode2;
             std::cout << "  mode2_zero_bit_streams " << s.copy_mode2_zero_bit_streams << "\n";
             std::cout << "  mode2_avg_dyn_bits     " << std::fixed << std::setprecision(2) << avg_dyn_bits << "\n";
+        }
+        if (s.copy_stream_mode3 > 0) {
+            double avg_run_len = (s.copy_mode3_run_tokens_sum > 0) ?
+                (double)s.copy_mode3_runs_sum / (double)s.copy_mode3_run_tokens_sum : 0.0;
+            std::cout << "  mode3_run_tokens       " << s.copy_mode3_run_tokens_sum << "\n";
+            std::cout << "  mode3_avg_run_length   " << std::fixed << std::setprecision(2) << avg_run_len << "\n";
+            std::cout << "  mode3_long_runs(>=16)  " << s.copy_mode3_long_runs << "\n";
         }
     }
 }

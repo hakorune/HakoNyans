@@ -20,6 +20,7 @@
 #include "copy.h"
 #include "lossless_filter.h"
 #include "band_groups.h"
+#include "lz_tile.h"
 
 namespace hakonyans {
 
@@ -529,17 +530,28 @@ public:
         size_t runs_size = sz;
 
         // Optional compact envelope for v0.6+:
-        // [0xA6][mode=1][raw_count:u32][encoded_raw_runs]
+        // [BLOCK_MAGIC][mode][raw_count:u32][encoded_raw_runs]
         std::vector<uint8_t> decoded_runs;
-        if (file_version >= FileHeader::VERSION_BLOCK_TYPES_V2 && sz >= 6 && val[0] == 0xA6 && val[1] == 1) {
-            uint32_t raw_count = 0;
-            std::memcpy(&raw_count, val + 2, 4);
-            const uint8_t* enc_ptr = val + 6;
-            size_t enc_size = sz - 6;
-            decoded_runs = decode_byte_stream(enc_ptr, enc_size, raw_count);
-            if (!decoded_runs.empty()) {
-                runs = decoded_runs.data();
-                runs_size = decoded_runs.size();
+        if (file_version >= FileHeader::VERSION_BLOCK_TYPES_V2 && sz >= 6) {
+            bool is_v2 = (val[0] == 0xA6); // Or check WRAPPER_MAGIC_BLOCK_TYPES
+            // But we might be using 0xA6 correctly. Let's use flexible check.
+            if (val[0] == FileHeader::WRAPPER_MAGIC_BLOCK_TYPES) {
+                uint8_t mode = val[1];
+                uint32_t raw_count = 0;
+                std::memcpy(&raw_count, val + 2, 4);
+                const uint8_t* enc_ptr = val + 6;
+                size_t enc_size = sz - 6;
+                
+                if (mode == 1) { // Mode 1: rANS
+                    decoded_runs = decode_byte_stream(enc_ptr, enc_size, raw_count);
+                } else if (mode == 2) { // Mode 2: LZ (Phase 9l-2)
+                    decoded_runs = TileLZ::decompress(enc_ptr, enc_size, raw_count);
+                }
+
+                if (!decoded_runs.empty()) {
+                    runs = decoded_runs.data();
+                    runs_size = decoded_runs.size();
+                }
             }
         }
 
@@ -702,14 +714,22 @@ public:
             size_t pal_size = palette_data_size;
             std::vector<uint8_t> pal_decoded;
             // Optional compact envelope for v0.6+:
-            // [0xA7][mode=1][raw_count:u32][encoded_raw_palette_stream]
+            // [WRAPPER_MAGIC_PALETTE][mode][raw_count:u32][encoded_payload]
             if (file_version >= FileHeader::VERSION_BLOCK_TYPES_V2 &&
-                palette_data_size >= 6 && ptr[0] == 0xA7 && ptr[1] == 1) {
+                palette_data_size >= 6 && ptr[0] == FileHeader::WRAPPER_MAGIC_PALETTE) {
+                
+                uint8_t mode = ptr[1];
                 uint32_t raw_count = 0;
                 std::memcpy(&raw_count, ptr + 2, 4);
                 const uint8_t* enc_ptr = ptr + 6;
                 size_t enc_size = palette_data_size - 6;
-                pal_decoded = decode_byte_stream(enc_ptr, enc_size, raw_count);
+                
+                if (mode == 1) {
+                    pal_decoded = decode_byte_stream(enc_ptr, enc_size, raw_count);
+                } else if (mode == 2) { // LZ
+                    pal_decoded = TileLZ::decompress(enc_ptr, enc_size, raw_count);
+                }
+
                 if (!pal_decoded.empty()) {
                     pal_ptr = pal_decoded.data();
                     pal_size = pal_decoded.size();
@@ -722,9 +742,26 @@ public:
         // Decode copy data
         std::vector<CopyParams> copy_params;
         if (copy_data_size > 0) {
+            const uint8_t* cptr = ptr;
+            size_t csz = copy_data_size;
+            std::vector<uint8_t> unpacked;
+
+            if (csz > 6 && cptr[0] == FileHeader::WRAPPER_MAGIC_COPY) {
+                uint8_t mode = cptr[1];
+                uint32_t raw_count;
+                std::memcpy(&raw_count, cptr + 2, 4);
+                
+                if (mode == 2) { // LZ
+                     if (TileLZ::decompress_to(cptr + 6, csz - 6, unpacked, raw_count)) {
+                         cptr = unpacked.data();
+                         csz = unpacked.size();
+                     }
+                }
+            }
+
             int num_copy = 0;
             for (auto t : block_types) if (t == FileHeader::BlockType::COPY) num_copy++;
-            CopyCodec::decode_copy_stream(ptr, copy_data_size, copy_params, num_copy);
+            CopyCodec::decode_copy_stream(cptr, csz, copy_params, num_copy);
             ptr += copy_data_size;
         }
 

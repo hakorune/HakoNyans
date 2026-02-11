@@ -1,3 +1,430 @@
-Start testing: Feb 11 03:35 JST
+Start testing: Feb 11 21:55 JST
 ----------------------------------------------------------
-End testing: Feb 11 03:35 JST
+1/17 Testing: rans_simple
+1/17 Test: rans_simple
+Command: "/home/tomoaki/git/HakoNyans/test_rans_simple"
+Directory: /home/tomoaki/git/HakoNyans
+"rans_simple" start time: Feb 11 21:55 JST
+Output:
+----------------------------------------------------------
+=== HakoNyans rANS Phase 1 Tests ===
+
+  Encoded 10 symbols -> 5 bytes
+✓ Simple roundtrip (3 symbols) PASSED
+✓ Binary symbols PASSED
+✓ Single symbol x50 PASSED
+✓ Uniform 256 alphabet PASSED
+✓ Random 10000 symbols (skewed) PASSED
+
+5/5 tests passed.
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"rans_simple" end time: Feb 11 21:55 JST
+"rans_simple" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/17 Testing: interleaved
+2/17 Test: interleaved
+Command: "/home/tomoaki/git/HakoNyans/test_interleaved"
+Directory: /home/tomoaki/git/HakoNyans
+"interleaved" start time: Feb 11 21:55 JST
+Output:
+----------------------------------------------------------
+=== HakoNyans Phase 2: Interleaved rANS + Tokenization Tests ===
+
+  Encoded 16 symbols -> 40 bytes
+✓ Interleaved N=8 roundtrip PASSED
+  Encoded 50000 symbols -> 27647 bytes (27.647% of uncompressed)
+✓ Interleaved 50000 symbols (skewed) PASSED
+  Block (64 coeffs) -> 14 tokens
+✓ Tokenization roundtrip PASSED
+✓ Tokenization all zeros PASSED
+✓ Detokenization all zeros PASSED
+
+5/5 tests passed.
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"interleaved" end time: Feb 11 21:55 JST
+"interleaved" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/17 Testing: avx2_rans
+3/17 Test: avx2_rans
+Command: "/home/tomoaki/git/HakoNyans/test_avx2_rans"
+Directory: /home/tomoaki/git/HakoNyans
+"avx2_rans" start time: Feb 11 21:55 JST
+Output:
+----------------------------------------------------------
+=== HakoNyans Phase 3: Flat Interleaved + AVX2 Tests ===
+
+  Encoded 24 symbols -> 32 bytes
+✓ Flat interleaved roundtrip (simple) PASSED
+  Encoded 80000 symbols -> 48011 bytes
+✓ Flat interleaved roundtrip (80K) PASSED
+✓ Flat LUT roundtrip PASSED
+
+--- AVX2 ---
+  AVX2: Encoded 80000 symbols -> 47911 bytes
+✓ AVX2 roundtrip (80K) PASSED
+
+4/4 tests passed.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"avx2_rans" end time: Feb 11 21:55 JST
+"avx2_rans" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/17 Testing: parallel
+4/17 Test: parallel
+Command: "/home/tomoaki/git/HakoNyans/test_parallel"
+Directory: /home/tomoaki/git/HakoNyans
+"parallel" start time: Feb 11 21:55 JST
+Output:
+----------------------------------------------------------
+=== HakoNyans Phase 4: P-Index Parallel Decode Tests ===
+
+  Checkpoints: 10 (interval=1024, tokens=10000)
+✓ P-Index checkpoint count PASSED
+✓ P-Index first checkpoint at 0 PASSED
+✓ P-Index serialize/deserialize roundtrip PASSED
+✓ Parallel decode (1 thread) PASSED
+  Checkpoints: 20
+✓ Parallel decode (1 threads, 80K) PASSED
+✓ Parallel decode (2 threads, 80K) PASSED
+✓ Parallel decode (4 threads, 80K) PASSED
+✓ Parallel decode (8 threads, 80K) PASSED
+✓ Parallel decode LUT (4 threads) PASSED
+
+9/9 tests passed.
+
+=== PARALLEL SCALING BENCHMARK ===
+  Tokens: 4000000 (7.62939 MiB)
+  Checkpoints: 489
+
+   1 threads:    196.3 MiB/s  (1.00x)
+   2 threads:    371.2 MiB/s  (1.89x)
+   4 threads:    650.8 MiB/s  (3.32x)
+   8 threads:    994.3 MiB/s  (5.07x)
+  16 threads:   1070.2 MiB/s  (5.45x)
+<end of output>
+Test time =   1.27 sec
+----------------------------------------------------------
+Test Passed.
+"parallel" end time: Feb 11 21:55 JST
+"parallel" time elapsed: 00:00:01
+----------------------------------------------------------
+
+5/17 Testing: phase5_components
+5/17 Test: phase5_components
+Command: "/home/tomoaki/git/HakoNyans/test_phase5_components"
+Directory: /home/tomoaki/git/HakoNyans
+"phase5_components" start time: Feb 11 21:55 JST
+Output:
+----------------------------------------------------------
+
+=== Phase 5 Component Tests ===
+
+Testing Zigzag... PASS
+Testing DCT... PASS
+Testing Quantization... PASS (Q[0]=16)
+Testing DC tokenization... PASS
+Testing AC tokenization... PASS
+Testing FileHeader... PASS
+Testing ChunkDirectory... PASS
+
+All component tests complete.
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"phase5_components" end time: Feb 11 21:55 JST
+"phase5_components" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/17 Testing: codec_gray
+6/17 Test: codec_gray
+Command: "/home/tomoaki/git/HakoNyans/test_codec_gray"
+Directory: /home/tomoaki/git/HakoNyans
+"codec_gray" start time: Feb 11 21:55 JST
+Output:
+----------------------------------------------------------
+
+=== Phase 5 Codec Roundtrip Tests ===
+
+Testing 8×8 block...  [encoded: 1687 bytes]  [chunks: 2] PASS (PSNR: 45.9395 dB, size: 1687 bytes)
+Testing 16×16 image... PASS (PSNR: 31.433 dB, size: 1875 bytes)
+Testing 32×32 image... PASS (PSNR: 44.3742 dB, size: 1856 bytes)
+Testing 13×17 image (padding)... PASS (PSNR: 29.9551 dB)
+
+Quality sweep (8×8 block):
+  Q=10: PSNR=35.0265 dB, size=1681 bytes
+  Q=25: PSNR=36.9498 dB, size=1684 bytes
+  Q=50: PSNR=39.6412 dB, size=1684 bytes
+  Q=75: PSNR=45.9395 dB, size=1687 bytes
+  Q=90: PSNR=49.9601 dB, size=1691 bytes
+  Q=100: PSNR=100 dB, size=1699 bytes
+
+All roundtrip tests complete.
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"codec_gray" end time: Feb 11 21:55 JST
+"codec_gray" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/17 Testing: codec_color
+7/17 Test: codec_color
+Command: "/home/tomoaki/git/HakoNyans/test_codec_color"
+Directory: /home/tomoaki/git/HakoNyans
+"codec_color" start time: Feb 11 21:55 JST
+Output:
+----------------------------------------------------------
+=== Phase 5.2 Color Codec Tests ===
+Encoding 16x16 color gradient...
+HKN size: 2963 bytes
+Decoding...
+PSNR: 32.5804 dB
+Test 1 PASS
+
+Encoding 32x32 color blocks...
+PSNR: 29.3406 dB, Size: 3505 bytes
+Test 2 PASS
+
+All Color Codec Tests PASSED
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"codec_color" end time: Feb 11 21:55 JST
+"codec_color" time elapsed: 00:00:00
+----------------------------------------------------------
+
+8/17 Testing: adaptive_quant
+8/17 Test: adaptive_quant
+Command: "/home/tomoaki/git/HakoNyans/test_adaptive_quant"
+Directory: /home/tomoaki/git/HakoNyans
+"adaptive_quant" start time: Feb 11 21:55 JST
+Output:
+----------------------------------------------------------
+=== Phase 7a: Adaptive Quantization Test ===
+Encoded size with AQ: 4026 bytes
+PSNR: 44.2614 dB
+Test PASS
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"adaptive_quant" end time: Feb 11 21:55 JST
+"adaptive_quant" time elapsed: 00:00:00
+----------------------------------------------------------
+
+9/17 Testing: subsampling_420
+9/17 Test: subsampling_420
+Command: "/home/tomoaki/git/HakoNyans/test_420_subsampling"
+Directory: /home/tomoaki/git/HakoNyans
+"subsampling_420" start time: Feb 11 21:55 JST
+Output:
+----------------------------------------------------------
+=== Phase 7a: 4:2:0 Subsampling Test ===
+Testing 4:4:4...
+4:4:4 Size: 4758 bytes, PSNR: 42.3442 dB
+
+Testing 4:2:0...
+4:2:0 Size: 4096 bytes, PSNR: 40.4116 dB
+SUCCESS: 4:2:0 is smaller (86%)
+Test PASS
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"subsampling_420" end time: Feb 11 21:55 JST
+"subsampling_420" time elapsed: 00:00:00
+----------------------------------------------------------
+
+10/17 Testing: cfl
+10/17 Test: cfl
+Command: "/home/tomoaki/git/HakoNyans/test_cfl"
+Directory: /home/tomoaki/git/HakoNyans
+"cfl" start time: Feb 11 21:55 JST
+Output:
+----------------------------------------------------------
+=== Phase 7a: CfL (Chroma from Luma) Test ===
+Testing 4:2:0 without CfL...
+No-CfL Size: 3652 bytes, PSNR: 41.3496 dB
+
+Testing 4:2:0 with CfL...
+CfL Size: 3492 bytes, PSNR: 40.5106 dB
+Test PASS
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"cfl" end time: Feb 11 21:55 JST
+"cfl" time elapsed: 00:00:00
+----------------------------------------------------------
+
+11/17 Testing: band_cdf
+11/17 Test: band_cdf
+Command: "/home/tomoaki/git/HakoNyans/test_band_cdf"
+Directory: /home/tomoaki/git/HakoNyans
+"band_cdf" start time: Feb 11 21:55 JST
+Output:
+----------------------------------------------------------
+=== Phase 7a: Band-group CDF Test ===
+Encoding with all Phase 7a tools (AQ + 4:2:0 + CfL + BandCDF)...
+Encoded Size: 6901 bytes
+Final PSNR: 38.7418 dB
+Test PASS
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"band_cdf" end time: Feb 11 21:55 JST
+"band_cdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+12/17 Testing: screen_profile_step1
+12/17 Test: screen_profile_step1
+Command: "/home/tomoaki/git/HakoNyans/test_screen_profile_step1"
+Directory: /home/tomoaki/git/HakoNyans
+"screen_profile_step1" start time: Feb 11 21:55 JST
+Output:
+----------------------------------------------------------
+Testing RLE BlockType Roundtrip...
+  [PASS] All DCT (100 blocks)
+  [PASS] Mixed types (DCT/PAL/COPY)
+  [PASS] Long runs (>64)
+Testing Full Codec Compatibility (Step 1)...
+  [PASS] Header version is 0x4
+  [PASS] Decode successful, PSNR: 51.101 dB
+All Step 1 tests passed!
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"screen_profile_step1" end time: Feb 11 21:55 JST
+"screen_profile_step1" time elapsed: 00:00:00
+----------------------------------------------------------
+
+13/17 Testing: screen_profile_step2
+13/17 Test: screen_profile_step2
+Command: "/home/tomoaki/git/HakoNyans/test_screen_profile_step2"
+Directory: /home/tomoaki/git/HakoNyans
+"screen_profile_step2" start time: Feb 11 21:55 JST
+Output:
+----------------------------------------------------------
+Testing Palette Extractor...
+  [PASS] 2-color extraction
+  [PASS] Indices mapping
+Testing Palette Codec...
+  [PASS] Encode/Decode stream
+All Step 2 tests passed!
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"screen_profile_step2" end time: Feb 11 21:55 JST
+"screen_profile_step2" time elapsed: 00:00:00
+----------------------------------------------------------
+
+14/17 Testing: screen_profile_step3
+14/17 Test: screen_profile_step3
+Command: "/home/tomoaki/git/HakoNyans/test_screen_profile_step3"
+Directory: /home/tomoaki/git/HakoNyans
+"screen_profile_step3" start time: Feb 11 21:55 JST
+Output:
+----------------------------------------------------------
+Testing CopyCodec Stream...
+  [PASS] Stream Encode/Decode
+Testing Copy Block Execution...
+  Encoded size: 1509 bytes
+  [PASS] Block 0 (DCT) decoded correctly
+  [PASS] Block 1 (COPY) matches Block 0
+All Step 3 tests passed!
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"screen_profile_step3" end time: Feb 11 21:55 JST
+"screen_profile_step3" time elapsed: 00:00:00
+----------------------------------------------------------
+
+15/17 Testing: screen_profile_step4
+15/17 Test: screen_profile_step4
+Command: "/home/tomoaki/git/HakoNyans/test_screen_profile_step4"
+Directory: /home/tomoaki/git/HakoNyans
+"screen_profile_step4" start time: Feb 11 21:55 JST
+Output:
+----------------------------------------------------------
+Testing Automatic Block Type Selection...
+Block Type Stream found. Size: 1
+Stats: COPY=0, PAL=0, DCT=64
+WARNING: No Copy blocks detected. Tweak search radius?
+WARNING: No Palette blocks detected.
+Decoded PSNR: 42.0096 dB
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"screen_profile_step4" end time: Feb 11 21:55 JST
+"screen_profile_step4" time elapsed: 00:00:00
+----------------------------------------------------------
+
+16/17 Testing: lossless_round1
+16/17 Test: lossless_round1
+Command: "/home/tomoaki/git/HakoNyans/test_lossless_round1"
+Directory: /home/tomoaki/git/HakoNyans
+"lossless_round1" start time: Feb 11 21:55 JST
+Output:
+----------------------------------------------------------
+=== Phase 8 Round 1: Lossless Foundation Tests ===
+  Test 1: YCoCg-R roundtrip (exhaustive 256^3 colors) ... PASS
+  Test 2: YCoCg-R value ranges (Y: [0,255], Co/Cg: [-255,255]) ... PASS
+  Test 3: ZigZag encode/decode roundtrip ... PASS
+  Test 4: Filter individual roundtrip (6 filter types) ... PASS
+  Test 5: Auto filter selection roundtrip ... PASS
+  Test 6: Gradient image filter efficiency ... PASS
+  Test 7: Full pipeline: RGB -> YCoCg-R -> Filter -> Unfilter -> RGB ... PASS
+
+=== Results: 7/7 passed ===
+<end of output>
+Test time =   0.31 sec
+----------------------------------------------------------
+Test Passed.
+"lossless_round1" end time: Feb 11 21:55 JST
+"lossless_round1" time elapsed: 00:00:00
+----------------------------------------------------------
+
+17/17 Testing: lossless_round2
+17/17 Test: lossless_round2
+Command: "/home/tomoaki/git/HakoNyans/test_lossless_round2"
+Directory: /home/tomoaki/git/HakoNyans
+"lossless_round2" start time: Feb 11 21:55 JST
+Output:
+----------------------------------------------------------
+=== Phase 8 Round 2: Lossless Codec Tests ===
+  Test 1: Grayscale lossless roundtrip (32x32) ... PASS
+  Test 2: Color lossless roundtrip (32x32) ... PASS
+  Test 3: Gradient image lossless (64x64) ... PASS
+  Test 4: Large random image lossless (128x128) ... PASS (ratio=1.21, 59273/49152 bytes)
+  Test 5: Odd dimensions lossless (7x9, 1x1, 13x5) ... PASS
+  Test 6: Flat solid color image lossless (64x64) ... PASS (ratio=0.213)
+  Test 7: Header: flags=lossless, quality=0, colorspace=YCoCg-R ... PASS
+
+=== Results: 7/7 passed ===
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"lossless_round2" end time: Feb 11 21:55 JST
+"lossless_round2" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Feb 11 21:55 JST

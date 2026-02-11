@@ -1,0 +1,169 @@
+\documentclass[a4paper,11pt]{ltjsarticle}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{float}
+\usepackage{url}
+\geometry{margin=24mm}
+\graphicspath{{figures/}}
+
+\title{HakoNyans: \\
+PNG 代替を目標とした並列デコード志向画像コーデックの実装評価}
+\author{HakoNyans Project}
+\date{2026-02-11}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+本稿では、並列デコード性能を主軸に設計した画像コーデック HakoNyans を評価する。
+評価は二層で実施した。
+(1) 定性比較: Anime/UI/Photo の 3 画像で原画像・JPEG・HKN を並列比較。
+(2) 定量比較: PNG lossless と HKN lossless、JPEG と HKN lossy のサイズ・画質・速度を比較。
+評価時点の再現基準コミットは \texttt{b4a16e8} である。
+\end{abstract}
+
+\section{目的}
+HakoNyans の現時点の狙いは、最高圧縮率の競争ではなく、
+実装の単純性を保ちながらデコードの並列性を確保することである。
+特に、PNG 代替としての位置づけを明確化するため、
+lossless 比較では PNG を主基準とした。
+
+\section{方式概要}
+\subsection{エンコード/デコードの流れ}
+HakoNyans はタイル内 8x8 ブロックを基本単位とする。
+エンコード側はブロックを解析してモードを選択し、最終的に NyANS-P で符号化する。
+デコード側はヘッダとチャンクを順に復号し、ブロックを独立に再構成する。
+
+\begin{itemize}
+  \item Encode: Colorspace変換 $\rightarrow$ ブロック解析 $\rightarrow$ モード選択 $\rightarrow$ エントロピー符号化
+  \item Decode: チャンク復号 $\rightarrow$ モード別再構成 $\rightarrow$ Colorspace逆変換
+\end{itemize}
+
+\subsection{lossless モード決定}
+lossless 経路では、各 8x8 ブロックについて
+\texttt{COPY / PALETTE / FILTER / TILE\_MATCH4} を候補とし、
+推定ビットコストが最小のモードを選ぶ。
+
+\begin{equation}
+m^\star = \arg\min_{m \in \mathcal{M}} \hat{R}(m)
+\end{equation}
+
+ここで $\hat{R}(m)$ は mode type、参照オフセット、パレットサイズ、残差分布などから計算する近似レートである。
+PHOTO 系では MED を有効化し、UI/Anime では Copy/Palette の寄与を優先する。
+
+\subsection{lossy 経路（DCT + Band-group CDF + CfL）}
+lossy 経路は YCbCr 変換後に DCT・量子化を行い、
+DC と AC（LOW/MID/HIGH）を分離して Band-group CDF で符号化する。
+クロマ予測には CfL を用い、ブロックごとに適用可否を判定する。
+
+CfL の復号予測は次式で与える。
+\begin{equation}
+\hat{c} = \left(a \cdot (y - 128) + 32\right) \gg 6 + b
+\end{equation}
+
+ここで $a$ は量子化係数（Q6）、$b$ はオフセットである。
+エンコード時は同じ量子化後予測式で誤差を評価し、適用時の色ずれを防ぐ。
+
+\subsection{計算量と並列性}
+主要処理は画素数 $N$ に対して概ね線形時間であり、復号は探索を伴わない。
+ブロック再構成をタイル単位・行単位に分割することで並列実行しやすい。
+この設計により、圧縮率の改善を主にエンコーダ側の工夫で行いながら、
+デコーダ側の構造は単純に保つ方針を採る。
+
+\section{評価設定}
+\subsection{データセット}
+本稿の可視化は 3 カテゴリを使用した。
+\begin{itemize}
+  \item Anime: \texttt{anime\_sunset.ppm}
+  \item UI: \texttt{vscode.ppm}
+  \item Photo: \texttt{nature\_01.ppm}
+\end{itemize}
+
+数値評価は UI/Anime/Photo の 7 画像で実施した。
+
+\subsection{比較対象}
+\begin{itemize}
+  \item lossless: PNG vs HKN lossless
+  \item lossy: JPEG(Q75/Q90) vs HKN(Q75/Q90, 4:4:4, CfL=1)
+\end{itemize}
+
+\subsection{指標}
+\begin{itemize}
+  \item サイズ: KB
+  \item 画質: PSNR(dB)
+  \item 速度: encode/decode ms
+\end{itemize}
+
+\section{定性結果（3カテゴリ）}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{qual_anime_crop_strip.png}
+  \caption{Anime: Original / JPEG Q75 / HKN Q75(4:4:4 CfL=1) のクロップ比較}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{qual_ui_crop_strip.png}
+  \caption{UI: Original / JPEG Q75 / HKN Q75(4:4:4 CfL=1) のクロップ比較}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{qual_photo_crop_strip.png}
+  \caption{Photo: Original / JPEG Q75 / HKN Q75(4:4:4 CfL=1) のクロップ比較}
+\end{figure}
+
+\section{定量結果}
+\subsection{PNG vs HKN lossless}
+\begin{table}[H]
+  \centering
+  \caption{PNG と HKN lossless の比較（UI/Anime/Photo）}
+  \resizebox{\linewidth}{!}{\input{tables/table_lossless_png_focus.tex}}
+\end{table}
+
+\subsection{JPEG vs HKN lossy (Q75)}
+\begin{table}[H]
+  \centering
+  \caption{カテゴリ平均（Q75）}
+  \input{tables/table_lossy_q75_summary.tex}
+\end{table}
+
+\subsection{JPEG vs HKN lossy (Q90)}
+\begin{table}[H]
+  \centering
+  \caption{カテゴリ平均（Q90）}
+  \input{tables/table_lossy_q90_summary.tex}
+\end{table}
+
+\section{考察}
+現行実装では、lossless に関してカテゴリ依存性が大きい。
+Photo では HKN が PNG より小さくなる一方、UI/Anime では PNG 優位が残る。
+一方で lossy では CfL 修正後に視覚破綻が解消され、PSNR が安定した。
+
+特に Photo ではデコード時間が課題である。
+本稿の測定では、Photo 2枚の平均で
+PNG decode が約 17.9 ms、HKN decode が約 45.4 ms となり、
+速度面では PNG に劣後した。
+
+今後の改善対象は次の 3 点を優先する。
+\begin{itemize}
+  \item Photo 向け CfL gate の厳格化（不要適用の削減）
+  \item inverse DCT + dequant の SIMD 化（AVX2）
+  \item token decode hot path の分岐削減とプロファイル駆動最適化
+\end{itemize}
+
+\section{再現手順}
+以下をリポジトリルートで実行すると、表・図・PDFを再生成できる。
+\begin{verbatim}
+cd bench
+../bench_png_compare | tee ../paper/results/lossless_png_compare_latest.txt
+cd ..
+python3 paper/repro/parse_lossless_png_compare.py
+python3 paper/repro/run_lossy_jpeg_hkn_compare.py --runs 2
+python3 paper/repro/generate_qualitative_figures.py
+python3 paper/repro/generate_tex_tables.py
+cd paper && latexmk -lualatex -interaction=nonstopmode paper_ja.tex
+\end{verbatim}
+
+\end{document}

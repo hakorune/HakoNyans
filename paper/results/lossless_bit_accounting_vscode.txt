@@ -1,0 +1,37 @@
+Image: ../test_images/ui/vscode.ppm (1920x1080)
+
+=== Lossless ===
+Component                Bytes    Share
+----------------------------------------------
+file_header                 48      0.09%
+chunk_dir                   64      0.13%
+qmat                         0      0.00%
+tile_header                 96      0.19%
+filter_ids                3240      6.33%
+filter_lo                 4067      7.94%
+filter_hi                 3708      7.24%
+block_types              14766     28.84%
+palette                  10435     20.38%
+copy                     11271     22.01%
+tile4                     3504      6.84%
+unknown                      0      0.00%
+----------------------------------------------
+TOTAL                    51199    100.00%
+
+Mode Selection Stats (Lossless)
+----------------------------------------------
+  total_blocks           97200
+  copy_candidates          90111     92.71%
+  palette_candidates       85199     87.65%
+  copy_palette_overlap     81111     83.45%
+  copy_selected            90111     92.71%
+  tile4_selected            1752      1.80%
+  palette_selected          3086      3.17%
+  filter_any_selected       2251      2.32%
+  filter_med_rows                 0
+  est_copy_bits_sum      540666 (avg 6.00 bits/candidate)
+  est_palette_bits_sum   1925582 (avg 22.60 bits/candidate)
+  est_selected_bits      883531
+  est_filter_bits        6737083
+  est_bits_per_block     9.09 (selected) / 69.31 (filter-only)
+  est_gain_vs_filter     86.89%

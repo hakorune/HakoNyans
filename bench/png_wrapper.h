@@ -74,7 +74,7 @@ void png_read_callback(png_structp png_ptr, png_bytep data, png_size_t length) {
 inline PNGEncodeResult encode_png(const uint8_t* rgb_data, int width, int height) {
     PNGEncodeResult result;
 
-    auto start = std::chrono::high_resolution_clock::now();
+    auto start = std::chrono::steady_clock::now();
 
     // Create PNG write struct
     png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
@@ -120,7 +120,7 @@ inline PNGEncodeResult encode_png(const uint8_t* rgb_data, int width, int height
     png_write_end(png_ptr, nullptr);
     png_destroy_write_struct(&png_ptr, &info_ptr);
 
-    auto end = std::chrono::high_resolution_clock::now();
+    auto end = std::chrono::steady_clock::now();
     result.encode_time_ms = std::chrono::duration<double, std::milli>(end - start).count();
 
     return result;
@@ -137,7 +137,7 @@ inline PNGEncodeResult encode_png(const uint8_t* rgb_data, int width, int height
 inline PNGDecodeResult decode_png(const uint8_t* png_data, size_t png_size) {
     PNGDecodeResult result;
 
-    auto start = std::chrono::high_resolution_clock::now();
+    auto start = std::chrono::steady_clock::now();
 
     // Create PNG read struct
     png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
@@ -210,7 +210,7 @@ inline PNGDecodeResult decode_png(const uint8_t* png_data, size_t png_size) {
     png_read_end(png_ptr, nullptr);
     png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
 
-    auto end = std::chrono::high_resolution_clock::now();
+    auto end = std::chrono::steady_clock::now();
     result.decode_time_ms = std::chrono::duration<double, std::milli>(end - start).count();
 
     return result;

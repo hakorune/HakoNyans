@@ -11,3 +11,38 @@ compile_commands.json
 bench_results/
 Testing/
 test_images/anime/*.png
+
+# CMake/CTest generated files at repository root
+/CMakeCache.txt
+/CMakeFiles/
+/CTestTestfile.cmake
+/Makefile
+/cmake_install.cmake
+
+# Local build directories
+/build*/
+/build_*/
+
+# Generated binaries (root)
+/hakonyans
+/bench_*
+/test_*
+/repro_artoria
+/out.hkn
+/out.ppm
+
+# Python cache
+**/__pycache__/
+*.pyc
+
+# Paper build/intermediate artifacts
+/paper/paper_ja.pdf
+/paper/*.aux
+/paper/*.fdb_latexmk
+/paper/*.fls
+/paper/*.log
+/paper/*.out
+/paper/results/color_check/
+/paper/results/fig_artifacts/
+/paper/results/codec_compare_artifacts/
+/paper/results/artifacts/

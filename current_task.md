@@ -566,11 +566,21 @@ VSCode lossless 内訳（52.9KB）:
 Phase 9 P0（コア4項目）+ チューニング2項目 完了！🏆
 ```
 
-**次の実装候補**:
+**次の実装候補（更新）**:
 - [x] Phase 10a: CfL強化（整数固定小数点 + MSE適応判定）✅ (2026-02-11)
 - [x] Phase 9j: MED predictor（Lossless Filter追加）✅ (2026-02-11)
 - [x] Phase 9j-2: MED photo-onlyゲート（回帰リスク抑制）✅ (2026-02-11)
-- [ ] Phase 9 P1: Tile Match/LZ
+- [x] Phase 9k: Tile Match 4x4（UI/Natural改善、速度+0.81ms）✅ (2026-02-11)
+- [x] Phase 9l-0: Palette v3辞書 + 診断カウンタ（dict_ref可視化）✅ (2026-02-12)
+- [x] Phase 9l-1: LZ導入（copy stream優先）✅ (2026-02-12)
+- [x] Phase 9l-2: LZ導入（block_types stream）✅ (2026-02-12)
+- [x] Phase 9l-3: LZ導入（palette stream/index map）✅ (2026-02-12)
+- [x] Phase 9l-debug: 停止バグ修正 + 計測clock安定化（steady_clock）✅ (2026-02-12)
+  - 実装指示書: `docs/PHASE9L_LZ_STREAM_PRIORITY_INSTRUCTIONS.md`
+- [ ] Phase 9m-1: Copy stream Mode3（small-vector entropy coding）
+- [ ] Phase 9m-2: Copy stream RLEトークン（連続ベクトル圧縮）
+- [ ] Phase 9m-3: Copy stream mode自動選択（mode1/2/3/RLE）
+  - 実装指示書: `docs/PHASE9M_COPY_STREAM_ENTROPY_INSTRUCTIONS.md`
 
 ---
 
@@ -678,3 +688,60 @@ MEDの効果（Photo/Natural）を維持しつつ、UI/Anime側の将来回帰�
 **メモ**:
 - adaptive CfL payload は将来拡張として decode対応を残しつつ、現行は互換優先で legacy payload を採用。
 - 実運用上の安全性を優先して「試算して小さい方採用」をデフォルト化。
+
+---
+
+### Paper向け課題メモ（2026-02-11）
+
+**観測された主要ボトルネック**:
+- Photoカテゴリで decode が重い
+  - PNG decode 平均: **17.9 ms**
+  - HKN decode 平均: **45.4 ms**
+  - 速度面では PNG に劣後
+
+**論文反映済み事項**:
+- 定量表記は `DecSpeedup` ではなく `Dec(ms)` に統一
+- `paper/paper_ja.tex` の考察に Photo decode 課題を明記
+
+**次の実装優先度（decode改善）**:
+1. Photo向け CfL gate の厳格化（不要適用を抑制）
+2. inverse DCT + dequant の AVX2 最適化
+3. token decode hot path の分岐削減（プロファイル駆動）
+
+---
+
+### 直近実行セット: Beyond PNG（Copy stream最適化ルート）🚧
+
+**ゴール（投稿判定ライン）**:
+- `Lossless vs PNG`:
+  - UI/Anime: `PNG_bytes / HKN_bytes` を段階的に縮小（現状2.8x〜4.0x帯 → まず2.2x以下）
+  - Photo: `PNG_bytes / HKN_bytes` の中央値を **1.0x以上**（同等以上）
+  - Decode: Photoカテゴリ平均 `Dec(ms)` を **30ms台前半以下**へ短縮（別トラック）
+- `Lossy（高画質）`:
+  - 目視破綻なし（アニメ肌/輪郭/UI文字の色ズレなし）
+  - 同一PSNR/SSIM帯でサイズを継続改善（CfL/量子化/帯域CDFの再調整）
+- `Paper readiness`:
+  - 3カテゴリ（Anime/UI/Photo）の図版と表を再現スクリプトで自動生成
+  - 実験条件（CPU/threads/コマンド）を固定して再現可能にする
+
+**実行タスク（順序固定）**:
+1. [x] Phase 9l-1/2/3: tile-local LZ導入（copy/block_types/palette）✅
+2. [x] Phase 9l-debug: block_types Mode1 symbol-range bug修正、anime timeout解消 ✅
+3. [ ] Phase 9m-1: `copy stream` entropy mode（Mode3）導入
+4. [ ] Phase 9m-2: `copy stream` run-length token導入（同一vector連続圧縮）
+5. [ ] Phase 9m-3: tileごとのcopy mode最適選択（mode1/2/3/RLE）
+6. [ ] `lossless_png_compare` 再計測（UI/Anime/Photo 各30枚）
+7. [ ] Photo decodeのホットパス計測（`perf` / 自前timer）と上位3ボトルネック確定
+8. [ ] Photo向け decode最適化（CfL gate強化 → IDCT+dequant AVX2 → token分岐削減）
+9. [ ] Lossy画質回帰チェック（Artoria/UI/自然画像の目視 + PSNR/SSIM）
+10. [ ] Paper用テーブル更新（`Dec(ms)`統一、サイズ・画質・速度を同一セットで再生成）
+11. [ ] 投稿判定レビュー（勝ち筋/弱点/今後課題を1ページに要約）
+
+**受け入れ基準（DoD）**:
+- [ ] `ctest` 全PASS維持
+- [ ] Lossless UI中央値 `PNG_bytes / HKN_bytes <= 2.2`
+- [ ] Lossless Anime中央値 `PNG_bytes / HKN_bytes <= 3.2`
+- [ ] Lossless Photo中央値 `PNG_bytes / HKN_bytes <= 1.0`
+- [ ] Photo decode平均 `Dec(ms)` を現状比で有意改善
+- [ ] CfL色バグ再発なし（目視 + 回帰サンプル）
+- [ ] `paper/` の図表がワンコマンド再生成可能

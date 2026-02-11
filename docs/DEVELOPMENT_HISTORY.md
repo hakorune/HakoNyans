@@ -1129,6 +1129,41 @@ Lossless フィルタ候補を `photo-like` 判定で切り替えるゲートを
 
 ---
 
+### Phase 9l: Tile-local LZ（copy/block_types/palette）(2026-02-12)
+
+tile内の補助ストリームに LZ wrapper を導入し、UI系のメタデータ圧縮を強化。
+
+**主な変更**:
+1. `src/codec/lz_tile.h` を追加（tile-local LZ compress/decompress）
+2. `copy / block_types / palette` 各ストリームに mode=2（LZ）を追加
+3. `bench_bit_accounting` に LZ採用回数・削減bytesを追加
+
+**実測（代表）**:
+- `vscode`:
+  - `block_types`: 7607 B → 1047 B
+  - total: 40.2 KB → 33.6 KB
+- `anime_girl_portrait`:
+  - `block_types`: 2295 B → 848 B
+  - total: 38.4 KB → 37.0 KB
+
+---
+
+### Phase 9l-debug: 停止バグ修正 + 計測安定化 (2026-02-12)
+
+**根本原因**:
+- `encode_block_types()` の Mode1 が 76-alphabet前提経路を使っており、`0..255` byte列と不整合。
+
+**修正**:
+1. Mode1 を `encode_byte_stream(raw)`（256-alphabet）に修正
+2. `bench_png_compare` / `png_wrapper` の時計を `steady_clock` に統一
+
+**検証**:
+- `ctest`: 17/17 PASS
+- `bench_bit_accounting`（anime）: timeout解消、完走
+- `bench_png_compare`: 完走、負の `Dec(ms)` 表示を解消
+
+---
+
 ## 🏆 技術的ハイライト
 
 ### 1. NyANS-P エントロピーエンジン

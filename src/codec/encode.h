@@ -13,6 +13,7 @@
 #include "copy.h"
 #include "lossless_filter.h"
 #include "band_groups.h"
+#include "lz_tile.h"
 #include <vector>
 #include <cstring>
 #include <stdexcept>
@@ -78,7 +79,11 @@ public:
         uint64_t block_type_runs_palette;
         uint64_t block_type_runs_copy;
         uint64_t block_type_runs_tile4;
+        uint64_t block_types_lz_used_count;      // New
+        uint64_t block_types_lz_saved_bytes_sum; // New
 
+        uint64_t palette_lz_used_count;          // New
+        uint64_t palette_lz_saved_bytes_sum;     // New
         uint64_t palette_stream_bytes_sum;
         uint64_t palette_stream_raw_bytes_sum;
         uint64_t palette_stream_v2_count;
@@ -101,6 +106,12 @@ public:
         uint64_t copy_stream_mode0;
         uint64_t copy_stream_mode1;
         uint64_t copy_stream_mode2;
+        uint64_t copy_stream_mode3;
+        uint64_t copy_mode3_run_tokens_sum;
+        uint64_t copy_mode3_runs_sum;
+        uint64_t copy_mode3_long_runs;
+        uint64_t copy_lz_used_count;
+        uint64_t copy_lz_saved_bytes_sum;
         uint64_t copy_stream_bytes_sum;
         uint64_t copy_stream_payload_bits_sum;
         uint64_t copy_stream_overhead_bits_sum;
@@ -149,6 +160,10 @@ public:
             block_type_runs_palette = 0;
             block_type_runs_copy = 0;
             block_type_runs_tile4 = 0;
+            block_types_lz_used_count = 0;
+            block_types_lz_saved_bytes_sum = 0;
+            palette_lz_used_count = 0;
+            palette_lz_saved_bytes_sum = 0;
             palette_stream_bytes_sum = 0;
             palette_stream_raw_bytes_sum = 0;
             palette_stream_v2_count = 0;
@@ -170,6 +185,12 @@ public:
             copy_stream_mode0 = 0;
             copy_stream_mode1 = 0;
             copy_stream_mode2 = 0;
+            copy_stream_mode3 = 0;
+            copy_mode3_run_tokens_sum = 0;
+            copy_mode3_runs_sum = 0;
+            copy_mode3_long_runs = 0;
+            copy_lz_used_count = 0;
+            copy_lz_saved_bytes_sum = 0;
             copy_stream_bytes_sum = 0;
             copy_stream_payload_bits_sum = 0;
             copy_stream_overhead_bits_sum = 0;
@@ -637,7 +658,50 @@ public:
         
         std::vector<uint8_t> bt_data = encode_block_types(block_types);
         std::vector<uint8_t> pal_data = PaletteCodec::encode_palette_stream(palettes, palette_indices);
+
+        // Phase 9l-3: Tile-local LZ for Palette Stream
+        if (!pal_data.empty()) {
+             std::vector<uint8_t> lz = TileLZ::compress(pal_data);
+             size_t wrapped_size = 6 + lz.size();
+             // Apply only if size reduction >= 2%
+             if (wrapped_size * 100 <= pal_data.size() * 98) {
+                 std::vector<uint8_t> wrapped;
+                 wrapped.resize(6);
+                 wrapped[0] = FileHeader::WRAPPER_MAGIC_PALETTE;
+                 wrapped[1] = 2; // Mode 2 = LZ
+                 uint32_t rc = (uint32_t)pal_data.size();
+                 std::memcpy(&wrapped[2], &rc, 4);
+                 wrapped.insert(wrapped.end(), lz.begin(), lz.end());
+
+                 tl_lossless_mode_debug_stats_.palette_lz_used_count++;
+                 tl_lossless_mode_debug_stats_.palette_lz_saved_bytes_sum += (pal_data.size() - wrapped.size());
+
+                 pal_data = std::move(wrapped);
+             }
+        }
+
         std::vector<uint8_t> cpy_data = CopyCodec::encode_copy_stream(copy_ops);
+
+        // Phase 9l-1: Tile-local LZ for Copy Stream
+        if (!cpy_data.empty()) {
+            std::vector<uint8_t> lz = TileLZ::compress(cpy_data);
+            size_t wrapped_size = 6 + lz.size();
+            // Apply only if size reduction >= 2% (wrapped * 100 <= raw * 98)
+            if (wrapped_size * 100 <= cpy_data.size() * 98) {
+                std::vector<uint8_t> wrapped;
+                wrapped.resize(6);
+                wrapped[0] = FileHeader::WRAPPER_MAGIC_COPY;
+                wrapped[1] = 2; // Mode 2 = LZ
+                uint32_t rc = (uint32_t)cpy_data.size();
+                std::memcpy(&wrapped[2], &rc, 4);
+                wrapped.insert(wrapped.end(), lz.begin(), lz.end());
+                
+                tl_lossless_mode_debug_stats_.copy_lz_used_count++;
+                tl_lossless_mode_debug_stats_.copy_lz_saved_bytes_sum += (cpy_data.size() - wrapped.size());
+                
+                cpy_data = std::move(wrapped);
+            }
+        }
         std::vector<uint8_t> pindex_data;
 
         std::vector<uint8_t> cfl_data = build_cfl_payload(cfl_params);
@@ -798,42 +862,89 @@ public:
         bool allow_compact = false
     ) {
         std::vector<uint8_t> raw;
-        if (types.empty()) return raw;
-        
-        size_t n = types.size();
-        size_t i = 0;
-        while (i < n) {
-            uint8_t type = (uint8_t)types[i];
-            size_t run = 1;
-            while (i + run < n && run < 64 && (uint8_t)types[i + run] == type) {
-                run++;
+        // Loop generating `raw` (RLE bytes)
+        int current_type = -1;
+        int current_run = 0;
+        for (auto t : types) {
+            int type = (int)t;
+            if (type != current_type) {
+                if (current_run > 0) {
+                    while (current_run > 0) {
+                        int run = std::min(current_run, 64);
+                        raw.push_back((uint8_t)((current_type & 0x03) | ((run - 1) << 2)));
+                        current_run -= run;
+                    }
+                }
+                current_type = type;
+                current_run = 1;
+            } else {
+                current_run++;
             }
-            // Format: (Count - 1) << 2 | Type
-            // Type: 2 bits (0-3)
-            // Count: 6 bits (1-64)
-            raw.push_back((uint8_t)(((run - 1) << 2) | (type & 0x03)));
-            i += run;
         }
+        if (current_run > 0) {
+            while (current_run > 0) {
+                int run = std::min(current_run, 64);
+                raw.push_back((uint8_t)((current_type & 0x03) | ((run - 1) << 2)));
+                current_run -= run;
+            }
+        }
+        
         if (!allow_compact) return raw;
 
-        // Compact v2 envelope (lossless only):
-        // [0xA6][mode=1][raw_count:u32][encoded_raw_runs]
-        // encoded_raw_runs uses existing byte-stream rANS with adaptive CDF.
-        auto encoded = encode_byte_stream(raw);
-        if (encoded.empty()) return raw;
-
-        std::vector<uint8_t> compact;
-        compact.reserve(1 + 1 + 4 + encoded.size());
-        compact.push_back(0xA6);
-        compact.push_back(1);
-        uint32_t raw_count = (uint32_t)raw.size();
-        compact.resize(compact.size() + 4);
-        std::memcpy(compact.data() + 2, &raw_count, 4);
-        compact.insert(compact.end(), encoded.begin(), encoded.end());
-
-        // Keep legacy payload unless compact stream is strictly smaller.
-        return (compact.size() < raw.size()) ? compact : raw;
+        // Candidate 1: Raw RLE (Legacy) -> `raw`
+        // Candidate 2: Mode 1 (rANS)
+        // Replaced encode_tokens with encode_byte_stream (Fixes H1)
+        auto mode1_payload = encode_byte_stream(raw);
+        
+        // Candidate 3: Mode 2 (LZ)
+        std::vector<uint8_t> mode2_payload = TileLZ::compress(raw);
+        
+        size_t size_raw = raw.size();
+        size_t size_mode1 = 6 + mode1_payload.size(); // [0xA6][1][raw_cnt][payload]
+        size_t size_mode2 = 6 + mode2_payload.size(); // [0xA6][2][raw_cnt][payload]
+        
+        // Select Best
+        // Bias: LZ/rANS must be < Raw * 0.98 ?
+        size_t best_size = size_raw;
+        int best_mode = 0; // 0=Raw
+        
+        if (size_mode1 < best_size && size_mode1 * 100 <= size_raw * 98) {
+            best_size = size_mode1;
+            best_mode = 1;
+        }
+        if (size_mode2 < best_size && size_mode2 * 100 <= size_raw * 98) {
+             best_size = size_mode2;
+             best_mode = 2;
+        }
+        
+        // Apply
+        if (best_mode == 1) {
+             std::vector<uint8_t> out;
+             out.resize(6);
+             out[0] = FileHeader::WRAPPER_MAGIC_BLOCK_TYPES;
+             out[1] = 1;
+             uint32_t rc = (uint32_t)size_raw;
+             std::memcpy(&out[2], &rc, 4);
+             out.insert(out.end(), mode1_payload.begin(), mode1_payload.end());
+             return out;
+        } else if (best_mode == 2) {
+             std::vector<uint8_t> out;
+             out.resize(6);
+             out[0] = FileHeader::WRAPPER_MAGIC_BLOCK_TYPES;
+             out[1] = 2;
+             uint32_t rc = (uint32_t)size_raw;
+             std::memcpy(&out[2], &rc, 4);
+             out.insert(out.end(), mode2_payload.begin(), mode2_payload.end());
+             
+             tl_lossless_mode_debug_stats_.block_types_lz_used_count++;
+             tl_lossless_mode_debug_stats_.block_types_lz_saved_bytes_sum += (size_raw - out.size());
+             
+             return out;
+        }
+        
+        return raw;
     }
+
 
     static void accumulate_palette_stream_diagnostics(
         const std::vector<uint8_t>& pal_raw,
@@ -1583,6 +1694,19 @@ public:
                         s.copy_mode2_dynamic_bits_sum += (uint64_t)bits_dyn;
                         payload_bits = (uint64_t)copy_ops.size() * (uint64_t)std::max(0, bits_dyn);
                     }
+                } else if (mode == 3) {
+                    s.copy_stream_mode3++;
+                    if (cpy_data.size() >= 2) {
+                        size_t num_tokens = cpy_data.size() - 2; // header is 2 bytes
+                        s.copy_mode3_run_tokens_sum += num_tokens;
+                        // Parse tokens to count runs and long runs
+                        for (size_t ti = 2; ti < cpy_data.size(); ti++) {
+                            int run = (cpy_data[ti] & 0x3F) + 1;
+                            s.copy_mode3_runs_sum += (uint64_t)run;
+                            if (run >= 16) s.copy_mode3_long_runs++;
+                        }
+                    }
+                    payload_bits = (uint64_t)(cpy_data.size() - 2) * 8ull; // tokens are payload
                 }
                 uint64_t stream_bits = (uint64_t)cpy_data.size() * 8ull;
                 s.copy_stream_payload_bits_sum += payload_bits;
