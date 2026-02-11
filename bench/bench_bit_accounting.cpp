@@ -415,6 +415,12 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
         if (s.palette_parse_errors > 0) {
             std::cout << "  palette_parse_errors   " << s.palette_parse_errors << "\n";
         }
+        if (s.palette_reorder_trials > 0) {
+             std::cout << "  reorder_trials         " << s.palette_reorder_trials << "\n";
+             std::cout << "  reorder_adopted        " << s.palette_reorder_adopted
+                       << " (" << std::fixed << std::setprecision(1) 
+                       << (100.0 * s.palette_reorder_adopted / s.palette_reorder_trials) << "%)\n";
+        }
 
         std::cout << "\n  Copy stream diagnostics\n";
         std::cout << "  copy_stream_count      " << s.copy_stream_count << "\n";
@@ -568,11 +574,12 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
                  std::cout << "  screen_profile_types   UI:" << s.screen_ui_like_count 
                            << " Anime:" << s.screen_anime_like_count << "\n";
             }
-            
+
+            std::cout << "\n";
             auto print_gain = [](const std::string& key, uint64_t val) {
                  std::cout << "  " << std::left << std::setw(23) << key << val << "\n";
             };
-            
+
             if (s.screen_selected_count > 0) {
                  double avg_pal = (double)s.screen_palette_count_sum / (double)sc_total;
                  std::cout << "  avg_palette_count      " << std::fixed << std::setprecision(1) << avg_pal << "\n";
@@ -581,6 +588,17 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
             if (s.screen_rejected_cost_gate > 0) {
                  print_gain("total_avoided_bloat", s.screen_loss_bytes_sum);
             }
+        }
+
+        std::cout << "\n  Lossless profile diagnostics\n";
+        std::cout << "  profile_ui_tiles       " << s.profile_ui_tiles << "\n";
+        std::cout << "  profile_anime_tiles    " << s.profile_anime_tiles << "\n";
+        std::cout << "  profile_photo_tiles    " << s.profile_photo_tiles << "\n";
+
+        if (s.palette_reorder_trials > 0) {
+            std::cout << "\n  Palette Reorder diagnostics\n";
+            std::cout << "  reorder_trials         " << s.palette_reorder_trials << "\n";
+            std::cout << "  reorder_adopted        " << s.palette_reorder_adopted << "\n";
         }
     }
 }
