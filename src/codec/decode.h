@@ -159,6 +159,73 @@ public:
         return out.has_low || out.has_mid || out.has_high;
     }
 
+    static void parse_cfl_stream(
+        const uint8_t* cfl_ptr,
+        uint32_t sz_cfl,
+        int nb,
+        std::vector<CfLParams>& cfls,
+        bool& centered_predictor
+    ) {
+        centered_predictor = false;
+        cfls.clear();
+        if (!cfl_ptr || sz_cfl == 0 || nb <= 0) return;
+
+        const size_t nb_sz = (size_t)nb;
+        const size_t legacy_size = nb_sz * 2;
+        const size_t mask_bytes = (nb_sz + 7) / 8;
+
+        auto parse_legacy = [&]() {
+            size_t pairs = std::min(nb_sz, (size_t)sz_cfl / 2);
+            cfls.reserve(nb_sz);
+            for (size_t i = 0; i < pairs; i++) {
+                float a = (int8_t)cfl_ptr[i * 2] / 64.0f;
+                float b = cfl_ptr[i * 2 + 1];
+                // Legacy stream applies predictor for every block.
+                cfls.push_back({a, b, 1.0f, 0.0f});
+            }
+            if (pairs < nb_sz) {
+                cfls.resize(nb_sz, {0.0f, 128.0f, 0.0f, 0.0f});
+            }
+            centered_predictor = false;
+        };
+
+        auto try_parse_adaptive = [&]() -> bool {
+            if ((size_t)sz_cfl < mask_bytes) return false;
+            size_t applied = 0;
+            for (int i = 0; i < nb; i++) {
+                if (cfl_ptr[(size_t)i / 8] & (uint8_t)(1u << (i % 8))) applied++;
+            }
+            size_t expected = mask_bytes + applied * 2;
+            if (expected != (size_t)sz_cfl) return false;
+
+            cfls.assign(nb_sz, {0.0f, 128.0f, 0.0f, 0.0f});
+            const uint8_t* param_ptr = cfl_ptr + mask_bytes;
+            for (int i = 0; i < nb; i++) {
+                if (cfl_ptr[(size_t)i / 8] & (uint8_t)(1u << (i % 8))) {
+                    float a = (int8_t)(*param_ptr++) / 64.0f;
+                    float b = *param_ptr++;
+                    cfls[(size_t)i] = {a, b, 1.0f, 0.0f};
+                }
+            }
+            centered_predictor = true;
+            return true;
+        };
+
+        // Prefer legacy when byte size exactly matches historical stream.
+        if ((size_t)sz_cfl == legacy_size) {
+            parse_legacy();
+            return;
+        }
+        if (try_parse_adaptive()) return;
+        if ((size_t)sz_cfl % 2 == 0) {
+            parse_legacy();
+            return;
+        }
+        // Malformed/unknown: disable CfL for this tile.
+        cfls.assign(nb_sz, {0.0f, 128.0f, 0.0f, 0.0f});
+        centered_predictor = false;
+    }
+
     static std::vector<uint8_t> decode_plane(
         const uint8_t* td, size_t ts, uint32_t pw, uint32_t ph,
         const uint16_t deq[64], const std::vector<uint8_t>* y_ref = nullptr,
@@ -172,7 +239,11 @@ public:
         std::vector<Token> ac_low_tokens, ac_mid_tokens, ac_high_tokens;
         std::vector<int8_t> qds;
         std::vector<CfLParams> cfls;
+        bool cfl_centered_predictor = false;
         uint32_t block_types_size = 0, palette_size = 0, copy_size = 0;
+
+        const uint8_t* cfl_ptr = nullptr;
+        uint32_t sz_cfl = 0;
 
         if (has_band_cdf) {
             // TileHeader v3 (lossy): 10 fields (40 bytes)
@@ -219,14 +290,10 @@ public:
             ac_high_tokens = f_high.get();
 
             if (sz[5] > 0) { qds.resize(sz[5]); std::memcpy(qds.data(), ptr, sz[5]); ptr += sz[5]; }
-            if (sz[6] > 0) {
-                for (uint32_t i = 0; i < sz[6] / 2; i++) {
-                    float a = (int8_t)ptr[i * 2] / 64.0f;
-                    float b = ptr[i * 2 + 1];
-                    cfls.push_back({a, b, a, b});
-                }
-            }
-            ptr += sz[6];
+            
+            cfl_ptr = ptr;
+            sz_cfl = sz[6];
+            ptr += sz_cfl;
 
             block_types_size = sz[7];
             palette_size = sz[8];
@@ -247,14 +314,10 @@ public:
             ptr += sz[1] + sz[2];
 
             if (sz[3] > 0) { qds.resize(sz[3]); std::memcpy(qds.data(), ptr, sz[3]); ptr += sz[3]; }
-            if (sz[4] > 0) {
-                for (uint32_t i = 0; i < sz[4] / 2; i++) {
-                    float a = (int8_t)ptr[i * 2] / 64.0f;
-                    float b = ptr[i * 2 + 1];
-                    cfls.push_back({a, b, a, b});
-                }
-            }
-            ptr += sz[4];
+            
+            cfl_ptr = ptr;
+            sz_cfl = sz[4];
+            ptr += sz_cfl;
 
             block_types_size = sz[5];
             palette_size = sz[6];
@@ -262,6 +325,8 @@ public:
         }
 
         int nx = pw/8, nb = nx*(ph/8); std::vector<uint8_t> pad(pw*ph);
+
+        parse_cfl_stream(cfl_ptr, sz_cfl, nb, cfls, cfl_centered_predictor);
 
         std::vector<FileHeader::BlockType> block_types;
         if (block_types_size > 0) {
@@ -384,10 +449,32 @@ public:
                         int16_t dq[64]; dq[0] = dc * (uint16_t)std::max(1.0f, std::round(deq[0]*s));
                         for (int k = 1; k < 64; k++) dq[k] = ac[k-1] * (uint16_t)std::max(1.0f, std::round(deq[k]*s));
                         int16_t co[64], bl[64]; Zigzag::inverse_scan(dq, co); DCT::inverse(co, bl);
-                        if (y_ref && !cfls.empty()) {
-                            float a = cfls[i].alpha_cb, b = cfls[i].beta_cb;
-                            for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) { int py = (*y_ref)[(by*8+y)*pw+(bx*8+x)]; pad[(by*8+y)*pw+(bx*8+x)] = std::clamp((int)bl[y*8+x] + (int)std::round(a*py+b), 0, 255); }
-                        } else { for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) pad[(by*8+y)*pw+(bx*8+x)] = (uint8_t)std::clamp(bl[y*8+x]+128, 0, 255); }
+                        if (y_ref && !cfls.empty() && i < (int)cfls.size()) {
+                            if (cfl_centered_predictor) {
+                                if (cfls[i].alpha_cr > 0.5f) {
+                                    int16_t a6 = (int16_t)std::round(cfls[i].alpha_cb * 64.0f);
+                                    int16_t b = (int16_t)std::round(cfls[i].beta_cb);
+                                    for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) {
+                                        int py = (*y_ref)[(by*8+y)*pw+(bx*8+x)];
+                                        int p = (a6 * (py - 128) + 32) >> 6;
+                                        p += b;
+                                        pad[(by*8+y)*pw+(bx*8+x)] = std::clamp((int)bl[y*8+x] + p, 0, 255);
+                                    }
+                                } else {
+                                    for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) pad[(by*8+y)*pw+(bx*8+x)] = (uint8_t)std::clamp(bl[y*8+x]+128, 0, 255);
+                                }
+                            } else {
+                                float a = cfls[i].alpha_cb;
+                                float b = cfls[i].beta_cb;
+                                for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) {
+                                    int py = (*y_ref)[(by*8+y)*pw+(bx*8+x)];
+                                    int p = (int)std::lround(a * py + b);
+                                    pad[(by*8+y)*pw+(bx*8+x)] = std::clamp((int)bl[y*8+x] + p, 0, 255);
+                                }
+                            }
+                        } else {
+                            for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) pad[(by*8+y)*pw+(bx*8+x)] = (uint8_t)std::clamp(bl[y*8+x]+128, 0, 255);
+                        }
                     } else if (block_types[i] == FileHeader::BlockType::PALETTE) {
                         if (palette_block_idx < (int)palettes.size()) {
                             const auto& p = palettes[palette_block_idx];

@@ -144,6 +144,75 @@ public:
         return copy_hit_rate < 0.80;
     }
 
+    static uint32_t extract_tile_cfl_size(const std::vector<uint8_t>& tile_data, bool use_band_group_cdf) {
+        if (use_band_group_cdf) {
+            if (tile_data.size() < 40) return 0;
+            uint32_t sz[10];
+            std::memcpy(sz, tile_data.data(), 40);
+            return sz[6];
+        }
+        if (tile_data.size() < 32) return 0;
+        uint32_t sz[8];
+        std::memcpy(sz, tile_data.data(), 32);
+        return sz[4];
+    }
+
+    static std::vector<uint8_t> serialize_cfl_legacy(const std::vector<CfLParams>& cfl_params) {
+        std::vector<uint8_t> out;
+        if (cfl_params.empty()) return out;
+        out.reserve(cfl_params.size() * 2);
+        for (const auto& p : cfl_params) {
+            int a_q6 = (int)std::lround(std::clamp(p.alpha_cb * 64.0f, -128.0f, 127.0f));
+            int b_center = (int)std::lround(std::clamp(p.beta_cb, 0.0f, 255.0f));
+            // Legacy predictor: pred = a*y + b_legacy
+            // Current centered model: pred = a*(y-128) + b_center
+            int b_legacy = std::clamp(b_center - 2 * a_q6, 0, 255);
+            out.push_back(static_cast<uint8_t>(static_cast<int8_t>(a_q6)));
+            out.push_back(static_cast<uint8_t>(b_legacy));
+        }
+        return out;
+    }
+
+    static std::vector<uint8_t> serialize_cfl_adaptive(const std::vector<CfLParams>& cfl_params) {
+        std::vector<uint8_t> out;
+        if (cfl_params.empty()) return out;
+
+        const int nb = (int)cfl_params.size();
+        int applied_count = 0;
+        for (const auto& p : cfl_params) {
+            if (p.alpha_cr > 0.5f) applied_count++;
+        }
+        if (applied_count == 0) return out;
+
+        const size_t mask_bytes = ((size_t)nb + 7) / 8;
+        out.resize(mask_bytes, 0);
+        out.reserve(mask_bytes + (size_t)applied_count * 2);
+        for (int i = 0; i < nb; i++) {
+            if (cfl_params[i].alpha_cr > 0.5f) {
+                out[(size_t)i / 8] |= (uint8_t)(1u << (i % 8));
+                int a_q6 = (int)std::lround(std::clamp(cfl_params[i].alpha_cb * 64.0f, -128.0f, 127.0f));
+                int b = (int)std::lround(std::clamp(cfl_params[i].beta_cb, 0.0f, 255.0f));
+                out.push_back(static_cast<uint8_t>(static_cast<int8_t>(a_q6)));
+                out.push_back(static_cast<uint8_t>(b));
+            }
+        }
+        return out;
+    }
+
+    static std::vector<uint8_t> build_cfl_payload(const std::vector<CfLParams>& cfl_params) {
+        if (cfl_params.empty()) return {};
+        bool any_applied = false;
+        for (const auto& p : cfl_params) {
+            if (p.alpha_cr > 0.5f) {
+                any_applied = true;
+                break;
+            }
+        }
+        if (!any_applied) return {};
+        // Keep legacy payload for wire compatibility with older decoders.
+        return serialize_cfl_legacy(cfl_params);
+    }
+
     static std::vector<uint8_t> encode(const uint8_t* pixels, uint32_t width, uint32_t height, uint8_t quality = 75) {
         FileHeader header; header.width = width; header.height = height; header.bit_depth = 8;
         header.num_channels = 1; header.colorspace = 2; header.subsampling = 0;
@@ -180,7 +249,6 @@ public:
         header.num_channels = 3; header.colorspace = 0; header.subsampling = use_420 ? 1 : 0;
         header.tile_cols = 1; header.tile_rows = 1; header.quality = quality; header.pindex_density = 2;
         if (!use_band_group_cdf) header.version = FileHeader::MIN_SUPPORTED_VERSION;  // v0.3 legacy AC stream
-        if (use_cfl) header.flags |= 2;
         uint16_t quant_y[64], quant_c[64];
         int chroma_quality = std::clamp((int)quality - 12, 1, 100);
         QuantTable::build_quant_tables(quality, chroma_quality, quant_y, quant_c);
@@ -191,34 +259,41 @@ public:
             enable_screen_profile, use_band_group_cdf, target_pi_meta_ratio
         );
         std::vector<uint8_t> tile_cb, tile_cr;
+        bool any_cfl_payload = false;
+        auto encode_chroma_best = [&](const uint8_t* chroma_pixels, uint32_t cw, uint32_t ch, uint32_t cpw, uint32_t cph, const std::vector<uint8_t>* y_for_cfl, int cidx) {
+            auto without_cfl = encode_plane(
+                chroma_pixels, cw, ch, cpw, cph, quant_c,
+                true, true, nullptr, cidx, nullptr, nullptr,
+                enable_screen_profile, use_band_group_cdf, target_pi_meta_ratio
+            );
+            if (!use_cfl || y_for_cfl == nullptr) return without_cfl;
+
+            auto with_cfl = encode_plane(
+                chroma_pixels, cw, ch, cpw, cph, quant_c,
+                true, true, y_for_cfl, cidx, nullptr, nullptr,
+                enable_screen_profile, use_band_group_cdf, target_pi_meta_ratio
+            );
+            if (with_cfl.size() < without_cfl.size()) {
+                any_cfl_payload |= (extract_tile_cfl_size(with_cfl, use_band_group_cdf) > 0);
+                return with_cfl;
+            }
+            return without_cfl;
+        };
+
         if (use_420) {
             int cb_w, cb_h; std::vector<uint8_t> cb_420, cr_420, y_ds;
             downsample_420(cb_plane.data(), width, height, cb_420, cb_w, cb_h);
             downsample_420(cr_plane.data(), width, height, cr_420, cb_w, cb_h);
             uint32_t pad_w_c = ((cb_w + 7) / 8) * 8, pad_h_c = ((cb_h + 7) / 8) * 8;
             if (use_cfl) { downsample_420(y_plane.data(), width, height, y_ds, cb_w, cb_h); }
-            tile_cb = encode_plane(
-                cb_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, quant_c,
-                true, true, use_cfl ? &y_ds : nullptr, 0, nullptr, nullptr,
-                enable_screen_profile, use_band_group_cdf, target_pi_meta_ratio
-            );
-            tile_cr = encode_plane(
-                cr_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, quant_c,
-                true, true, use_cfl ? &y_ds : nullptr, 1, nullptr, nullptr,
-                enable_screen_profile, use_band_group_cdf, target_pi_meta_ratio
-            );
+            tile_cb = encode_chroma_best(cb_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, use_cfl ? &y_ds : nullptr, 0);
+            tile_cr = encode_chroma_best(cr_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, use_cfl ? &y_ds : nullptr, 1);
         } else {
-            tile_cb = encode_plane(
-                cb_plane.data(), width, height, pad_w_y, pad_h_y, quant_c,
-                true, true, use_cfl ? &y_plane : nullptr, 0, nullptr, nullptr,
-                enable_screen_profile, use_band_group_cdf, target_pi_meta_ratio
-            );
-            tile_cr = encode_plane(
-                cr_plane.data(), width, height, pad_w_y, pad_h_y, quant_c,
-                true, true, use_cfl ? &y_plane : nullptr, 1, nullptr, nullptr,
-                enable_screen_profile, use_band_group_cdf, target_pi_meta_ratio
-            );
+            tile_cb = encode_chroma_best(cb_plane.data(), width, height, pad_w_y, pad_h_y, use_cfl ? &y_plane : nullptr, 0);
+            tile_cr = encode_chroma_best(cr_plane.data(), width, height, pad_w_y, pad_h_y, use_cfl ? &y_plane : nullptr, 1);
         }
+        if (any_cfl_payload) header.flags |= 2;
+
         QMATChunk qmat;
         qmat.quality = quality;
         qmat.num_tables = 3;
@@ -357,13 +432,49 @@ public:
             }
             
             // Fallthrough to DCT logic
+            bool cfl_applied = false;
+            int cfl_alpha_q8 = 0, cfl_beta = 128;
+
             if (y_ref) {
                 int16_t yb[64]; extract_block(y_padded.data(), pad_w, pad_h, bx, by, yb);
-                uint8_t yu[64], cu[64]; for (int k=0; k<64; k++) { yu[k]=(uint8_t)(yb[k]+128); cu[k]=(uint8_t)(block[k]+128); }
-                CfLParams p = compute_cfl_params(yu, cu, cu); float a = (chroma_idx==0?p.alpha_cb:p.alpha_cr), b = (chroma_idx==0?p.beta_cb:p.beta_cr);
-                cfl_params.push_back({a, b, a, b});
-                for (int k=0; k<64; k++) block[k] = (int16_t)std::clamp((int)cu[k] - (int)std::round(a*yu[k]+b), -128, 127);
+                uint8_t yu[64], cu[64]; 
+                int64_t mse_no_cfl = 0;
+                for (int k=0; k<64; k++) { 
+                    yu[k]=(uint8_t)(yb[k]+128); 
+                    cu[k]=(uint8_t)(block[k]+128); 
+                    int err = (int)cu[k] - 128;
+                    mse_no_cfl += (int64_t)err * err;
+                }
+                
+                int alpha_q8, beta;
+                compute_cfl_block_adaptive(yu, cu, alpha_q8, beta);
+                
+                int64_t mse_cfl = 0;
+                for (int k=0; k<64; k++) {
+                    int p = (alpha_q8 * (yu[k] - 128) + 128) >> 8;
+                    p += beta;
+                    int err = (int)cu[k] - std::clamp(p, 0, 255);
+                    mse_cfl += (int64_t)err * err;
+                }
+
+                // Adaptive Decision: MSE based.
+                // 1024 margin means average error reduction of 4.0 per pixel.
+                if (mse_cfl < mse_no_cfl - 1024) {
+                    cfl_applied = true;
+                    cfl_alpha_q8 = alpha_q8;
+                    cfl_beta = beta;
+                    for (int k=0; k<64; k++) {
+                        int p = (cfl_alpha_q8 * (yu[k] - 128) + 128) >> 8;
+                        p += cfl_beta;
+                        block[k] = (int16_t)std::clamp((int)cu[k] - p, -128, 127);
+                    }
+                }
             }
+            
+            if (y_ref) {
+                cfl_params.push_back({(float)cfl_alpha_q8/256.0f, (float)cfl_beta, cfl_applied ? 1.0f : 0.0f, 0.0f});
+            }
+
             int16_t dct_out[64], zigzag[64]; DCT::forward(block, dct_out); Zigzag::scan(dct_out, zigzag);
             std::memcpy(dct_blocks[i].data(), zigzag, 128);
             if (aq) { float act = QuantTable::calc_activity(&zigzag[1]); activities[i] = act; total_activity += act; }
@@ -399,6 +510,9 @@ public:
         std::vector<uint8_t> pal_data = PaletteCodec::encode_palette_stream(palettes, palette_indices);
         std::vector<uint8_t> cpy_data = CopyCodec::encode_copy_stream(copy_ops);
         std::vector<uint8_t> pindex_data;
+
+        std::vector<uint8_t> cfl_data = build_cfl_payload(cfl_params);
+
         auto dc_stream = encode_tokens(dc_tokens, build_cdf(dc_tokens));
         std::vector<uint8_t> tile_data;
         if (use_band_group_cdf) {
@@ -425,7 +539,7 @@ public:
                 (uint32_t)ac_high_stream.size(),
                 (uint32_t)pindex_data.size(), 
                 (uint32_t)q_deltas.size(), 
-                (uint32_t)cfl_params.size()*2,
+                (uint32_t)cfl_data.size(),
                 (uint32_t)bt_data.size(),
                 (uint32_t)pal_data.size(), 
                 (uint32_t)cpy_data.size()
@@ -437,7 +551,7 @@ public:
             tile_data.insert(tile_data.end(), ac_high_stream.begin(), ac_high_stream.end());
             if (sz[4]>0) tile_data.insert(tile_data.end(), pindex_data.begin(), pindex_data.end());
             if (sz[5]>0) { const uint8_t* p = reinterpret_cast<const uint8_t*>(q_deltas.data()); tile_data.insert(tile_data.end(), p, p + sz[5]); }
-            if (sz[6]>0) { for (const auto& p : cfl_params) { tile_data.push_back((int8_t)std::clamp(p.alpha_cb * 64.0f, -128.0f, 127.0f)); tile_data.push_back((uint8_t)std::clamp(p.beta_cb, 0.0f, 255.0f)); } }
+            if (sz[6]>0) { tile_data.insert(tile_data.end(), cfl_data.begin(), cfl_data.end()); }
             if (sz[7]>0) tile_data.insert(tile_data.end(), bt_data.begin(), bt_data.end());
             if (sz[8]>0) tile_data.insert(tile_data.end(), pal_data.begin(), pal_data.end());
             if (sz[9]>0) tile_data.insert(tile_data.end(), cpy_data.begin(), cpy_data.end());
@@ -452,7 +566,7 @@ public:
                 (uint32_t)ac_stream.size(),
                 (uint32_t)pindex_data.size(),
                 (uint32_t)q_deltas.size(),
-                (uint32_t)cfl_params.size() * 2,
+                (uint32_t)cfl_data.size(),
                 (uint32_t)bt_data.size(),
                 (uint32_t)pal_data.size(),
                 (uint32_t)cpy_data.size()
@@ -462,11 +576,12 @@ public:
             tile_data.insert(tile_data.end(), ac_stream.begin(), ac_stream.end());
             if (sz[2] > 0) tile_data.insert(tile_data.end(), pindex_data.begin(), pindex_data.end());
             if (sz[3] > 0) { const uint8_t* p = reinterpret_cast<const uint8_t*>(q_deltas.data()); tile_data.insert(tile_data.end(), p, p + sz[3]); }
-            if (sz[4] > 0) { for (const auto& p : cfl_params) { tile_data.push_back((int8_t)std::clamp(p.alpha_cb * 64.0f, -128.0f, 127.0f)); tile_data.push_back((uint8_t)std::clamp(p.beta_cb, 0.0f, 255.0f)); } }
+            if (sz[4] > 0) { tile_data.insert(tile_data.end(), cfl_data.begin(), cfl_data.end()); }
             if (sz[5] > 0) tile_data.insert(tile_data.end(), bt_data.begin(), bt_data.end());
             if (sz[6] > 0) tile_data.insert(tile_data.end(), pal_data.begin(), pal_data.end());
             if (sz[7] > 0) tile_data.insert(tile_data.end(), cpy_data.begin(), cpy_data.end());
         }
+
         return tile_data;
     }
 

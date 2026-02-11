@@ -40,11 +40,11 @@
 ### Phase 9 P1（圧縮率をさらに伸ばす）⏳ 未着手
 
 - ⏳ MED predictor（JPEG-LS系）追加
-- ⏳ CfL（Chroma from Luma）導入
+- 🚧 CfL（Chroma from Luma）導入・調整（9i-1で互換性修正とサイズ悪化ガードを実装）
 - ⏳ タイル内 match/LZ 系トークン導入
 - ⏳ 可逆色変換の拡張（YCoCg-R 固定から）
 
-## 直近の開発過程（9h-2 / 9h-3）
+## 直近の開発過程（9h-2 / 9h-3 / 9i-1）
 
 ### 9h-2: 観測強化
 - `bench_bit_accounting` に mode telemetry を追加
@@ -58,6 +58,16 @@
   - 判定指標: Y平面サンプル8x8の exact Copy-hit率
   - しきい値: `copy_hit_rate < 0.80`
 - 効果: Photoで -5%級の改善を維持しつつ、UIレンジは維持
+
+### 9i-1: CfL調整（互換性修正 + サイズ悪化ガード）
+- デコーダに `parse_cfl_stream()` を追加し、legacy/adaptive CfL payload の両方を解釈可能にした
+- エンコーダは wire互換を優先し、CfL payload を legacy形式で出力
+- Chromaタイルで `CfLあり/なし` を両方試算し、小さい方を採用（タイル単位フォールバック）
+- 実測:
+  - `nature_01` Q50: CfL on/off とも 626,731 bytes（悪化回避）
+  - `vscode` Q50: CfL on 366,646 bytes / off 410,145 bytes（改善維持）
+  - `bench_decode`: 19.237ms（速度帯維持）
+  - `ctest`: 17/17 PASS
 
 
 

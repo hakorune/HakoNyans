@@ -1040,6 +1040,34 @@ if (two_color_blocks > 0 && !mask_dict.empty() && !dict_overflow) {
 
 ---
 
+#### Phase 9i-1: CfL適応化の調整（互換性修正 + サイズ悪化ガード）✅ (2026-02-11)
+
+**狙い**:
+- CfL改善を取り込みつつ、旧デコーダ/旧ストリーム互換を維持
+- Photo系での CfL 逆効果をエンコーダ側で自動回避
+
+**実装内容**:
+1. **デコーダ互換レイヤ追加** (`src/codec/decode.h`)
+   - `parse_cfl_stream()` を追加
+   - legacy CfL（`nb*2 bytes`）と adaptive CfL（mask+params）を自動判別
+   - legacy式 `pred=a*y+b` と centered式 `pred=a*(y-128)+b` を切替復号
+2. **エンコーダ安全策追加** (`src/codec/encode.h`)
+   - Chromaタイルを `CfLあり/なし` で両方エンコードし、小さい方を採用
+   - `header.flags` の CfL ビットは実payloadあり時のみセット
+3. **wire互換維持**
+   - 現行出力は legacy CfL payload を優先（旧デコーダ互換）
+   - adaptive payload は decode経路に残して将来拡張に備える
+
+**検証結果**:
+- `ctest`: 17/17 PASS ✅
+- 旧エンコーダ生成 `.hkn` を新デコーダで復号: 旧デコーダ出力と md5一致 ✅
+- 新エンコーダ生成 `.hkn` を旧デコーダで復号: 新デコーダ出力と md5一致 ✅
+- `nature_01` Q50: CfL on/off とも 626,731 bytes（悪化回避）
+- `vscode` Q50: CfL on 366,646 bytes / off 410,145 bytes（改善維持）
+- `bench_decode`: 19.237ms（20ms帯維持）
+
+---
+
 ### Phase 9 P0 完了状況 🎉
 
 ```
@@ -1059,7 +1087,7 @@ Phase 9 P0（コア4項目）+ チューニング2項目 完了！🏆
 - Lossless Mode: Photo系で **約 -5%**（UIは維持）
 - 全17テスト PASS維持 ✅
 
-**次フェーズ**: Phase 9 P1（MED predictor / CfL / Tile Match/LZ）または Phase 9h-2（モード選択統計可視化）
+**次フェーズ**: Phase 9 P1（MED predictor / CfL / Tile Match/LZ）の本実装（9i-1でCfL基盤調整は完了）
 
 ---
 
@@ -1108,5 +1136,5 @@ MIT License (予定)
 ---
 
 **最終更新**: 2026-02-11  
-**バージョン**: Phase 9 P0完了 + Phase 9h-2 統計可視化  
+**バージョン**: Phase 9 P0完了 + Phase 9i-1 CfL調整（互換性修正/安全策）  
 **ステータス**: 🚀 Active Development

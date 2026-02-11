@@ -562,5 +562,75 @@ Phase 9 P0（コア4項目）+ チューニング2項目 完了！🏆
 ```
 
 **次の実装候補**:
-- [ ] Phase 9h-2: モード選択統計可視化（bench_bit_accounting拡張）
-- [ ] Phase 9 P1: MED predictor / CfL / Tile Match/LZ
+- [ ] Phase 9 P1: MED predictor
+- [ ] Phase 9 P1: CfL（quality gate / low-pass検証）
+- [ ] Phase 9 P1: Tile Match/LZ
+
+---
+
+### Phase 9i: P1実装準備（SIMD相性分析）✅ (2026-02-11)
+
+**ChatGPT Pro精密評価結果**:
+
+| 施策 | AVX2相性 | 実装難易度 | 期待高速化 | 推奨順 |
+|-----|---------|---------|----------|-------|
+| **CfL改善** | ⭐⭐⭐⭐⭐ (5/5) | **最低** | **12-16x** | **1位** 🔴 |
+| **MED predictor** | ⭐⭐⭐⭐☆ (4/5) | 低〜中 | **8-12x** | **2位** 🔴 |
+| **Tile Match/LZ** | ⭐⭐☆☆☆ (2/5) | 高 | **2-3x** | **3位** 🟡 |
+
+**評価根拠**:
+1. **CfL改善** (⭐⭐⭐⭐⭐):
+   - 乗算・加算・clamp中心でSIMD化しやすい
+   - ブロック独立で並列化も容易
+   - 分岐なし、メモリアクセス規則的 → 最高ランク
+
+2. **MED predictor** (⭐⭐⭐⭐☆):
+   - min/max/absはAVX2向き
+   - ただしleft依存で行内完全SIMD化が少し難しい
+   - セミ並列実装で4-5x高速化期待
+
+3. **Tile Match/LZ** (⭐⭐☆☆☆):
+   - 探索が分岐・ハッシュ中心でAVX2効きにくい
+   - SIMD効果はmemcmp/memcpy周辺のみ
+   - スカラー実装が正解
+
+**推奨実装順**: **CfL → MED → Tile Match/LZ**
+
+**累積効果予測**:
+```
+現状（Phase 9h-3）: JPEG比 5.2x（Photo改善 -5%）
+
++ CfL改善 (-3〜-7%)      → ~4.9x
++ MED predictor (-5〜-15%)    → ~4.1x
++ Tile Match/LZ (-5〜-10%)    → ~3.7x
+
+最終目標: JPEG比 3.0x に急速接近 🎯
+```
+
+**次ステップ**: Phase 9i-1（CfL改善実装指示書）作成予定
+
+---
+
+### Phase 9i-1: CfL適応化の調整（互換性修正 + サイズ悪化ガード）✅ 完了 (2026-02-11)
+**目標**: CfL改善を取り込みつつ、後方互換性を維持し、Photo系でのサイズ悪化を防ぐ
+
+- [x] **互換性修正（デコーダ）** — `parse_cfl_stream()` を追加
+  - legacy形式（`nb*2 bytes`）と adaptive形式（mask+params）の両対応
+  - 復号式を `legacy(a*y+b)` / `centered(a*(y-128)+b)` で切り替え
+- [x] **互換性維持（エンコーダ）**
+  - CfL payload は wire互換を優先して legacy形式を出力
+  - `header.flags` の CfLビットは実payloadあり時のみ立てる
+- [x] **サイズ悪化ガード（エンコーダ）**
+  - Chromaタイルを `CfLあり/なし` の両方で試算し、小さい方を採用
+  - Photo系で CfL が効かないケースを自動回避
+- [x] **検証**
+  - `ctest`: 17/17 PASS ✅
+  - 旧エンコーダ生成 `.hkn` の復号互換: old/new decoder で md5一致 ✅
+  - 新エンコーダ生成 `.hkn` の復号互換: old/new decoder で md5一致 ✅
+  - `nature_01` Q50: CfL on/off とも 626,731 bytes（悪化なし）
+  - `vscode` Q50: CfL on 366,646 bytes / off 410,145 bytes（改善維持）
+  - `bench_decode`: 19.237ms（20ms帯維持）
+
+**メモ**:
+- adaptive CfL payload は将来拡張として decode対応を残しつつ、現行は互換優先で legacy payload を採用。
+- 実運用上の安全性を優先して「試算して小さい方採用」をデフォルト化。

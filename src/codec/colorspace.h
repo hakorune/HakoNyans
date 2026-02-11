@@ -91,36 +91,46 @@ struct CfLParams {
 };
 
 /**
- * Compute CfL parameters for a block using Least Squares
+ * Compute CfL parameters for a block using integer fixed-point arithmetic.
+ * Returns alpha (Q8) and beta (integer).
  */
-inline CfLParams compute_cfl_params(
+inline void compute_cfl_block_adaptive(
     const uint8_t* y_block,
-    const uint8_t* cb_block,
-    const uint8_t* cr_block,
+    const uint8_t* c_block,
+    int& alpha_q8,
+    int& beta,
     int count = 64
 ) {
-    auto compute_single = [&](const uint8_t* c_block, float& alpha, float& beta) {
-        float sum_y = 0, sum_c = 0, sum_y2 = 0, sum_yc = 0;
-        for (int i = 0; i < count; i++) {
-            float y = y_block[i];
-            float c = c_block[i];
-            sum_y += y;
-            sum_c += c;
-            sum_y2 += y * y;
-            sum_yc += y * c;
-        }
-        float avg_y = sum_y / count;
-        float avg_c = sum_c / count;
-        float var_y = (sum_y2 / count) - (avg_y * avg_y);
-        float cov_yc = (sum_yc / count) - (avg_y * avg_c);
-        alpha = (std::abs(var_y) > 1e-6f) ? (cov_yc / var_y) : 0.0f;
-        beta = avg_c - alpha * avg_y;
-    };
+    int64_t sum_y = 0, sum_c = 0, sum_y2 = 0, sum_yc = 0;
+    for (int i = 0; i < count; i++) {
+        int y = y_block[i];
+        int c = c_block[i];
+        sum_y += y;
+        sum_c += c;
+        sum_y2 += (int64_t)y * y;
+        sum_yc += (int64_t)y * c;
+    }
 
-    CfLParams params;
-    compute_single(cb_block, params.alpha_cb, params.beta_cb);
-    compute_single(cr_block, params.alpha_cr, params.beta_cr);
-    return params;
+    int64_t var_y_x64 = (sum_y2 * count) - (sum_y * sum_y); // variance * count^2
+    int64_t cov_yc_x64 = (sum_yc * count) - (sum_y * sum_c); // covariance * count^2
+
+    if (var_y_x64 < 1024) { // Luma variance too low, unreliable for CfL
+        alpha_q8 = 0;
+        beta = (int)((sum_c + (count >> 1)) / count);
+    } else {
+        // alpha = cov / var. In Q8: alpha_q8 = (cov * 256) / var
+        int64_t a8 = (cov_yc_x64 * 256 + (var_y_x64 >> 1)) / var_y_x64;
+        alpha_q8 = (int)std::clamp(a8, (int64_t)-255, (int64_t)255);
+        
+        // We want: pred = alpha * (y - 128) + beta
+        // At y = avg_y, we want pred = avg_c.
+        // avg_c = alpha * (avg_y - 128) + beta
+        // beta = avg_c - alpha * (avg_y - 128)
+        // beta = (sum_c/count) - (alpha_q8/256) * (sum_y/count - 128)
+        // beta = (sum_c * 256 - alpha_q8 * (sum_y - count * 128)) / (count * 256)
+        beta = (int)((sum_c * 256 - (int64_t)alpha_q8 * (sum_y - count * 128) + (count * 128)) / (count * 256));
+        beta = std::clamp(beta, 0, 255);
+    }
 }
 
 /**
