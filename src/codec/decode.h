@@ -19,6 +19,7 @@
 #include "palette.h"
 #include "copy.h"
 #include "lossless_filter.h"
+#include "band_groups.h"
 
 namespace hakonyans {
 
@@ -49,7 +50,7 @@ public:
         const ChunkEntry* qm_e = dir.find("QMAT"); QMATChunk qm = QMATChunk::deserialize(&hkn[qm_e->offset], qm_e->size);
         uint16_t deq[64]; std::memcpy(deq, qm.quant_y, 128);
         const ChunkEntry* t_e = dir.find("TIL0"); if (!t_e) t_e = dir.find("TILE");
-        auto pad = decode_plane(&hkn[t_e->offset], t_e->size, hdr.padded_width(), hdr.padded_height(), deq);
+        auto pad = decode_plane(&hkn[t_e->offset], t_e->size, hdr.padded_width(), hdr.padded_height(), deq, nullptr, hdr.version);
         std::vector<uint8_t> out(hdr.width * hdr.height);
         for (uint32_t y = 0; y < hdr.height; y++) std::memcpy(&out[y * hdr.width], &pad[y * hdr.padded_width()], hdr.width);
         return out;
@@ -75,7 +76,7 @@ public:
         int cw = is_420 ? (w + 1) / 2 : w, ch = is_420 ? (h + 1) / 2 : h;
         uint32_t pyw = hdr.padded_width(), pyh = hdr.padded_height();
         uint32_t pcw = ((cw + 7) / 8) * 8, pch = ((ch + 7) / 8) * 8;
-        auto yp_v = decode_plane(&hkn[t0->offset], t0->size, pyw, pyh, deq_y);
+        auto yp_v = decode_plane(&hkn[t0->offset], t0->size, pyw, pyh, deq_y, nullptr, hdr.version);
         std::vector<uint8_t> y_ref;
         if (is_cfl) {
             if (is_420) {
@@ -85,8 +86,8 @@ public:
                 y_ref = pad_image(y_ds.data(), ydw, ydh, pcw, pch);
             } else y_ref = yp_v;
         }
-        auto f1 = std::async(std::launch::async, [=, &hkn, &y_ref]() { return decode_plane(&hkn[t1->offset], t1->size, pcw, pch, deq_cb, is_cfl ? &y_ref : nullptr); });
-        auto f2 = std::async(std::launch::async, [=, &hkn, &y_ref]() { return decode_plane(&hkn[t2->offset], t2->size, pcw, pch, deq_cr, is_cfl ? &y_ref : nullptr); });
+        auto f1 = std::async(std::launch::async, [=, &hkn, &y_ref]() { return decode_plane(&hkn[t1->offset], t1->size, pcw, pch, deq_cb, is_cfl ? &y_ref : nullptr, hdr.version); });
+        auto f2 = std::async(std::launch::async, [=, &hkn, &y_ref]() { return decode_plane(&hkn[t2->offset], t2->size, pcw, pch, deq_cr, is_cfl ? &y_ref : nullptr, hdr.version); });
         auto cb_raw = f1.get(); auto cr_raw = f2.get();
         std::vector<uint8_t> y_p(w * h), cb_p(w * h), cr_p(w * h);
         for (int y = 0; y < h; y++) std::memcpy(&y_p[y * w], &yp_v[y * pyw], w);
@@ -111,74 +112,157 @@ public:
     }
 
 public:
-    static std::vector<uint8_t> decode_plane(const uint8_t* td, size_t ts, uint32_t pw, uint32_t ph, const uint16_t deq[64], const std::vector<uint8_t>* y_ref = nullptr) {
-        uint32_t sz[8]; std::memcpy(sz, td, 32); const uint8_t* ptr = td + 32;
-        auto dcs = decode_stream(ptr, sz[0]); ptr += sz[0];
-        // sz[1]=ac, sz[2]=pi, sz[3]=q, sz[4]=cfl, sz[5]=bt, sz[6]=pal, sz[7]=cpy
+    static std::vector<uint8_t> decode_plane(
+        const uint8_t* td, size_t ts, uint32_t pw, uint32_t ph,
+        const uint16_t deq[64], const std::vector<uint8_t>* y_ref = nullptr,
+        uint16_t file_version = FileHeader::VERSION
+    ) {
+        const bool has_band_cdf = file_version >= FileHeader::VERSION_BAND_GROUP_CDF;
+        const uint8_t* ptr = td;
+
+        std::vector<Token> dcs;
         std::vector<Token> acs;
-        if (sz[2] > 0) {
-            PIndex pi = PIndexCodec::deserialize(std::span<const uint8_t>(td + 32 + sz[0] + sz[1], sz[2]));
-            acs = decode_stream_parallel(ptr, sz[1], pi);
+        std::vector<Token> ac_low_tokens, ac_mid_tokens, ac_high_tokens;
+        std::vector<int8_t> qds;
+        std::vector<CfLParams> cfls;
+        uint32_t block_types_size = 0, palette_size = 0, copy_size = 0;
+
+        if (has_band_cdf) {
+            // TileHeader v3 (lossy): 10 fields (40 bytes)
+            uint32_t sz[10];
+            std::memcpy(sz, td, 40);
+            ptr = td + 40;
+
+            dcs = decode_stream(ptr, sz[0]); ptr += sz[0];
+            const uint8_t* low_ptr = ptr; ptr += sz[1];
+            const uint8_t* mid_ptr = ptr; ptr += sz[2];
+            const uint8_t* high_ptr = ptr; ptr += sz[3];
+            // P-Index slot is reserved for future band-wise checkpoints.
+            ptr += sz[4];
+
+            // Decode 3 AC bands in parallel (independent streams).
+            auto f_low = std::async(std::launch::async, [low_ptr, &sz]() {
+                return decode_stream(low_ptr, sz[1]);
+            });
+            auto f_mid = std::async(std::launch::async, [mid_ptr, &sz]() {
+                return decode_stream(mid_ptr, sz[2]);
+            });
+            auto f_high = std::async(std::launch::async, [high_ptr, &sz]() {
+                return decode_stream(high_ptr, sz[3]);
+            });
+            ac_low_tokens = f_low.get();
+            ac_mid_tokens = f_mid.get();
+            ac_high_tokens = f_high.get();
+
+            if (sz[5] > 0) { qds.resize(sz[5]); std::memcpy(qds.data(), ptr, sz[5]); ptr += sz[5]; }
+            if (sz[6] > 0) {
+                for (uint32_t i = 0; i < sz[6] / 2; i++) {
+                    float a = (int8_t)ptr[i * 2] / 64.0f;
+                    float b = ptr[i * 2 + 1];
+                    cfls.push_back({a, b, a, b});
+                }
+            }
+            ptr += sz[6];
+
+            block_types_size = sz[7];
+            palette_size = sz[8];
+            copy_size = sz[9];
         } else {
-            acs = decode_stream(ptr, sz[1]);
+            // TileHeader v2 (legacy): 8 fields (32 bytes)
+            uint32_t sz[8];
+            std::memcpy(sz, td, 32);
+            ptr = td + 32;
+
+            dcs = decode_stream(ptr, sz[0]); ptr += sz[0];
+            if (sz[2] > 0) {
+                PIndex pi = PIndexCodec::deserialize(std::span<const uint8_t>(td + 32 + sz[0] + sz[1], sz[2]));
+                acs = decode_stream_parallel(ptr, sz[1], pi);
+            } else {
+                acs = decode_stream(ptr, sz[1]);
+            }
+            ptr += sz[1] + sz[2];
+
+            if (sz[3] > 0) { qds.resize(sz[3]); std::memcpy(qds.data(), ptr, sz[3]); ptr += sz[3]; }
+            if (sz[4] > 0) {
+                for (uint32_t i = 0; i < sz[4] / 2; i++) {
+                    float a = (int8_t)ptr[i * 2] / 64.0f;
+                    float b = ptr[i * 2 + 1];
+                    cfls.push_back({a, b, a, b});
+                }
+            }
+            ptr += sz[4];
+
+            block_types_size = sz[5];
+            palette_size = sz[6];
+            copy_size = sz[7];
         }
-        ptr += sz[1] + sz[2];
-        std::vector<int8_t> qds; if (sz[3] > 0) { qds.resize(sz[3]); std::memcpy(qds.data(), ptr, sz[3]); ptr += sz[3]; }
-        std::vector<CfLParams> cfls; if (sz[4] > 0) { for (uint32_t i=0; i<sz[4]/2; i++) { float a = (int8_t)ptr[i*2]/64.0f, b = ptr[i*2+1]; cfls.push_back({a, b, a, b}); } }
-        ptr += sz[4];
 
         int nx = pw/8, nb = nx*(ph/8); std::vector<uint8_t> pad(pw*ph);
 
         std::vector<FileHeader::BlockType> block_types;
-        if (sz[5] > 0) {
-            block_types = decode_block_types(ptr, sz[5], nb);
-            ptr += sz[5];
+        if (block_types_size > 0) {
+            block_types = decode_block_types(ptr, block_types_size, nb);
+            ptr += block_types_size;
         } else {
             block_types.assign(nb, FileHeader::BlockType::DCT);
         }
         
         std::vector<Palette> palettes;
         std::vector<std::vector<uint8_t>> palette_indices;
-        if (sz[6] > 0) {
+        if (palette_size > 0) {
             int num_palette_blocks = 0;
             for(auto t : block_types) if (t == FileHeader::BlockType::PALETTE) num_palette_blocks++;
-            PaletteCodec::decode_palette_stream(ptr, sz[6], palettes, palette_indices, num_palette_blocks);
-            ptr += sz[6];
+            PaletteCodec::decode_palette_stream(ptr, palette_size, palettes, palette_indices, num_palette_blocks);
+            ptr += palette_size;
         }
 
         std::vector<CopyParams> copy_params;
-        if (sz[7] > 0) {
+        if (copy_size > 0) {
             int num_copy = 0;
             for(auto t : block_types) if (t == FileHeader::BlockType::COPY) num_copy++;
-            CopyCodec::decode_copy_stream(ptr, sz[7], copy_params, num_copy);
-            ptr += sz[7];
+            CopyCodec::decode_copy_stream(ptr, copy_size, copy_params, num_copy);
+            ptr += copy_size;
         }
         
         std::vector<uint32_t> block_starts(nb + 1);
-        size_t cur = 0;
-        for (int i = 0; i < nb; i++) {
-            block_starts[i] = (uint32_t)cur;
-            if (block_types[i] == FileHeader::BlockType::DCT) {
-                while (cur < acs.size()) {
-                    if (acs[cur++].type == TokenType::ZRUN_63) break;
-                    if (cur < acs.size() && (int)acs[cur-1].type < 64) cur++; // Skip MAGC
+        std::vector<uint32_t> low_starts, mid_starts, high_starts;
+
+        auto build_dct_block_starts = [&](const std::vector<Token>& tokens) {
+            std::vector<uint32_t> starts(nb + 1);
+            size_t cur = 0;
+            for (int i = 0; i < nb; i++) {
+                starts[i] = (uint32_t)cur;
+                if (block_types[i] == FileHeader::BlockType::DCT) {
+                    while (cur < tokens.size()) {
+                        if (tokens[cur++].type == TokenType::ZRUN_63) break;
+                        if (cur < tokens.size() && (int)tokens[cur - 1].type < 63) cur++; // skip MAGC
+                    }
                 }
             }
+            starts[nb] = (uint32_t)cur;
+            return starts;
+        };
+
+        if (has_band_cdf) {
+            low_starts = build_dct_block_starts(ac_low_tokens);
+            mid_starts = build_dct_block_starts(ac_mid_tokens);
+            high_starts = build_dct_block_starts(ac_high_tokens);
+        } else {
+            block_starts = build_dct_block_starts(acs);
         }
-        block_starts[nb] = (uint32_t)cur;
 
         // Threading logic:
-        // If Copy Mode is used (sz[7] > 0), we force sequential decoding (nt=1) 
+        // If Copy Mode is used, we force sequential decoding (nt=1)
         // to ensure Intra-Block Copy vectors point to already-decoded pixels.
         unsigned int nt = std::thread::hardware_concurrency(); if (nt == 0) nt = 4; nt = std::min<unsigned int>(nt, 8); nt = std::max(1u, std::min<unsigned int>(nt, (unsigned int)nb));
-        if (sz[7] > 0) {
+        if (copy_size > 0) {
             nt = 1;
         }
 
         std::vector<std::future<void>> futs; int bpt = nb / nt;
         for (unsigned int t = 0; t < nt; t++) {
             int sb = t * bpt, eb = (t == nt - 1) ? nb : (t + 1) * bpt;
-            futs.push_back(std::async(std::launch::async, [=, &dcs, &acs, &block_starts, &qds, &cfls, &pad, &block_types, &palettes, &palette_indices, &copy_params, deq, y_ref]() {
+            futs.push_back(std::async(std::launch::async, [=, &dcs, &acs, &ac_low_tokens, &ac_mid_tokens, &ac_high_tokens, &block_starts, &low_starts, &mid_starts, &high_starts, &qds, &cfls, &pad, &block_types, &palettes, &palette_indices, &copy_params]() {
                 // Initialize pdc with correct value for the start of this thread's block range
                 int16_t pdc = 0; 
                 int palette_block_idx = 0;
@@ -205,20 +289,31 @@ public:
                     if (block_types[i] == FileHeader::BlockType::DCT) {
                         int16_t dc = pdc + Tokenizer::detokenize_dc(dcs[dct_block_idx]); pdc = dc;
                         dct_block_idx++;
-                        uint32_t start = block_starts[i], end = block_starts[i+1];
-                        std::fill(ac, ac + 63, 0); int pos = 0;
-                        for (uint32_t k = start; k < end && pos < 63; ++k) {
-                            const Token& tok = acs[k];
-                            if (tok.type == TokenType::ZRUN_63) break;
-                            if ((int)tok.type <= 62) {
-                                pos += (int)tok.type;
-                                if (++k >= end) break;
-                                const Token& mt = acs[k];
-                                int magc = (int)mt.type - 64;
-                                uint16_t sign = (mt.raw_bits >> magc) & 1;
-                                uint16_t rem = mt.raw_bits & ((1 << magc) - 1);
-                                uint16_t abs_v = (magc > 0) ? ((1 << (magc - 1)) + rem) : 0;
-                                if (pos < 63) ac[pos++] = (sign == 0) ? abs_v : -abs_v;
+                        std::fill(ac, ac + 63, 0);
+
+                        if (has_band_cdf) {
+                            size_t low_pos = low_starts[i];
+                            size_t mid_pos = mid_starts[i];
+                            size_t high_pos = high_starts[i];
+                            detokenize_ac_band_block(ac_low_tokens, low_pos, BAND_LOW, ac);
+                            detokenize_ac_band_block(ac_mid_tokens, mid_pos, BAND_MID, ac);
+                            detokenize_ac_band_block(ac_high_tokens, high_pos, BAND_HIGH, ac);
+                        } else {
+                            uint32_t start = block_starts[i], end = block_starts[i+1];
+                            int pos = 0;
+                            for (uint32_t k = start; k < end && pos < 63; ++k) {
+                                const Token& tok = acs[k];
+                                if (tok.type == TokenType::ZRUN_63) break;
+                                if ((int)tok.type <= 62) {
+                                    pos += (int)tok.type;
+                                    if (++k >= end) break;
+                                    const Token& mt = acs[k];
+                                    int magc = (int)mt.type - 64;
+                                    uint16_t sign = (mt.raw_bits >> magc) & 1;
+                                    uint16_t rem = mt.raw_bits & ((1 << magc) - 1);
+                                    uint16_t abs_v = (magc > 0) ? ((1 << (magc - 1)) + rem) : 0;
+                                    if (pos < 63) ac[pos++] = (sign == 0) ? abs_v : -abs_v;
+                                }
                             }
                         }
                         float s = 1.0f; if (!qds.empty()) s = 1.0f + qds[i] / 50.0f;

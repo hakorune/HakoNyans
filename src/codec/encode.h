@@ -12,6 +12,7 @@
 #include "palette.h"
 #include "copy.h"
 #include "lossless_filter.h"
+#include "band_groups.h"
 #include <vector>
 #include <cstring>
 #include <stdexcept>
@@ -59,15 +60,17 @@ public:
     static std::vector<uint8_t> encode_color(const uint8_t* rgb_data, uint32_t width, uint32_t height, uint8_t quality = 75, bool use_420 = true, bool use_cfl = true, bool enable_screen_profile = false) {
         std::vector<uint8_t> y_plane(width * height), cb_plane(width * height), cr_plane(width * height);
         for (uint32_t i = 0; i < width * height; i++) rgb_to_ycbcr(rgb_data[i*3], rgb_data[i*3+1], rgb_data[i*3+2], y_plane[i], cb_plane[i], cr_plane[i]);
+        bool use_band_group_cdf = (quality <= 70);
         FileHeader header; header.width = width; header.height = height; header.bit_depth = 8;
         header.num_channels = 3; header.colorspace = 0; header.subsampling = use_420 ? 1 : 0;
         header.tile_cols = 1; header.tile_rows = 1; header.quality = quality; header.pindex_density = 2;
+        if (!use_band_group_cdf) header.version = FileHeader::MIN_SUPPORTED_VERSION;  // v0.3 legacy AC stream
         if (use_cfl) header.flags |= 2;
         uint16_t quant_y[64], quant_c[64];
         int chroma_quality = std::clamp((int)quality - 12, 1, 100);
         QuantTable::build_quant_tables(quality, chroma_quality, quant_y, quant_c);
         uint32_t pad_w_y = header.padded_width(), pad_h_y = header.padded_height();
-        auto tile_y = encode_plane(y_plane.data(), width, height, pad_w_y, pad_h_y, quant_y, true, true, nullptr, 0, nullptr, nullptr, enable_screen_profile);
+        auto tile_y = encode_plane(y_plane.data(), width, height, pad_w_y, pad_h_y, quant_y, true, true, nullptr, 0, nullptr, nullptr, enable_screen_profile, use_band_group_cdf);
         std::vector<uint8_t> tile_cb, tile_cr;
         if (use_420) {
             int cb_w, cb_h; std::vector<uint8_t> cb_420, cr_420, y_ds;
@@ -75,11 +78,11 @@ public:
             downsample_420(cr_plane.data(), width, height, cr_420, cb_w, cb_h);
             uint32_t pad_w_c = ((cb_w + 7) / 8) * 8, pad_h_c = ((cb_h + 7) / 8) * 8;
             if (use_cfl) { downsample_420(y_plane.data(), width, height, y_ds, cb_w, cb_h); }
-            tile_cb = encode_plane(cb_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, quant_c, true, true, use_cfl ? &y_ds : nullptr, 0, nullptr, nullptr, enable_screen_profile);
-            tile_cr = encode_plane(cr_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, quant_c, true, true, use_cfl ? &y_ds : nullptr, 1, nullptr, nullptr, enable_screen_profile);
+            tile_cb = encode_plane(cb_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, quant_c, true, true, use_cfl ? &y_ds : nullptr, 0, nullptr, nullptr, enable_screen_profile, use_band_group_cdf);
+            tile_cr = encode_plane(cr_420.data(), cb_w, cb_h, pad_w_c, pad_h_c, quant_c, true, true, use_cfl ? &y_ds : nullptr, 1, nullptr, nullptr, enable_screen_profile, use_band_group_cdf);
         } else {
-            tile_cb = encode_plane(cb_plane.data(), width, height, pad_w_y, pad_h_y, quant_c, true, true, use_cfl ? &y_plane : nullptr, 0, nullptr, nullptr, enable_screen_profile);
-            tile_cr = encode_plane(cr_plane.data(), width, height, pad_w_y, pad_h_y, quant_c, true, true, use_cfl ? &y_plane : nullptr, 1, nullptr, nullptr, enable_screen_profile);
+            tile_cb = encode_plane(cb_plane.data(), width, height, pad_w_y, pad_h_y, quant_c, true, true, use_cfl ? &y_plane : nullptr, 0, nullptr, nullptr, enable_screen_profile, use_band_group_cdf);
+            tile_cr = encode_plane(cr_plane.data(), width, height, pad_w_y, pad_h_y, quant_c, true, true, use_cfl ? &y_plane : nullptr, 1, nullptr, nullptr, enable_screen_profile, use_band_group_cdf);
         }
         QMATChunk qmat;
         qmat.quality = quality;
@@ -104,7 +107,8 @@ public:
         const uint16_t quant[64], bool pi=false, bool aq=false, const std::vector<uint8_t>* y_ref=nullptr, int chroma_idx=0,
         const std::vector<FileHeader::BlockType>* block_types_in = nullptr,
         const std::vector<CopyParams>* copy_params_in = nullptr,
-        bool enable_screen_profile = false
+        bool enable_screen_profile = false,
+        bool use_band_group_cdf = true
     ) {
         std::vector<uint8_t> padded = pad_image(pixels, width, height, pad_w, pad_h);
         std::vector<uint8_t> y_padded; if (y_ref) y_padded = pad_image(y_ref->data(), (y_ref->size() > width*height/2 ? width : (width+1)/2), (y_ref->size() > width*height/2 ? height : (height+1)/2), pad_w, pad_h);
@@ -229,7 +233,11 @@ public:
             if (aq) { float act = QuantTable::calc_activity(&zigzag[1]); activities[i] = act; total_activity += act; }
         }
         float avg_activity = total_activity / nb;
-        std::vector<Token> dc_tokens; std::vector<Token> ac_tokens;
+        std::vector<Token> dc_tokens;
+        std::vector<Token> ac_tokens;
+        std::vector<Token> ac_low_tokens;
+        std::vector<Token> ac_mid_tokens;
+        std::vector<Token> ac_high_tokens;
         std::vector<int8_t> q_deltas; if (aq) q_deltas.reserve(nb);
         int16_t prev_dc = 0;
         for (int i = 0; i < nb; i++) {
@@ -241,7 +249,14 @@ public:
             float scale = 1.0f; if (aq) { scale = QuantTable::get_adaptive_scale(activities[i], avg_activity); int8_t delta = (int8_t)std::clamp((scale - 1.0f) * 50.0f, -127.0f, 127.0f); q_deltas.push_back(delta); scale = 1.0f + (delta / 50.0f); }
             int16_t quantized[64]; for (int k = 0; k < 64; k++) { int16_t coeff = dct_blocks[i][k]; uint16_t q_adj = std::max((uint16_t)1, (uint16_t)std::round(quant[k] * scale)); int sign = (coeff < 0) ? -1 : 1; quantized[k] = sign * ((std::abs(coeff) + q_adj / 2) / q_adj); }
             int16_t dc_diff = quantized[0] - prev_dc; prev_dc = quantized[0]; dc_tokens.push_back(Tokenizer::tokenize_dc(dc_diff));
-            auto at = Tokenizer::tokenize_ac(&quantized[1]); ac_tokens.insert(ac_tokens.end(), at.begin(), at.end());
+            if (use_band_group_cdf) {
+                tokenize_ac_band(quantized, BAND_LOW, ac_low_tokens);
+                tokenize_ac_band(quantized, BAND_MID, ac_mid_tokens);
+                tokenize_ac_band(quantized, BAND_HIGH, ac_high_tokens);
+            } else {
+                auto at = Tokenizer::tokenize_ac(&quantized[1]);
+                ac_tokens.insert(ac_tokens.end(), at.begin(), at.end());
+            }
         }
         
         std::vector<uint8_t> bt_data = encode_block_types(block_types);
@@ -249,28 +264,58 @@ public:
         std::vector<uint8_t> cpy_data = CopyCodec::encode_copy_stream(copy_ops);
         std::vector<uint8_t> pindex_data;
         auto dc_stream = encode_tokens(dc_tokens, build_cdf(dc_tokens));
-        auto ac_stream = encode_tokens(ac_tokens, build_cdf(ac_tokens), pi ? &pindex_data : nullptr);
         std::vector<uint8_t> tile_data;
-        // TileHeader v2: 8 fields (32 bytes)
-        uint32_t sz[8] = {
-            (uint32_t)dc_stream.size(), 
-            (uint32_t)ac_stream.size(), 
-            (uint32_t)pindex_data.size(), 
-            (uint32_t)q_deltas.size(), 
-            (uint32_t)cfl_params.size()*2,
-            (uint32_t)bt_data.size(),
-            (uint32_t)pal_data.size(), 
-            (uint32_t)cpy_data.size()
-        };
-        tile_data.resize(32); std::memcpy(&tile_data[0], sz, 32);
-        tile_data.insert(tile_data.end(), dc_stream.begin(), dc_stream.end());
-        tile_data.insert(tile_data.end(), ac_stream.begin(), ac_stream.end());
-        if (sz[2]>0) tile_data.insert(tile_data.end(), pindex_data.begin(), pindex_data.end());
-        if (sz[3]>0) { const uint8_t* p = reinterpret_cast<const uint8_t*>(q_deltas.data()); tile_data.insert(tile_data.end(), p, p + sz[3]); }
-        if (sz[4]>0) { for (const auto& p : cfl_params) { tile_data.push_back((int8_t)std::clamp(p.alpha_cb * 64.0f, -128.0f, 127.0f)); tile_data.push_back((uint8_t)std::clamp(p.beta_cb, 0.0f, 255.0f)); } }
-        if (sz[5]>0) tile_data.insert(tile_data.end(), bt_data.begin(), bt_data.end());
-        if (sz[6]>0) tile_data.insert(tile_data.end(), pal_data.begin(), pal_data.end());
-        if (sz[7]>0) tile_data.insert(tile_data.end(), cpy_data.begin(), cpy_data.end());
+        if (use_band_group_cdf) {
+            auto ac_low_stream = encode_tokens(ac_low_tokens, build_cdf(ac_low_tokens));
+            auto ac_mid_stream = encode_tokens(ac_mid_tokens, build_cdf(ac_mid_tokens));
+            auto ac_high_stream = encode_tokens(ac_high_tokens, build_cdf(ac_high_tokens));
+            // TileHeader v3 (lossy): 10 fields (40 bytes)
+            uint32_t sz[10] = {
+                (uint32_t)dc_stream.size(), 
+                (uint32_t)ac_low_stream.size(), 
+                (uint32_t)ac_mid_stream.size(),
+                (uint32_t)ac_high_stream.size(),
+                (uint32_t)pindex_data.size(), 
+                (uint32_t)q_deltas.size(), 
+                (uint32_t)cfl_params.size()*2,
+                (uint32_t)bt_data.size(),
+                (uint32_t)pal_data.size(), 
+                (uint32_t)cpy_data.size()
+            };
+            tile_data.resize(40); std::memcpy(&tile_data[0], sz, 40);
+            tile_data.insert(tile_data.end(), dc_stream.begin(), dc_stream.end());
+            tile_data.insert(tile_data.end(), ac_low_stream.begin(), ac_low_stream.end());
+            tile_data.insert(tile_data.end(), ac_mid_stream.begin(), ac_mid_stream.end());
+            tile_data.insert(tile_data.end(), ac_high_stream.begin(), ac_high_stream.end());
+            if (sz[4]>0) tile_data.insert(tile_data.end(), pindex_data.begin(), pindex_data.end());
+            if (sz[5]>0) { const uint8_t* p = reinterpret_cast<const uint8_t*>(q_deltas.data()); tile_data.insert(tile_data.end(), p, p + sz[5]); }
+            if (sz[6]>0) { for (const auto& p : cfl_params) { tile_data.push_back((int8_t)std::clamp(p.alpha_cb * 64.0f, -128.0f, 127.0f)); tile_data.push_back((uint8_t)std::clamp(p.beta_cb, 0.0f, 255.0f)); } }
+            if (sz[7]>0) tile_data.insert(tile_data.end(), bt_data.begin(), bt_data.end());
+            if (sz[8]>0) tile_data.insert(tile_data.end(), pal_data.begin(), pal_data.end());
+            if (sz[9]>0) tile_data.insert(tile_data.end(), cpy_data.begin(), cpy_data.end());
+        } else {
+            auto ac_stream = encode_tokens(ac_tokens, build_cdf(ac_tokens), pi ? &pindex_data : nullptr);
+            // TileHeader v2 (legacy): 8 fields (32 bytes)
+            uint32_t sz[8] = {
+                (uint32_t)dc_stream.size(),
+                (uint32_t)ac_stream.size(),
+                (uint32_t)pindex_data.size(),
+                (uint32_t)q_deltas.size(),
+                (uint32_t)cfl_params.size() * 2,
+                (uint32_t)bt_data.size(),
+                (uint32_t)pal_data.size(),
+                (uint32_t)cpy_data.size()
+            };
+            tile_data.resize(32); std::memcpy(&tile_data[0], sz, 32);
+            tile_data.insert(tile_data.end(), dc_stream.begin(), dc_stream.end());
+            tile_data.insert(tile_data.end(), ac_stream.begin(), ac_stream.end());
+            if (sz[2] > 0) tile_data.insert(tile_data.end(), pindex_data.begin(), pindex_data.end());
+            if (sz[3] > 0) { const uint8_t* p = reinterpret_cast<const uint8_t*>(q_deltas.data()); tile_data.insert(tile_data.end(), p, p + sz[3]); }
+            if (sz[4] > 0) { for (const auto& p : cfl_params) { tile_data.push_back((int8_t)std::clamp(p.alpha_cb * 64.0f, -128.0f, 127.0f)); tile_data.push_back((uint8_t)std::clamp(p.beta_cb, 0.0f, 255.0f)); } }
+            if (sz[5] > 0) tile_data.insert(tile_data.end(), bt_data.begin(), bt_data.end());
+            if (sz[6] > 0) tile_data.insert(tile_data.end(), pal_data.begin(), pal_data.end());
+            if (sz[7] > 0) tile_data.insert(tile_data.end(), cpy_data.begin(), cpy_data.end());
+        }
         return tile_data;
     }
 

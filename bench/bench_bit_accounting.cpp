@@ -19,6 +19,9 @@ struct Accounting {
     size_t tile_header = 0;
     size_t dc = 0;
     size_t ac = 0;
+    size_t ac_low = 0;
+    size_t ac_mid = 0;
+    size_t ac_high = 0;
     size_t pindex = 0;
     size_t qdelta = 0;
     size_t cfl = 0;
@@ -31,24 +34,47 @@ struct Accounting {
     size_t unknown = 0;
 };
 
-static void add_lossy_tile(Accounting& a, const uint8_t* tile_data, size_t tile_size) {
-    if (tile_size < 32) {
+static void add_lossy_tile(Accounting& a, const uint8_t* tile_data, size_t tile_size, bool has_band_cdf) {
+    if (!has_band_cdf && tile_size < 32) {
         a.unknown += tile_size;
         return;
     }
-    uint32_t sz[8] = {};
-    std::memcpy(sz, tile_data, 32);
-    a.tile_header += 32;
-    a.dc += sz[0];
-    a.ac += sz[1];
-    a.pindex += sz[2];
-    a.qdelta += sz[3];
-    a.cfl += sz[4];
-    a.block_types += sz[5];
-    a.palette += sz[6];
-    a.copy += sz[7];
-    size_t used = 32ull + sz[0] + sz[1] + sz[2] + sz[3] + sz[4] + sz[5] + sz[6] + sz[7];
-    if (tile_size > used) a.unknown += (tile_size - used);
+    if (has_band_cdf && tile_size < 40) {
+        a.unknown += tile_size;
+        return;
+    }
+    if (has_band_cdf) {
+        uint32_t sz[10] = {};
+        std::memcpy(sz, tile_data, 40);
+        a.tile_header += 40;
+        a.dc += sz[0];
+        a.ac_low += sz[1];
+        a.ac_mid += sz[2];
+        a.ac_high += sz[3];
+        a.ac += (size_t)sz[1] + (size_t)sz[2] + (size_t)sz[3];
+        a.pindex += sz[4];
+        a.qdelta += sz[5];
+        a.cfl += sz[6];
+        a.block_types += sz[7];
+        a.palette += sz[8];
+        a.copy += sz[9];
+        size_t used = 40ull + sz[0] + sz[1] + sz[2] + sz[3] + sz[4] + sz[5] + sz[6] + sz[7] + sz[8] + sz[9];
+        if (tile_size > used) a.unknown += (tile_size - used);
+    } else {
+        uint32_t sz[8] = {};
+        std::memcpy(sz, tile_data, 32);
+        a.tile_header += 32;
+        a.dc += sz[0];
+        a.ac += sz[1];
+        a.pindex += sz[2];
+        a.qdelta += sz[3];
+        a.cfl += sz[4];
+        a.block_types += sz[5];
+        a.palette += sz[6];
+        a.copy += sz[7];
+        size_t used = 32ull + sz[0] + sz[1] + sz[2] + sz[3] + sz[4] + sz[5] + sz[6] + sz[7];
+        if (tile_size > used) a.unknown += (tile_size - used);
+    }
 }
 
 static void add_lossless_tile(Accounting& a, const uint8_t* tile_data, size_t tile_size) {
@@ -93,7 +119,7 @@ static Accounting analyze_file(const std::vector<uint8_t>& hkn) {
             a.qmat += e.size;
         } else if (type.rfind("TIL", 0) == 0 || type == "TILE") {
             if (hdr.flags & 1) add_lossless_tile(a, ptr, (size_t)e.size);
-            else add_lossy_tile(a, ptr, (size_t)e.size);
+            else add_lossy_tile(a, ptr, (size_t)e.size, hdr.has_band_group_cdf());
         } else {
             a.unknown += e.size;
         }
@@ -131,7 +157,13 @@ static void print_accounting(const std::string& title, const Accounting& a, bool
         print_row("filter_hi", a.filter_hi, a.total_file);
     } else {
         print_row("dc_stream", a.dc, a.total_file);
-        print_row("ac_stream", a.ac, a.total_file);
+        if (a.ac_low > 0 || a.ac_mid > 0 || a.ac_high > 0) {
+            print_row("ac_low", a.ac_low, a.total_file);
+            print_row("ac_mid", a.ac_mid, a.total_file);
+            print_row("ac_high", a.ac_high, a.total_file);
+        } else {
+            print_row("ac_stream", a.ac, a.total_file);
+        }
         print_row("pindex", a.pindex, a.total_file);
         print_row("qdelta", a.qdelta, a.total_file);
         print_row("cfl", a.cfl, a.total_file);

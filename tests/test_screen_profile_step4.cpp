@@ -79,26 +79,44 @@ void test_auto_selection() {
         nullptr  // copy_params_in
     );
     
-    // Strategy: Decode and check Block Types
-    // `decode_plane` decodes block types internally but doesn't expose them.
-    // I need to use `GrayscaleDecoder::decode_block_types` manually on the stream.
-    // The stream format: TileHeader (32 bytes) -> [5] = BlockType size.
-    // Bytes 32 + sz[0] + ... + sz[4] is where BlockType data starts?
-    // No, `encode_plane` writes fields in order:
-    // sz[0] DC, sz[1] AC, sz[2] PIndex, sz[3] CFL-A, sz[4] CFL-B, sz[5] BT, sz[6] PAL, sz[7] CPY.
-    // So we can parse the header and jump to BT data.
-    
-    uint32_t sz[8];
-    std::memcpy(sz, encoded.data(), 32);
-    
-    size_t offset = 32;
-    for(int k=0; k<5; k++) offset += sz[k];
-    
-    if (sz[5] > 0) {
-        std::cout << "Block Type Stream found. Size: " << sz[5] << std::endl;
+    // Strategy: Decode and check Block Types.
+    // Support both tile headers:
+    //  v2 legacy (32B, 8 fields)
+    //  v3 band-group CDF (40B, 10 fields)
+    size_t offset = 0;
+    uint32_t bt_size = 0;
+
+    bool parsed = false;
+    if (encoded.size() >= 40) {
+        uint32_t sz10[10];
+        std::memcpy(sz10, encoded.data(), 40);
+        size_t used10 = 40;
+        for (int k = 0; k < 10; k++) used10 += sz10[k];
+        if (used10 <= encoded.size()) {
+            offset = 40;
+            for (int k = 0; k < 7; k++) offset += sz10[k];
+            bt_size = sz10[7];
+            parsed = true;
+        }
+    }
+    if (!parsed && encoded.size() >= 32) {
+        uint32_t sz8[8];
+        std::memcpy(sz8, encoded.data(), 32);
+        size_t used8 = 32;
+        for (int k = 0; k < 8; k++) used8 += sz8[k];
+        if (used8 <= encoded.size()) {
+            offset = 32;
+            for (int k = 0; k < 5; k++) offset += sz8[k];
+            bt_size = sz8[5];
+            parsed = true;
+        }
+    }
+
+    if (parsed && bt_size > 0) {
+        std::cout << "Block Type Stream found. Size: " << bt_size << std::endl;
         
         int nb = (pw/8)*(ph/8);
-        auto types = GrayscaleDecoder::decode_block_types(encoded.data() + offset, sz[5], nb);
+        auto types = GrayscaleDecoder::decode_block_types(encoded.data() + offset, bt_size, nb);
         
         int copy_count = 0;
         int palette_count = 0;

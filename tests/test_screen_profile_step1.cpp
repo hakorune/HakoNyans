@@ -67,8 +67,8 @@ void test_full_codec_compatibility() {
     auto encoded = GrayscaleEncoder::encode(pixels.data(), w, h, 90);
     
     FileHeader hdr = FileHeader::read(encoded.data());
-    assert(hdr.version == 0x0003);
-    std::cout << "  [PASS] Header version is 0x0003" << std::endl;
+    assert(hdr.version == FileHeader::VERSION);
+    std::cout << "  [PASS] Header version is 0x" << std::hex << hdr.version << std::dec << std::endl;
     
     auto decoded_pixels = GrayscaleDecoder::decode(encoded);
     

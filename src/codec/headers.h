@@ -32,8 +32,10 @@ struct FileHeader {
     uint16_t _padding1;     // Alignment padding
     uint8_t  reserved[16];  // 将来拡張用
     
-    static constexpr uint32_t MAGIC = 0x484B4E00;  // 'HKN\0'
-    static constexpr uint16_t VERSION = 0x0003;    // v0.3 (BlockType support)
+    static constexpr uint32_t MAGIC = 0x484B4E00;       // 'HKN\0'
+    static constexpr uint16_t VERSION = 0x0004;         // v0.4 (band-group AC CDF)
+    static constexpr uint16_t MIN_SUPPORTED_VERSION = 0x0003;
+    static constexpr uint16_t VERSION_BAND_GROUP_CDF = 0x0004;
     
     enum class BlockType : uint8_t {
         DCT = 0,
@@ -55,11 +57,15 @@ struct FileHeader {
      */
     bool is_valid() const {
         if (magic != MAGIC) return false;
-        if (version != VERSION) return false;
+        if (version < MIN_SUPPORTED_VERSION || version > VERSION) return false;
         if (block_size != 8) return false;
         if (width == 0 || height == 0) return false;
         if (num_channels == 0 || num_channels > 4) return false;
         return true;
+    }
+
+    bool has_band_group_cdf() const {
+        return (flags & 1) == 0 && version >= VERSION_BAND_GROUP_CDF;
     }
     
     /**
