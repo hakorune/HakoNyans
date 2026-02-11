@@ -18,6 +18,7 @@
 #include <stdexcept>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace hakonyans {
 
@@ -550,6 +551,93 @@ public:
         return output;
     }
 
+    // ------------------------------------------------------------------------
+    // Lossless mode bit estimators (coarse heuristics for mode decision only)
+    // ------------------------------------------------------------------------
+    static int estimate_copy_bits(const CopyParams& cp, int tile_width) {
+        (void)tile_width;
+        int bits = 2;  // block_type
+        int small_idx = CopyCodec::small_vector_index(cp);
+        if (small_idx >= 0) {
+            bits += 2;  // small-vector code (mode1/mode2 average)
+            bits += 2;  // amortized stream/mode overhead
+        } else {
+            bits += 32; // raw dx/dy payload fallback
+        }
+        return bits;
+    }
+
+    static int estimate_palette_index_bits_per_pixel(int palette_size) {
+        if (palette_size <= 1) return 0;
+        if (palette_size <= 2) return 1;
+        if (palette_size <= 4) return 2;
+        return 3;
+    }
+
+    static int estimate_palette_bits(const Palette& p, int transitions) {
+        if (p.size == 0) return std::numeric_limits<int>::max();
+        int bits = 2;   // block_type
+        bits += 8;      // per-block palette header
+        bits += (int)p.size * 8; // grayscale palette values
+
+        if (p.size <= 1) return bits;
+        if (p.size == 2) {
+            // 2-color blocks are mask-based in PaletteCodec.
+            // Lower transitions usually compress better via dictionary reuse.
+            bits += (transitions <= 24) ? 24 : 64;
+            return bits;
+        }
+
+        int bits_per_index = estimate_palette_index_bits_per_pixel((int)p.size);
+        bits += 64 * bits_per_index;
+        return bits;
+    }
+
+    static int estimate_filter_symbol_bits(int abs_residual) {
+        if (abs_residual == 0) return 1;
+        if (abs_residual <= 1) return 2;
+        if (abs_residual <= 3) return 3;
+        if (abs_residual <= 7) return 4;
+        if (abs_residual <= 15) return 5;
+        if (abs_residual <= 31) return 6;
+        if (abs_residual <= 63) return 7;
+        if (abs_residual <= 127) return 8;
+        return 10;
+    }
+
+    static int estimate_filter_bits(
+        const int16_t* padded, uint32_t pad_w, uint32_t pad_h, int cur_x, int cur_y
+    ) {
+        (void)pad_h;
+        int best_bits = std::numeric_limits<int>::max();
+        for (int f = 0; f < 5; f++) {
+            int bits = 2; // block_type
+            bits += 3;    // effective filter_id overhead (row-level amortized)
+            for (int y = 0; y < 8; y++) {
+                for (int x = 0; x < 8; x++) {
+                    int px = cur_x + x;
+                    int py = cur_y + y;
+                    int16_t orig = padded[py * (int)pad_w + px];
+                    int16_t a = (px > 0) ? padded[py * (int)pad_w + (px - 1)] : 0;
+                    int16_t b = (py > 0) ? padded[(py - 1) * (int)pad_w + px] : 0;
+                    int16_t c = (px > 0 && py > 0) ? padded[(py - 1) * (int)pad_w + (px - 1)] : 0;
+                    int16_t pred = 0;
+                    switch (f) {
+                        case 0: pred = 0; break;
+                        case 1: pred = a; break;
+                        case 2: pred = b; break;
+                        case 3: pred = (int16_t)(((int)a + (int)b) / 2); break;
+                        case 4: pred = LosslessFilter::paeth_predictor(a, b, c); break;
+                    }
+                    int abs_r = std::abs((int)orig - (int)pred);
+                    bits += estimate_filter_symbol_bits(abs_r);
+                }
+            }
+            best_bits = std::min(best_bits, bits);
+        }
+        return best_bits;
+    }
+
     /**
      * Encode a single int16_t plane losslessly with Screen Profile support.
      * 
@@ -675,18 +763,24 @@ public:
             }
 
             // Mode decision:
-            //   Copy (exact) -> Palette (guarded) -> Filter.
-            // Keep Copy-first behavior for screen content; guard against noisy palette blocks.
-            FileHeader::BlockType best_mode = FileHeader::BlockType::DCT;
+            // Choose the minimum estimated bits among Copy / Palette / Filter.
+            int copy_bits = std::numeric_limits<int>::max();
+            int palette_bits = std::numeric_limits<int>::max();
+            int filter_bits = estimate_filter_bits(
+                padded.data(), pad_w, pad_h, cur_x, cur_y
+            );
             if (copy_found) {
+                copy_bits = estimate_copy_bits(copy_candidate, (int)pad_w);
+            }
+            if (palette_found) {
+                palette_bits = estimate_palette_bits(palette_candidate, transitions);
+            }
+
+            FileHeader::BlockType best_mode = FileHeader::BlockType::DCT;
+            if (copy_bits <= palette_bits && copy_bits <= filter_bits) {
                 best_mode = FileHeader::BlockType::COPY;
-            } else if (palette_found) {
-                // Guard only pathological two-color checker-like blocks.
-                bool noisy_palette2 =
-                    (palette_candidate.size == 2) &&
-                    (transitions > mode_params.palette_transition_limit) &&
-                    (variance_proxy > mode_params.palette_variance_limit);
-                if (!noisy_palette2) best_mode = FileHeader::BlockType::PALETTE;
+            } else if (palette_bits <= filter_bits) {
+                best_mode = FileHeader::BlockType::PALETTE;
             }
 
             block_types[i] = best_mode;
