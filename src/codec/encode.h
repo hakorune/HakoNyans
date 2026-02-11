@@ -141,6 +141,16 @@ public:
         uint64_t filter_lo_raw_bytes_sum;
         uint64_t filter_lo_compressed_bytes_sum;
 
+        // Phase 9p: filter_lo mode3
+        uint64_t filter_lo_mode3;
+        uint64_t filter_lo_mode3_rows_sum;
+        uint64_t filter_lo_mode3_saved_bytes_sum;
+        uint64_t filter_lo_mode3_pred_hist[4]; // 0:NONE, 1:SUB, 2:UP, 3:AVG
+        uint64_t filter_lo_mode4;
+        uint64_t filter_lo_mode4_saved_bytes_sum;
+        uint64_t filter_lo_ctx_nonempty_tiles;
+        uint64_t filter_lo_ctx_bytes_sum[6];
+
         LosslessModeDebugStats() { reset(); }
 
         void reset() {
@@ -232,6 +242,14 @@ public:
             filter_lo_mode0 = 0;
             filter_lo_mode1 = 0;
             filter_lo_mode2 = 0;
+            filter_lo_mode3 = 0;
+            filter_lo_mode3_rows_sum = 0;
+            filter_lo_mode3_saved_bytes_sum = 0;
+            std::memset(filter_lo_mode3_pred_hist, 0, sizeof(filter_lo_mode3_pred_hist));
+            filter_lo_mode4 = 0;
+            filter_lo_mode4_saved_bytes_sum = 0;
+            filter_lo_ctx_nonempty_tiles = 0;
+            std::memset(filter_lo_ctx_bytes_sum, 0, sizeof(filter_lo_ctx_bytes_sum));
             filter_lo_raw_bytes_sum = 0;
             filter_lo_compressed_bytes_sum = 0;
         }
@@ -1671,9 +1689,204 @@ public:
                 best_size = lz_wrapped; best_mode = 2;
             }
 
+            // Mode 3: Row Predictor (Phase 9p) - Only for Photo-like
+            std::vector<uint8_t> pred_stream;
+            std::vector<uint8_t> resid_stream;
+            std::vector<uint8_t> mode3_preds; // for telemetry
+            std::vector<int> row_lens;
+
+            // Mode 4: Context-split by filter_id (Phase 9q)
+            std::vector<std::vector<uint8_t>> mode4_streams(6);
+            std::vector<uint32_t> mode4_ctx_raw_counts(6, 0);
+
+            if (use_photo_mode_bias && lo_bytes.size() > 256) {
+                // Reconstruct row lengths of filter pixels
+                row_lens.assign(pad_h, 0);
+                for (uint32_t y = 0; y < pad_h; y++) {
+                    int count = 0;
+                    int row_idx = y / 8;
+                    for (int bx = 0; bx < nx; bx++) {
+                        if (block_types[row_idx * nx + bx] == FileHeader::BlockType::DCT) {
+                            count += 8;
+                        }
+                    }
+                    row_lens[y] = count;
+                }
+
+                std::vector<uint8_t> preds;
+                std::vector<uint8_t> resids;
+                resids.reserve(lo_bytes.size());
+                
+                size_t offset = 0;
+                size_t prev_valid_row_start = 0;
+                size_t prev_valid_row_len = 0;
+
+                for (uint32_t y = 0; y < pad_h; y++) {
+                    int len = row_lens[y];
+                    if (len == 0) continue;
+
+                    const uint8_t* curr_row = &lo_bytes[offset];
+                    int best_p = 0;
+                    int64_t min_cost = -1;
+
+                    // Evaluate 4 predictors: 0=NONE, 1=SUB, 2=UP, 3=AVG
+                    for (int p = 0; p < 4; p++) {
+                        int64_t cost = 0;
+                        for (int i = 0; i < len; i++) {
+                            uint8_t pred_val = 0;
+                            if (p == 1) { // SUB
+                                pred_val = (i == 0) ? 0 : curr_row[i - 1];
+                            } else if (p == 2) { // UP
+                                pred_val = (prev_valid_row_len > (size_t)i) ? lo_bytes[prev_valid_row_start + i] : 0;
+                            } else if (p == 3) { // AVG
+                                uint8_t left = (i == 0) ? 0 : curr_row[i - 1];
+                                uint8_t up = (prev_valid_row_len > (size_t)i) ? lo_bytes[prev_valid_row_start + i] : 0;
+                                pred_val = (left + up) / 2;
+                            }
+                            int diff = (int)curr_row[i] - pred_val;
+                            if (diff < 0) diff += 256;
+                            // Cost: min(d, 256-d) aka circular distance
+                            if (diff > 128) diff = 256 - diff;
+                            cost += diff;
+                        }
+                        if (min_cost == -1 || cost < min_cost) {
+                            min_cost = cost;
+                            best_p = p;
+                        }
+                    }
+
+                    preds.push_back((uint8_t)best_p);
+
+                    // Generate residuals with best predictor
+                    for (int i = 0; i < len; i++) {
+                         uint8_t pred_val = 0;
+                         if (best_p == 1) pred_val = (i == 0) ? 0 : curr_row[i - 1];
+                         else if (best_p == 2) pred_val = (prev_valid_row_len > (size_t)i) ? lo_bytes[prev_valid_row_start + i] : 0;
+                         else if (best_p == 3) {
+                             uint8_t left = (i == 0) ? 0 : curr_row[i - 1];
+                             uint8_t up = (prev_valid_row_len > (size_t)i) ? lo_bytes[prev_valid_row_start + i] : 0;
+                             pred_val = (left + up) / 2;
+                         }
+                         resids.push_back((uint8_t)(curr_row[i] - pred_val));
+                    }
+
+                    prev_valid_row_start = offset;
+                    prev_valid_row_len = len;
+                    offset += len;
+                }
+
+                auto preds_enc = encode_byte_stream(preds);
+                auto resids_enc = encode_byte_stream(resids);
+                // [magic][mode][raw_count:4][pred_sz:4][preds][resids]
+                size_t total_sz = 1 + 1 + 4 + 4 + preds_enc.size() + resids_enc.size();
+
+                if (total_sz < best_size && total_sz < threshold) {
+                    best_size = total_sz;
+                    best_mode = 3;
+                    pred_stream = std::move(preds_enc);
+                    resid_stream = std::move(resids_enc);
+                    mode3_preds = std::move(preds);
+                }
+
+                // Mode 4: split filter_lo by filter_id context and encode each independently.
+                std::vector<std::vector<uint8_t>> lo_ctx(6);
+                size_t off = 0;
+                for (uint32_t y = 0; y < pad_h; y++) {
+                    int len = row_lens[y];
+                    if (len <= 0) continue;
+                    size_t end_off = std::min(off + (size_t)len, lo_bytes.size());
+                    if (end_off <= off) break;
+                    uint8_t fid = (y < filter_ids.size()) ? filter_ids[y] : 0;
+                    if (fid > 5) fid = 0;
+                    lo_ctx[fid].insert(lo_ctx[fid].end(), lo_bytes.begin() + off, lo_bytes.begin() + end_off);
+                    off = end_off;
+                }
+
+                size_t mode4_sz = 1 + 1 + 4 + 6 * 4; // magic + mode + raw_count + len[6]
+                int nonempty_ctx = 0;
+                std::vector<std::vector<uint8_t>> ctx_streams(6);
+                std::vector<uint32_t> ctx_raw_counts(6, 0);
+                for (int k = 0; k < 6; k++) {
+                    ctx_raw_counts[k] = (uint32_t)lo_ctx[k].size();
+                    if (!lo_ctx[k].empty()) nonempty_ctx++;
+                    if (!lo_ctx[k].empty()) {
+                        ctx_streams[k] = encode_byte_stream(lo_ctx[k]);
+                    }
+                    mode4_sz += ctx_streams[k].size();
+                }
+                if (nonempty_ctx >= 2 && mode4_sz < best_size && mode4_sz < threshold) {
+                    best_size = mode4_sz;
+                    best_mode = 4;
+                    mode4_streams = std::move(ctx_streams);
+                    mode4_ctx_raw_counts = std::move(ctx_raw_counts);
+                }
+            }
+
             if (best_mode == 0) {
                 lo_stream = std::move(lo_legacy);
                 tl_lossless_mode_debug_stats_.filter_lo_mode0++;
+            } else if (best_mode == 3) {
+                // Build wrapper: [0xAB][mode=3][raw_count:4][pred_sz:4][preds][resids]
+                lo_stream.clear();
+                lo_stream.push_back(FileHeader::WRAPPER_MAGIC_FILTER_LO);
+                lo_stream.push_back(3); // mode=3
+                
+                uint32_t rc = (uint32_t)lo_bytes.size();
+                lo_stream.push_back((uint8_t)(rc & 0xFF));
+                lo_stream.push_back((uint8_t)((rc >> 8) & 0xFF));
+                lo_stream.push_back((uint8_t)((rc >> 16) & 0xFF));
+                lo_stream.push_back((uint8_t)((rc >> 24) & 0xFF));
+
+                uint32_t ps = (uint32_t)pred_stream.size();
+                lo_stream.push_back((uint8_t)(ps & 0xFF));
+                lo_stream.push_back((uint8_t)((ps >> 8) & 0xFF));
+                lo_stream.push_back((uint8_t)((ps >> 16) & 0xFF));
+                lo_stream.push_back((uint8_t)((ps >> 24) & 0xFF));
+                
+                lo_stream.insert(lo_stream.end(), pred_stream.begin(), pred_stream.end());
+                lo_stream.insert(lo_stream.end(), resid_stream.begin(), resid_stream.end());
+
+                tl_lossless_mode_debug_stats_.filter_lo_mode3++;
+                tl_lossless_mode_debug_stats_.filter_lo_mode3_rows_sum += mode3_preds.size();
+                if (lo_legacy.size() > lo_stream.size()) {
+                    tl_lossless_mode_debug_stats_.filter_lo_mode3_saved_bytes_sum += (lo_legacy.size() - lo_stream.size());
+                }
+                for (uint8_t p : mode3_preds) {
+                    if (p < 4) tl_lossless_mode_debug_stats_.filter_lo_mode3_pred_hist[p]++;
+                }
+            } else if (best_mode == 4) {
+                // Build wrapper: [0xAB][mode=4][raw_count:4][len0..len5][stream0..stream5]
+                lo_stream.clear();
+                lo_stream.push_back(FileHeader::WRAPPER_MAGIC_FILTER_LO);
+                lo_stream.push_back(4); // mode=4
+                uint32_t rc = (uint32_t)lo_bytes.size();
+                lo_stream.push_back((uint8_t)(rc & 0xFF));
+                lo_stream.push_back((uint8_t)((rc >> 8) & 0xFF));
+                lo_stream.push_back((uint8_t)((rc >> 16) & 0xFF));
+                lo_stream.push_back((uint8_t)((rc >> 24) & 0xFF));
+                for (int k = 0; k < 6; k++) {
+                    uint32_t len = (uint32_t)mode4_streams[k].size();
+                    lo_stream.push_back((uint8_t)(len & 0xFF));
+                    lo_stream.push_back((uint8_t)((len >> 8) & 0xFF));
+                    lo_stream.push_back((uint8_t)((len >> 16) & 0xFF));
+                    lo_stream.push_back((uint8_t)((len >> 24) & 0xFF));
+                }
+                for (int k = 0; k < 6; k++) {
+                    lo_stream.insert(lo_stream.end(), mode4_streams[k].begin(), mode4_streams[k].end());
+                }
+                tl_lossless_mode_debug_stats_.filter_lo_mode4++;
+                if (lo_legacy.size() > lo_stream.size()) {
+                    tl_lossless_mode_debug_stats_.filter_lo_mode4_saved_bytes_sum +=
+                        (uint64_t)(lo_legacy.size() - lo_stream.size());
+                }
+                int nonempty_ctx = 0;
+                for (int k = 0; k < 6; k++) {
+                    tl_lossless_mode_debug_stats_.filter_lo_ctx_bytes_sum[k] += mode4_ctx_raw_counts[k];
+                    if (mode4_ctx_raw_counts[k] > 0) nonempty_ctx++;
+                }
+                if (nonempty_ctx > 0) {
+                    tl_lossless_mode_debug_stats_.filter_lo_ctx_nonempty_tiles++;
+                }
             } else {
                 // Build wrapper: [0xAB][mode][raw_count:4B LE][payload]
                 lo_stream.clear();

@@ -449,22 +449,54 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
         }
     }
 
-    // Filter lo diagnostics (Phase 9o)
+    // Filter lo diagnostics (Phase 9o / 9p / 9q)
     {
-        uint64_t flo_total = s.filter_lo_mode0 + s.filter_lo_mode1 + s.filter_lo_mode2;
+        uint64_t flo_total = s.filter_lo_mode0 + s.filter_lo_mode1 + s.filter_lo_mode2 +
+                             s.filter_lo_mode3 + s.filter_lo_mode4;
         if (flo_total > 0) {
             std::cout << "\n  Filter lo diagnostics\n";
-            std::cout << "  filter_lo_mode0/1/2    "
+            std::cout << "  filter_lo_mode0/1/2/3/4  "
                       << s.filter_lo_mode0 << "/"
                       << s.filter_lo_mode1 << "/"
-                      << s.filter_lo_mode2 << "\n";
+                      << s.filter_lo_mode2 << "/"
+                      << s.filter_lo_mode3 << "/"
+                      << s.filter_lo_mode4 << "\n";
             if (s.filter_lo_raw_bytes_sum > 0) {
                 double savings = 100.0 * (1.0 - (double)s.filter_lo_compressed_bytes_sum / (double)s.filter_lo_raw_bytes_sum);
                 std::cout << "  filter_lo_bytes        raw=" << s.filter_lo_raw_bytes_sum
                           << " compressed=" << s.filter_lo_compressed_bytes_sum
                           << " (" << std::fixed << std::setprecision(1) << savings << "% savings)\n";
             }
+            if (s.filter_lo_mode3 > 0) {
+                std::cout << "  mode3_rows_total       " << s.filter_lo_mode3_rows_sum << "\n";
+                if (s.filter_lo_mode3_saved_bytes_sum > 0)
+                     std::cout << "  mode3_saved_bytes      " << s.filter_lo_mode3_saved_bytes_sum << "\n";
+                
+                uint64_t ph_total = s.filter_lo_mode3_pred_hist[0] + s.filter_lo_mode3_pred_hist[1] + 
+                                    s.filter_lo_mode3_pred_hist[2] + s.filter_lo_mode3_pred_hist[3];
+                if (ph_total > 0) {
+                    std::cout << "  mode3_pred_hist        NONE:" 
+                              << (100.0 * s.filter_lo_mode3_pred_hist[0] / ph_total) << "% SUB:"
+                              << (100.0 * s.filter_lo_mode3_pred_hist[1] / ph_total) << "% UP:"
+                              << (100.0 * s.filter_lo_mode3_pred_hist[2] / ph_total) << "% AVG:"
+                              << (100.0 * s.filter_lo_mode3_pred_hist[3] / ph_total) << "%\n";
+                }
+            }
+            if (s.filter_lo_mode4 > 0) {
+                if (s.filter_lo_mode4_saved_bytes_sum > 0) {
+                    std::cout << "  mode4_saved_bytes      " << s.filter_lo_mode4_saved_bytes_sum << "\n";
+                }
+                std::cout << "  mode4_nonempty_tiles   " << s.filter_lo_ctx_nonempty_tiles << "\n";
+                std::cout << "  mode4_ctx_raw_bytes    "
+                          << s.filter_lo_ctx_bytes_sum[0] << "/"
+                          << s.filter_lo_ctx_bytes_sum[1] << "/"
+                          << s.filter_lo_ctx_bytes_sum[2] << "/"
+                          << s.filter_lo_ctx_bytes_sum[3] << "/"
+                          << s.filter_lo_ctx_bytes_sum[4] << "/"
+                          << s.filter_lo_ctx_bytes_sum[5] << "\n";
+            }
         }
+
     }
 }
 

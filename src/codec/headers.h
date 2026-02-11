@@ -33,7 +33,7 @@ struct FileHeader {
     uint8_t  reserved[16];  // 将来拡張用
     
     static constexpr uint32_t MAGIC = 0x484B4E00;       // 'HKN\0'
-    static constexpr uint16_t VERSION = 0x000A;         // v0.10 (filter_lo delta wrapper)
+    static constexpr uint16_t VERSION = 0x000C;         // v0.12 (filter_lo context split)
     static constexpr uint16_t MIN_SUPPORTED_VERSION = 0x0003;
     static constexpr uint16_t VERSION_BAND_GROUP_CDF = 0x0004;
     static constexpr uint16_t VERSION_TILE_MATCH4 = 0x0005;
@@ -42,6 +42,8 @@ struct FileHeader {
     static constexpr uint16_t VERSION_COPY_MODE3 = 0x0008;
     static constexpr uint16_t VERSION_FILTER_WRAPPER = 0x0009;
     static constexpr uint16_t VERSION_FILTER_LO_DELTA = 0x000A;
+    static constexpr uint16_t VERSION_FILTER_LO_PRED  = 0x000B;
+    static constexpr uint16_t VERSION_FILTER_LO_CONTEXT_SPLIT = 0x000C;
     
     enum class BlockType : uint8_t {
         DCT = 0,
@@ -55,7 +57,7 @@ struct FileHeader {
     static constexpr uint8_t WRAPPER_MAGIC_COPY        = 0xA8; // LZ only
     static constexpr uint8_t WRAPPER_MAGIC_FILTER_IDS  = 0xA9; // rANS or LZ
     static constexpr uint8_t WRAPPER_MAGIC_FILTER_HI   = 0xAA; // Sparse mode
-    static constexpr uint8_t WRAPPER_MAGIC_FILTER_LO   = 0xAB; // Delta / LZ
+    static constexpr uint8_t WRAPPER_MAGIC_FILTER_LO   = 0xAB; // Delta / LZ / Predictor / Context-split
 
     
     FileHeader() {
