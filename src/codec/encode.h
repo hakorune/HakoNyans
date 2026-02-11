@@ -293,18 +293,19 @@ public:
         auto dc_stream = encode_tokens(dc_tokens, build_cdf(dc_tokens));
         std::vector<uint8_t> tile_data;
         if (use_band_group_cdf) {
+            constexpr size_t kBandPindexMinStreamBytes = 32 * 1024;  // avoid overhead on tiny AC bands
             std::vector<uint8_t> pindex_low, pindex_mid, pindex_high;
             auto ac_low_stream = encode_tokens(
                 ac_low_tokens, build_cdf(ac_low_tokens), pi ? &pindex_low : nullptr,
-                target_pindex_meta_ratio_percent
+                target_pindex_meta_ratio_percent, kBandPindexMinStreamBytes
             );
             auto ac_mid_stream = encode_tokens(
                 ac_mid_tokens, build_cdf(ac_mid_tokens), pi ? &pindex_mid : nullptr,
-                target_pindex_meta_ratio_percent
+                target_pindex_meta_ratio_percent, kBandPindexMinStreamBytes
             );
             auto ac_high_stream = encode_tokens(
                 ac_high_tokens, build_cdf(ac_high_tokens), pi ? &pindex_high : nullptr,
-                target_pindex_meta_ratio_percent
+                target_pindex_meta_ratio_percent, kBandPindexMinStreamBytes
             );
             pindex_data = serialize_band_pindex_blob(pindex_low, pindex_mid, pindex_high);
             // TileHeader v3 (lossy): 10 fields (40 bytes)
@@ -403,7 +404,8 @@ public:
         const std::vector<Token>& t,
         const CDFTable& c,
         std::vector<uint8_t>* out_pi = nullptr,
-        int target_pindex_meta_ratio_percent = 2
+        int target_pindex_meta_ratio_percent = 2,
+        size_t min_pindex_stream_bytes = 0
     ) {
         std::vector<uint8_t> output; int alpha = c.alphabet_size; std::vector<uint8_t> cdf_data(alpha * 4);
         for (int i = 0; i < alpha; i++) { uint32_t f = c.freq[i]; std::memcpy(&cdf_data[i * 4], &f, 4); }
@@ -415,7 +417,7 @@ public:
         for (const auto& tok : t) if (tok.raw_bits_count > 0) { raw_data.push_back(tok.raw_bits_count); raw_data.push_back(tok.raw_bits & 0xFF); raw_data.push_back((tok.raw_bits >> 8) & 0xFF); raw_count++; }
         size_t rc_offset = output.size(); output.resize(rc_offset + 4); std::memcpy(&output[rc_offset], &raw_count, 4); output.insert(output.end(), raw_data.begin(), raw_data.end());
         if (out_pi) {
-            if (t.empty()) {
+            if (t.empty() || output.size() < min_pindex_stream_bytes) {
                 out_pi->clear();
             } else {
                 int interval = calculate_pindex_interval(
