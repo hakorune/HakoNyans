@@ -448,6 +448,24 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
             }
         }
     }
+
+    // Filter lo diagnostics (Phase 9o)
+    {
+        uint64_t flo_total = s.filter_lo_mode0 + s.filter_lo_mode1 + s.filter_lo_mode2;
+        if (flo_total > 0) {
+            std::cout << "\n  Filter lo diagnostics\n";
+            std::cout << "  filter_lo_mode0/1/2    "
+                      << s.filter_lo_mode0 << "/"
+                      << s.filter_lo_mode1 << "/"
+                      << s.filter_lo_mode2 << "\n";
+            if (s.filter_lo_raw_bytes_sum > 0) {
+                double savings = 100.0 * (1.0 - (double)s.filter_lo_compressed_bytes_sum / (double)s.filter_lo_raw_bytes_sum);
+                std::cout << "  filter_lo_bytes        raw=" << s.filter_lo_raw_bytes_sum
+                          << " compressed=" << s.filter_lo_compressed_bytes_sum
+                          << " (" << std::fixed << std::setprecision(1) << savings << "% savings)\n";
+            }
+        }
+    }
 }
 
 int main(int argc, char** argv) {

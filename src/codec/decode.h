@@ -704,10 +704,41 @@ public:
         }
         ptr += filter_ids_size;
 
-        // Decode rANS byte streams (data-adaptive CDF)
+        // Decode lo byte stream (Phase 9o: may be wrapped with delta/LZ)
         std::vector<uint8_t> lo_bytes, hi_bytes;
         if (lo_stream_size > 0 && filter_pixel_count > 0) {
-            lo_bytes = decode_byte_stream(ptr, lo_stream_size, filter_pixel_count);
+            if (lo_stream_size >= 6 && ptr[0] == FileHeader::WRAPPER_MAGIC_FILTER_LO) {
+                // Wrapper: [0xAB][mode][raw_count:4B LE][payload]
+                uint8_t lo_mode = ptr[1];
+                uint32_t raw_count = (uint32_t)ptr[2]
+                                   | ((uint32_t)ptr[3] << 8)
+                                   | ((uint32_t)ptr[4] << 16)
+                                   | ((uint32_t)ptr[5] << 24);
+                const uint8_t* payload = ptr + 6;
+                size_t payload_size = lo_stream_size - 6;
+
+                if (lo_mode == 1) {
+                    // Delta + rANS: decode rANS, then undo delta
+                    auto delta = decode_byte_stream(payload, payload_size, raw_count);
+                    lo_bytes.resize(raw_count);
+                    if (!delta.empty()) {
+                        lo_bytes[0] = delta[0];
+                        for (size_t i = 1; i < raw_count && i < delta.size(); i++) {
+                            lo_bytes[i] = (uint8_t)(lo_bytes[i - 1] + delta[i]);
+                        }
+                    }
+                } else if (lo_mode == 2) {
+                    // LZ decompress
+                    lo_bytes = TileLZ::decompress(payload, payload_size, raw_count);
+                }
+                // Fail-safe
+                if (lo_bytes.size() < filter_pixel_count) {
+                    lo_bytes.resize(filter_pixel_count, 0);
+                }
+            } else {
+                // Legacy rANS (backward compatible)
+                lo_bytes = decode_byte_stream(ptr, lo_stream_size, filter_pixel_count);
+            }
         }
         ptr += lo_stream_size;
 

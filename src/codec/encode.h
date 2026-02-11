@@ -134,6 +134,13 @@ public:
         uint64_t filter_hi_raw_bytes_sum;
         uint64_t filter_hi_compressed_bytes_sum;
 
+        // Phase 9o: filter_lo wrapper telemetry
+        uint64_t filter_lo_mode0;
+        uint64_t filter_lo_mode1;
+        uint64_t filter_lo_mode2;
+        uint64_t filter_lo_raw_bytes_sum;
+        uint64_t filter_lo_compressed_bytes_sum;
+
         LosslessModeDebugStats() { reset(); }
 
         void reset() {
@@ -222,6 +229,11 @@ public:
             filter_hi_zero_ratio_sum = 0;
             filter_hi_raw_bytes_sum = 0;
             filter_hi_compressed_bytes_sum = 0;
+            filter_lo_mode0 = 0;
+            filter_lo_mode1 = 0;
+            filter_lo_mode2 = 0;
+            filter_lo_raw_bytes_sum = 0;
+            filter_lo_compressed_bytes_sum = 0;
         }
     };
 
@@ -1628,7 +1640,60 @@ public:
                 lo_bytes[i] = (uint8_t)(zz & 0xFF);
                 hi_bytes[i] = (uint8_t)((zz >> 8) & 0xFF);
             }
-            lo_stream = encode_byte_stream(lo_bytes);
+            // --- Phase 9o: filter_lo wrapper (legacy / delta+rANS / LZ) ---
+            auto lo_legacy = encode_byte_stream(lo_bytes);
+            tl_lossless_mode_debug_stats_.filter_lo_raw_bytes_sum += lo_bytes.size();
+
+            size_t legacy_size = lo_legacy.size();
+            size_t threshold = (size_t)(legacy_size * 0.99); // 1% improvement required
+
+            // Mode 1: delta transform + rANS
+            std::vector<uint8_t> delta_bytes(lo_bytes.size());
+            delta_bytes[0] = lo_bytes[0];
+            for (size_t i = 1; i < lo_bytes.size(); i++) {
+                delta_bytes[i] = (uint8_t)(lo_bytes[i] - lo_bytes[i - 1]); // mod 256
+            }
+            auto delta_rans = encode_byte_stream(delta_bytes);
+            size_t delta_wrapped = 6 + delta_rans.size(); // [magic][mode][raw_count:4B][data]
+
+            // Mode 2: LZ compress
+            auto lo_lz = TileLZ::compress(lo_bytes);
+            size_t lz_wrapped = 6 + lo_lz.size();
+
+            // Select best mode
+            int best_mode = 0;
+            size_t best_size = legacy_size;
+
+            if (delta_wrapped < best_size && delta_wrapped < threshold) {
+                best_size = delta_wrapped; best_mode = 1;
+            }
+            if (lz_wrapped < best_size && lz_wrapped < threshold) {
+                best_size = lz_wrapped; best_mode = 2;
+            }
+
+            if (best_mode == 0) {
+                lo_stream = std::move(lo_legacy);
+                tl_lossless_mode_debug_stats_.filter_lo_mode0++;
+            } else {
+                // Build wrapper: [0xAB][mode][raw_count:4B LE][payload]
+                lo_stream.clear();
+                lo_stream.push_back(FileHeader::WRAPPER_MAGIC_FILTER_LO);
+                lo_stream.push_back((uint8_t)best_mode);
+                uint32_t rc = (uint32_t)lo_bytes.size();
+                lo_stream.push_back((uint8_t)(rc & 0xFF));
+                lo_stream.push_back((uint8_t)((rc >> 8) & 0xFF));
+                lo_stream.push_back((uint8_t)((rc >> 16) & 0xFF));
+                lo_stream.push_back((uint8_t)((rc >> 24) & 0xFF));
+
+                if (best_mode == 1) {
+                    lo_stream.insert(lo_stream.end(), delta_rans.begin(), delta_rans.end());
+                    tl_lossless_mode_debug_stats_.filter_lo_mode1++;
+                } else {
+                    lo_stream.insert(lo_stream.end(), lo_lz.begin(), lo_lz.end());
+                    tl_lossless_mode_debug_stats_.filter_lo_mode2++;
+                }
+            }
+            tl_lossless_mode_debug_stats_.filter_lo_compressed_bytes_sum += lo_stream.size();
 
             // --- Phase 9n: filter_hi sparse mode ---
             size_t zero_count = 0;

@@ -1186,6 +1186,25 @@ tile内の補助ストリームに LZ wrapper を導入し、UI系のメタデ�
 
 ---
 
+### Phase 9n: Filter stream wrapper最適化（filter_ids/filter_hi）(2026-02-12)
+
+Filter stream のうち、`filter_ids` と `filter_hi` の圧縮経路を拡張して
+UI/Anime のサイズを削減。
+
+**主な変更**:
+1. `filter_ids` wrapper 追加（raw / rANS / LZ の最小選択）
+2. `filter_hi` sparseモード追加（zero-mask + nonzero values）
+3. `bench_bit_accounting` に filter stream mode統計を追加
+
+**検証結果**:
+- `ctest`: 17/17 PASS
+- `vscode` total: 30790B -> 27829B（-9.6%）
+- `anime_girl_portrait` total: 15679B -> 12486B（-20.4%）
+- `nature_01` total: 927896B -> 927573B（-0.03%、悪化なし）
+- `bench_decode`: 300MiB/s帯を維持
+
+---
+
 ## 🏆 技術的ハイライト
 
 ### 1. NyANS-P エントロピーエンジン

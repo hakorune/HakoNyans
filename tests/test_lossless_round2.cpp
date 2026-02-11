@@ -643,6 +643,115 @@ void test_filter_wrapper_malformed() {
     PASS();
 }
 
+// ============================================================
+// Test 17: Filter Lo delta roundtrip (Phase 9o)
+// ============================================================
+void test_filter_lo_delta_roundtrip() {
+    TEST("Filter Lo delta roundtrip (smooth gradient, 64x64)");
+
+    // Smooth gradients → delta transform should be very effective
+    const int W = 64, H = 64;
+    std::vector<uint8_t> pixels(W * H * 3);
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            int i = y * W + x;
+            pixels[i * 3 + 0] = (uint8_t)((x + y) * 2);
+            pixels[i * 3 + 1] = (uint8_t)(x * 3 + 10);
+            pixels[i * 3 + 2] = (uint8_t)(y * 3 + 20);
+        }
+    }
+
+    auto encoded = GrayscaleEncoder::encode_color_lossless(pixels.data(), W, H);
+    int dw, dh;
+    auto decoded = GrayscaleDecoder::decode_color(encoded, dw, dh);
+
+    if (decoded.size() != pixels.size()) {
+        FAIL("Decoded size " + std::to_string(decoded.size()) + " != " + std::to_string(pixels.size()));
+        return;
+    }
+    for (size_t i = 0; i < pixels.size(); i++) {
+        if (decoded[i] != pixels[i]) {
+            FAIL("Pixel mismatch at byte " + std::to_string(i));
+            return;
+        }
+    }
+    PASS();
+}
+
+// ============================================================
+// Test 18: Filter Lo LZ roundtrip (Phase 9o)
+// ============================================================
+void test_filter_lo_lz_roundtrip() {
+    TEST("Filter Lo LZ roundtrip (random, 64x64)");
+
+    const int W = 64, H = 64;
+    std::vector<uint8_t> pixels(W * H * 3);
+    std::mt19937 rng(888);
+    for (size_t i = 0; i < pixels.size(); i++) {
+        pixels[i] = rng() & 0xFF;
+    }
+
+    auto encoded = GrayscaleEncoder::encode_color_lossless(pixels.data(), W, H);
+    int dw, dh;
+    auto decoded = GrayscaleDecoder::decode_color(encoded, dw, dh);
+
+    if (decoded.size() != pixels.size()) {
+        FAIL("Decoded size " + std::to_string(decoded.size()) + " != " + std::to_string(pixels.size()));
+        return;
+    }
+    for (size_t i = 0; i < pixels.size(); i++) {
+        if (decoded[i] != pixels[i]) {
+            FAIL("Pixel mismatch at byte " + std::to_string(i));
+            return;
+        }
+    }
+    PASS();
+}
+
+// ============================================================
+// Test 19: Filter Lo malformed wrapper (Phase 9o)
+// ============================================================
+void test_filter_lo_malformed() {
+    TEST("Filter Lo malformed wrapper (no crash)");
+
+    // Mixed content image to exercise all paths
+    const int W = 48, H = 48;
+    std::vector<uint8_t> pixels(W * H * 3);
+    std::mt19937 rng(333);
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            int i = y * W + x;
+            if (y < H / 2) {
+                // Solid blocks (upper half)
+                pixels[i * 3 + 0] = 60;
+                pixels[i * 3 + 1] = 120;
+                pixels[i * 3 + 2] = 180;
+            } else {
+                // Random noise (lower half)
+                pixels[i * 3 + 0] = rng() & 0xFF;
+                pixels[i * 3 + 1] = rng() & 0xFF;
+                pixels[i * 3 + 2] = rng() & 0xFF;
+            }
+        }
+    }
+
+    auto encoded = GrayscaleEncoder::encode_color_lossless(pixels.data(), W, H);
+    int dw, dh;
+    auto decoded = GrayscaleDecoder::decode_color(encoded, dw, dh);
+
+    if (decoded.size() != pixels.size()) {
+        FAIL("Decoded size mismatch");
+        return;
+    }
+    for (size_t i = 0; i < pixels.size(); i++) {
+        if (decoded[i] != pixels[i]) {
+            FAIL("Pixel mismatch at byte " + std::to_string(i));
+            return;
+        }
+    }
+    PASS();
+}
+
 int main() {
     std::cout << "=== Phase 8 Round 2: Lossless Codec Tests ===" << std::endl;
 
@@ -662,6 +771,9 @@ int main() {
     test_filter_ids_lz_roundtrip();
     test_filter_hi_sparse_roundtrip();
     test_filter_wrapper_malformed();
+    test_filter_lo_delta_roundtrip();
+    test_filter_lo_lz_roundtrip();
+    test_filter_lo_malformed();
 
     std::cout << "\n=== Results: " << tests_passed << "/" << tests_run << " passed ===" << std::endl;
     return (tests_passed == tests_run) ? 0 : 1;

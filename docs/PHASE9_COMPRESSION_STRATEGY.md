@@ -45,8 +45,9 @@
 - ✅ タイル内 LZ 系トークン導入（Phase 9l-1/2/3）
 - ✅ 9l-debug（block_types Mode1 symbol-range bug修正 + steady_clock化）
 - ✅ Copy stream Mode3 RLE entropy coding（Phase 9m）
+- ✅ Filter stream wrapper最適化（filter_ids/filter_hi, Phase 9n）
 - ⏳ 可逆色変換の拡張（YCoCg-R 固定から）
-- ⏳ Filter stream entropy最適化（Phase 9n）
+- ⏳ Filter_lo stream最適化（Phase 9o）
 
 ### Phase 9l 実装結果（2026-02-12）
 
@@ -72,14 +73,25 @@
 - `nature_01` total size は -0.45% 改善（悪化なし）。
 - 速度面は `bench_decode` で 300MiB/s 帯を維持。
 
-### Phase 9n 次アクション（2026-02-12）
+### Phase 9n 実装結果（2026-02-12）
 
-- `copy stream` の次ボトルネックは `filter_ids/filter_lo/filter_hi`。
-- 次は filter stream 側の圧縮を改善する:
-  1. `filter_ids` wrapper（legacy rANS と LZ wrapper の最小選択）
-  2. `filter_hi` sparseモード（zero-mask + nonzero values）
-  3. tileごとの filter stream mode 自動選択（legacy/sparse/lz）
-- 新規指示書: `docs/PHASE9N_FILTER_STREAM_WRAPPER_INSTRUCTIONS.md`
+- `filter_ids` を wrapper 化し、raw/rANS/LZ の最小サイズ選択を導入。
+- `filter_hi` に sparse モード（zero-mask + nonzero values）を導入。
+- `ctest`: 17/17 PASS
+- `bench_bit_accounting`:
+  - `vscode` total: 30790B -> 27829B（-9.6%）
+  - `anime_girl_portrait` total: 15679B -> 12486B（-20.4%）
+  - `nature_01` total: 927896B -> 927573B（-0.03%、悪化なし）
+- `bench_decode`: 300MiB/s 帯を維持。
+
+### Phase 9o 次アクション（2026-02-12）
+
+- 次の主ボトルネックは `filter_lo`（特に Photo/Anime）。
+- 次は `filter_lo` 側の圧縮を改善する:
+  1. `filter_lo` delta wrapper（legacy/delta/LZ の最小選択）
+  2. `filter_lo` 行RLEトークン（短距離反復の圧縮）
+  3. tileごとの mode 自動選択 + telemetry 可視化
+- 新規指示書: `docs/PHASE9O_FILTER_LO_DELTA_INSTRUCTIONS.md`
 
 ## 直近の開発過程（9h-2 / 9h-3 / 9i-1 / 9j / 9j-2）
 
@@ -140,9 +152,9 @@
 
 ### P1（圧縮率をさらに伸ばす）
 
-6. Filter stream wrapper最適化（filter_ids の mode最小選択）
-7. Filter_hi sparseモード（zero-mask + nonzero values）
-8. Filter stream mode自動選択（legacy/sparse/lz）
+6. Filter_lo delta wrapper（legacy/delta/LZ）
+7. Filter_lo 行RLEトークン（短距離反復圧縮）
+8. Filter_lo mode自動選択 + telemetry
 9. Lossless 可逆色変換の追加（YCoCg-R 固定から拡張）
 10. Lossy CfL（Chroma from Luma）導入
 
@@ -163,9 +175,9 @@
 | Band-group CDF | P0 | -3%〜-10% | 写真/アニメ | 小 | ほぼ0 | 低リスク |
 | 可逆色変換追加 | P1 | -5%〜-20% | 写真/混在UI | 中 | 微小 | 仕様拡張寄り |
 | MED predictor追加 | P1 | -5%〜-15% | 写真 | 小 | 小 | 実装軽量 |
-| filter_ids wrapper最適化 | P1 | -1%〜-5% | UI/Anime/Photo | 小〜中 | 小 | rANS/LZの自動選択 |
-| filter_hi sparseモード | P1 | -2%〜-10% | Photo/Anime | 中 | 小 | hi-byteが疎な画像で有効 |
-| filter stream自動選択 | P1 | -1%〜-6% | 全カテゴリ | 小 | 小 | 悪化回避ガード |
+| filter_lo delta wrapper | P1 | -2%〜-8% | Anime/Photo/UI | 中 | 小 | delta変換で局所相関を利用 |
+| filter_lo 行RLEトークン | P1 | -1%〜-6% | UI/Anime | 中 | 小 | 行内の反復残差で有効 |
+| filter_lo mode自動選択 | P1 | -1%〜-5% | 全カテゴリ | 小 | 小 | 悪化回避ガード |
 | CfL | P1 | -3%〜-7% | 写真/アニメ | 中 | 小 | 色ずれ管理が必要 |
 | Lossy palette/intra-copy | P2 | -10%〜-40%* | UI/アニメ | 大 | 小〜中 | *ケース依存 |
 
