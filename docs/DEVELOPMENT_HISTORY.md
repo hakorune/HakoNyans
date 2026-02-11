@@ -1091,6 +1091,23 @@ Phase 9 P0（コア4項目）+ チューニング2項目 完了！🏆
 
 ---
 
+### Phase 9j: MED Predictor 追加 (2026-02-11)
+
+Lossless 圧縮の Filter モードに、JPEG-LS 等で実績のある **MED (Median Edge Detector)** 予測器を追加。
+
+**主な変更**:
+1. **予測器実装**: `LosslessFilter::med_predictor` を追加。端点判定によるエッジ保存予測。
+2. **フィルタ拡張**: 既存の PNG 互換 5 種に MED を加えた 6 種から行単位で最適選択。
+3. **ビット推定対応**: `estimate_filter_bits` に MED を統合し、モード選択精度を向上。
+
+**検証結果**:
+- `nature_01 (Photo)`: **-0.6%** 改善
+- `nature_02 (Photo)`: **-2.0%** 改善
+- `kodim03 (Natural)`: **-11.9%** 劇的改善 ⭐
+- 全 17 テスト PASS 維持。Lossless 完全一致を確認。
+
+---
+
 ## 🏆 技術的ハイライト
 
 ### 1. NyANS-P エントロピーエンジン

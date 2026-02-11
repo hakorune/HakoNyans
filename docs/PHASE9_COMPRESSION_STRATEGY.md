@@ -37,10 +37,10 @@
   - 実測: Photo `nature_01` -5.02%、`nature_02` -5.86%、UI回帰なし
   - デコード影響: +3.6%（20ms帯維持、許容範囲）
 
-### Phase 9 P1（圧縮率をさらに伸ばす）⏳ 未着手
+### Phase 9 P1（圧縮率をさらに伸ばす）🚧 進行中
 
-- ⏳ MED predictor（JPEG-LS系）追加
-- 🚧 CfL（Chroma from Luma）導入・調整（9i-1で互換性修正とサイズ悪化ガードを実装）
+- ✅ MED predictor（JPEG-LS系）追加（Phase 9j）
+- ✅ CfL（Chroma from Luma）互換性修正 + サイズ悪化ガード（Phase 9i-1）
 - ⏳ タイル内 match/LZ 系トークン導入
 - ⏳ 可逆色変換の拡張（YCoCg-R 固定から）
 
@@ -68,6 +68,15 @@
   - `vscode` Q50: CfL on 366,646 bytes / off 410,145 bytes（改善維持）
   - `bench_decode`: 19.237ms（速度帯維持）
   - `ctest`: 17/17 PASS
+
+### 9j: MED predictor 追加（lossless filter 6種化）
+- `LosslessFilter` に MED を追加（`FILTER_COUNT=6`）
+- エンコーダ/デコーダ双方で MED をサポート
+- 実測:
+  - `kodim03`: 515.0 KiB → 453.5 KiB（-11.9%）
+  - `nature_02`: 1019.0 KiB → 998.2 KiB（-2.0%）
+  - `nature_01`: 932.7 KiB → 926.9 KiB（-0.6%）
+- `ctest`: 17/17 PASS
 
 
 
