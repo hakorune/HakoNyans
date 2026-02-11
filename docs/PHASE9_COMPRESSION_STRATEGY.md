@@ -46,8 +46,10 @@
 - ✅ 9l-debug（block_types Mode1 symbol-range bug修正 + steady_clock化）
 - ✅ Copy stream Mode3 RLE entropy coding（Phase 9m）
 - ✅ Filter stream wrapper最適化（filter_ids/filter_hi, Phase 9n）
+- ✅ Filter_lo stream最適化（delta/LZ, Phase 9o）
+- ✅ Photo向け filter_lo row predictor 実装（Phase 9p）
 - ⏳ 可逆色変換の拡張（YCoCg-R 固定から）
-- ⏳ Filter_lo stream最適化（Phase 9o）
+- ⏳ Photo向け filter_lo context split 最適化（Phase 9q）
 
 ### Phase 9l 実装結果（2026-02-12）
 
@@ -84,14 +86,33 @@
   - `nature_01` total: 927896B -> 927573B（-0.03%、悪化なし）
 - `bench_decode`: 300MiB/s 帯を維持。
 
-### Phase 9o 次アクション（2026-02-12）
+### Phase 9o 実装結果（2026-02-12）
 
-- 次の主ボトルネックは `filter_lo`（特に Photo/Anime）。
-- 次は `filter_lo` 側の圧縮を改善する:
-  1. `filter_lo` delta wrapper（legacy/delta/LZ の最小選択）
-  2. `filter_lo` 行RLEトークン（短距離反復の圧縮）
-  3. tileごとの mode 自動選択 + telemetry 可視化
-- 新規指示書: `docs/PHASE9O_FILTER_LO_DELTA_INSTRUCTIONS.md`
+- `filter_lo` wrapper（legacy/delta/LZ）を導入し、mode最小選択を実装。
+- `ctest`: 17/17 PASS
+- `bench_bit_accounting`:
+  - `vscode`: 27829B -> 26163B（-6.0%）
+  - `anime_girl_portrait`: 12486B -> 10350B（-17.1%）
+  - `nature_01`: 927573B -> 927573B（0.0%、悪化なし）
+- `bench_decode`: 307MiB/s（維持）
+- 所見: UI/Anime では有効だが、Photo は legacy が選ばれ続けるため改善不足。
+
+### Phase 9p 実装結果（2026-02-12）
+
+- `filter_lo` mode3（row predictor: NONE/SUB/UP/AVG）を実装。
+- `decode.h` のポインタ進行バグを修正し SegFault を解消。
+- `ctest`: 17/17 PASS
+- `nature_01` では mode0（legacy）が選択され、サイズ改善は未確認（total不変）。
+- 所見: mode3は機能として成立したが、Photoで選ばれないため圧縮効率向上には直結しなかった。
+
+### Phase 9q 次アクション（2026-02-12）
+
+- 次の主ボトルネックは依然 Photo の `filter_lo`。
+- 次は `filter_id` 文脈で `filter_lo` を分割して符号化し、分布差を活用する:
+  1. context split mode（filter_id別 substream rANS）
+  2. Photo-only gate + legacy fallback（最小サイズ選択）
+  3. context split telemetry 可視化と DoD検証
+- 新規指示書: `docs/PHASE9Q_FILTER_LO_CONTEXT_SPLIT_INSTRUCTIONS.md`
 
 ## 直近の開発過程（9h-2 / 9h-3 / 9i-1 / 9j / 9j-2）
 
@@ -152,9 +173,9 @@
 
 ### P1（圧縮率をさらに伸ばす）
 
-6. Filter_lo delta wrapper（legacy/delta/LZ）
-7. Filter_lo 行RLEトークン（短距離反復圧縮）
-8. Filter_lo mode自動選択 + telemetry
+6. filter_lo context split（filter_id別 substream）
+7. Photo-only gate + fallback（legacy最小選択）
+8. filter_lo mode自動選択 + telemetry
 9. Lossless 可逆色変換の追加（YCoCg-R 固定から拡張）
 10. Lossy CfL（Chroma from Luma）導入
 
@@ -175,8 +196,8 @@
 | Band-group CDF | P0 | -3%〜-10% | 写真/アニメ | 小 | ほぼ0 | 低リスク |
 | 可逆色変換追加 | P1 | -5%〜-20% | 写真/混在UI | 中 | 微小 | 仕様拡張寄り |
 | MED predictor追加 | P1 | -5%〜-15% | 写真 | 小 | 小 | 実装軽量 |
-| filter_lo delta wrapper | P1 | -2%〜-8% | Anime/Photo/UI | 中 | 小 | delta変換で局所相関を利用 |
-| filter_lo 行RLEトークン | P1 | -1%〜-6% | UI/Anime | 中 | 小 | 行内の反復残差で有効 |
+| filter_lo context split | P1 | -1%〜-6% | Photo/Anime | 中 | 小 | filter_id別に分布差を利用 |
+| Photo-only gate | P1 | 回帰抑制 | Photo中心 | 小 | 小 | 改善時のみ有効化 |
 | filter_lo mode自動選択 | P1 | -1%〜-5% | 全カテゴリ | 小 | 小 | 悪化回避ガード |
 | CfL | P1 | -3%〜-7% | 写真/アニメ | 中 | 小 | 色ずれ管理が必要 |
 | Lossy palette/intra-copy | P2 | -10%〜-40%* | UI/アニメ | 大 | 小〜中 | *ケース依存 |

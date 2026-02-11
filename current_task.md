@@ -585,10 +585,18 @@ Phase 9 P0（コア4項目）+ チューニング2項目 完了！🏆
 - [x] Phase 9n-2: filter_hi sparseモード（zero-mask + values）追加 ✅ (2026-02-12)
 - [x] Phase 9n-3: filter stream mode自動選択（legacy/sparse/lz）✅ (2026-02-12)
   - 実装指示書: `docs/PHASE9N_FILTER_STREAM_WRAPPER_INSTRUCTIONS.md`
-- [ ] Phase 9o-1: filter_lo stream delta wrapper（legacy/delta/LZ自動選択）
-- [ ] Phase 9o-2: filter_lo 行RLEトークン（短距離反復の圧縮）
-- [ ] Phase 9o-3: filter_lo telemetry + mode選択可視化
+- [x] Phase 9o-1: filter_lo stream delta wrapper（legacy/delta/LZ自動選択）✅ (2026-02-12)
+- [x] Phase 9o-2: filter_lo 行RLEトークン（短距離反復の圧縮）✅ (2026-02-12)
+- [x] Phase 9o-3: filter_lo telemetry + mode選択可視化 ✅ (2026-02-12)
   - 実装指示書: `docs/PHASE9O_FILTER_LO_DELTA_INSTRUCTIONS.md`
+- [x] Phase 9p-1: filter_lo row predictor mode（NONE/SUB/UP/AVG）✅ (2026-02-12)
+- [x] Phase 9p-2: Photo-aware gate（predictor modeの適用制御）✅ (2026-02-12)
+- [x] Phase 9p-3: filter_lo predictor telemetry + DoD検証 ✅ (2026-02-12)
+  - 実装指示書: `docs/PHASE9P_FILTER_LO_ROW_PREDICTOR_INSTRUCTIONS.md`
+- [ ] Phase 9q-1: filter_lo context split mode（filter_id別サブストリーム）
+- [ ] Phase 9q-2: Photo-only gate + fallback（legacyとの最小選択）
+- [ ] Phase 9q-3: context split telemetry + DoD検証
+  - 実装指示書: `docs/PHASE9Q_FILTER_LO_CONTEXT_SPLIT_INSTRUCTIONS.md`
 
 ---
 
@@ -628,6 +636,44 @@ copy stream の圧縮効率は大幅改善。次ボトルネックは `filter_id
 
 **結論**:
 Filter stream 圧縮は有効。次の主要ボトルネックは `filter_lo`（特にPhoto/Anime）と `copy+palette` の残りコスト。
+
+---
+
+### Phase 9o: Filter lo stream delta 実装結果 ✅ (2026-02-12)
+
+**実装内容**:
+- `filter_lo` に wrapper（legacy/delta+rANS/LZ）を追加
+- 画像特性に応じた mode 自動選択を導入（UI/AnimeでLZ優先、Photoはlegacy維持）
+- `bench_bit_accounting` に filter_lo 診断を追加
+
+**検証結果**:
+- `ctest`: **17/17 PASS**
+- `vscode` total: **27829B -> 26163B (-6.0%)**
+- `anime_girl_portrait` total: **12486B -> 10350B (-17.1%)**
+- `nature_01` total: **927573B -> 927573B (0.0%)**
+- `bench_decode`: **307MiB/s**（維持）
+
+**結論**:
+UI/Anime には有効だが、Photoでは `filter_lo` が依然支配的。次は Photo向けに `filter_lo predictor` を追加して改善を狙う。
+
+---
+
+### Phase 9p: Filter lo row predictor 実装結果 ✅ (2026-02-12)
+
+**実装内容**:
+- `filter_lo` mode3（row predictor: NONE/SUB/UP/AVG）を追加
+- `decode.h` のストリームポインタ進行バグを修正（SegFault解消）
+- mode3テスト（roundtrip / mixed rows / malformed）を追加
+
+**検証結果**:
+- `ctest`: **17/17 PASS**
+- `bench_bit_accounting nature_01`:
+  - `filter_lo_mode0/1/2/3 = 3/0/0/0`（mode0選択）
+  - total: **927573B（変化なし）**
+- `bench_decode`: **284MiB/s**（目標100MiB/s超は維持）
+
+**結論**:
+mode3は機能実装としては完了したが、Photoでは採用されず圧縮改善は未達。次は `filter_id` 文脈分割による `filter_lo` エントロピー低減へ進む。
 
 ---
 
@@ -757,7 +803,7 @@ MEDの効果（Photo/Natural）を維持しつつ、UI/Anime側の将来回帰�
 
 ---
 
-### 直近実行セット: Beyond PNG（filter_lo最適化ルート）🚧
+### 直近実行セット: Beyond PNG（Photo filter_lo context最適化ルート）🚧
 
 **ゴール（投稿判定ライン）**:
 - `Lossless vs PNG`:
@@ -776,15 +822,17 @@ MEDの効果（Photo/Natural）を維持しつつ、UI/Anime側の将来回帰�
 2. [x] Phase 9l-debug: block_types Mode1 symbol-range bug修正、anime timeout解消 ✅
 3. [x] Phase 9m-1/2/3: `copy stream` mode3 + RLE + 自動選択 ✅
 4. [x] Phase 9n-1/2/3: `filter_ids/filter_hi` wrapper最適化 ✅
-5. [ ] Phase 9o-1: `filter_lo` delta wrapper（legacy/delta/LZ）
-6. [ ] Phase 9o-2: `filter_lo` 行RLEトークン（短距離反復圧縮）
-7. [ ] Phase 9o-3: tileごとのfilter_lo mode最適選択 + telemetry
-8. [ ] `lossless_png_compare` 再計測（UI/Anime/Photo 各30枚）
-9. [ ] Photo decodeのホットパス計測（`perf` / 自前timer）と上位3ボトルネック確定
-10. [ ] Photo向け decode最適化（CfL gate強化 → IDCT+dequant AVX2 → token分岐削減）
-11. [ ] Lossy画質回帰チェック（Artoria/UI/自然画像の目視 + PSNR/SSIM）
-12. [ ] Paper用テーブル更新（`Dec(ms)`統一、サイズ・画質・速度を同一セットで再生成）
-13. [ ] 投稿判定レビュー（勝ち筋/弱点/今後課題を1ページに要約）
+5. [x] Phase 9o-1/2/3: `filter_lo` delta/LZ最適化 ✅
+6. [x] Phase 9p-1/2/3: `filter_lo` row predictor + gate + telemetry ✅
+7. [ ] Phase 9q-1: `filter_lo` context split mode（filter_id別サブストリーム）
+8. [ ] Phase 9q-2: Photo-only gate + fallback（legacy最小選択）
+9. [ ] Phase 9q-3: telemetry + DoD検証（Photo中心）
+10. [ ] `lossless_png_compare` 再計測（UI/Anime/Photo 各30枚）
+11. [ ] Photo decodeのホットパス計測（`perf` / 自前timer）と上位3ボトルネック確定
+12. [ ] Photo向け decode最適化（CfL gate強化 → IDCT+dequant AVX2 → token分岐削減）
+13. [ ] Lossy画質回帰チェック（Artoria/UI/自然画像の目視 + PSNR/SSIM）
+14. [ ] Paper用テーブル更新（`Dec(ms)`統一、サイズ・画質・速度を同一セットで再生成）
+15. [ ] 投稿判定レビュー（勝ち筋/弱点/今後課題を1ページに要約）
 
 **受け入れ基準（DoD）**:
 - [ ] `ctest` 全PASS維持

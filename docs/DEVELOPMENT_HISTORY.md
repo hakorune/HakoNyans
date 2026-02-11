@@ -1205,6 +1205,52 @@ UI/Anime のサイズを削減。
 
 ---
 
+### Phase 9o: Filter_lo stream delta/LZ最適化 (2026-02-12)
+
+`filter_lo` に wrapper と mode選択（legacy/delta/LZ）を導入し、
+UI/Anime の lossless 圧縮率をさらに改善。
+
+**主な変更**:
+1. `src/codec/headers.h`: `VERSION=0x000A`, `WRAPPER_MAGIC_FILTER_LO=0xAB`
+2. `src/codec/encode.h`: filter_lo wrapper（mode 0/1/2）と telemetry 追加
+3. `src/codec/decode.h`: wrapper-aware decode（0xAB 判定）
+4. `bench/bench_bit_accounting.cpp`: filter_lo diagnostics 追加
+5. `tests/test_lossless_round2.cpp`: mode1/mode2/malformed の追加テスト
+
+**検証結果**:
+- `ctest`: 17/17 PASS
+- `vscode` total: 27829B -> 26163B（-6.0%）
+- `anime_girl_portrait` total: 12486B -> 10350B（-17.1%）
+- `nature_01` total: 927573B -> 927573B（0.0%、悪化なし）
+- `bench_decode`: 307MiB/s（維持）
+
+**所見**:
+- UI/Anime は改善が大きい一方、Photo は legacy mode が選ばれ続けて伸びがない。
+- 次フェーズは Photo向け `filter_lo` predictor が主対象。
+
+---
+
+### Phase 9p: Filter_lo row predictor 追加（機能実装）(2026-02-12)
+
+Photo向け改善を狙って `filter_lo` の row predictor mode（NONE/SUB/UP/AVG）を追加。
+
+**主な変更**:
+1. `src/codec/headers.h`: `VERSION=0x000B`, `VERSION_FILTER_LO_PRED` 追加
+2. `src/codec/encode.h`: filter_lo mode3（row predictor）実装
+3. `src/codec/decode.h`: mode3デコード追加、ポインタ進行バグ修正（SegFault解消）
+4. `tests/test_lossless_round2.cpp`: mode3 roundtrip/mixed/malformed テスト追加
+
+**検証結果**:
+- `ctest`: 17/17 PASS
+- `bench_bit_accounting nature_01`: `filter_lo_mode0/1/2/3 = 3/0/0/0`（mode0選択）
+- `nature_01` total は 9o比で変化なし（改善未達）
+
+**所見**:
+- mode3は機能として成立したが、Photoで最適モードに選ばれず圧縮率改善に繋がらなかった。
+- 次は `filter_id` 文脈での substream 分割が有力。
+
+---
+
 ## 🏆 技術的ハイライト
 
 ### 1. NyANS-P エントロピーエンジン
