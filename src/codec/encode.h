@@ -46,6 +46,7 @@ public:
         uint64_t palette_selected;
         uint64_t filter_selected;
         uint64_t filter_med_selected;
+        uint64_t tile4_selected;
 
         uint64_t est_copy_bits_sum;      // candidate blocks only
         uint64_t est_palette_bits_sum;   // candidate blocks only
@@ -63,6 +64,7 @@ public:
             palette_selected = 0;
             filter_selected = 0;
             filter_med_selected = 0;
+            tile4_selected = 0;
             est_copy_bits_sum = 0;
             est_palette_bits_sum = 0;
             est_filter_bits_sum = 0;
@@ -918,6 +920,18 @@ public:
             CopyParams(-8, 0), CopyParams(0, -8), CopyParams(-8, -8), CopyParams(8, -8)
         };
 
+        const CopyParams kTileMatch4Candidates[16] = {
+            CopyParams(-4, 0), CopyParams(0, -4), CopyParams(-4, -4), CopyParams(4, -4),
+            CopyParams(-8, 0), CopyParams(0, -8), CopyParams(-8, -8), CopyParams(8, -8),
+            CopyParams(-12, 0), CopyParams(0, -12), CopyParams(-12, -4), CopyParams(-4, -12),
+            CopyParams(-16, 0), CopyParams(0, -16), CopyParams(-16, -4), CopyParams(-4, -16)
+        };
+
+        struct Tile4Result {
+            uint8_t indices[4];
+        };
+        std::vector<Tile4Result> tile4_results;
+
         struct LosslessModeParams {
             int palette_max_colors = 2;
             int palette_transition_limit = 63;
@@ -1006,13 +1020,60 @@ public:
                 }
             }
 
+            // TileMatch4 candidate (4x4 x 4 quadrants)
+            bool tile4_found = false;
+            Tile4Result tile4_candidate;
+            {
+                int matches = 0;
+                for (int q = 0; q < 4; q++) {
+                    int qx = (q % 2) * 4;
+                    int qy = (q / 2) * 4;
+                    int cur_qx = cur_x + qx;
+                    int cur_qy = cur_y + qy;
+
+                    bool q_match_found = false;
+                    for (int cand_idx = 0; cand_idx < 16; cand_idx++) {
+                        const auto& cand = kTileMatch4Candidates[cand_idx];
+                        int src_x = cur_qx + cand.dx;
+                        int src_y = cur_qy + cand.dy;
+
+                        // Bounds and causality check
+                        if (src_x < 0 || src_y < 0 || src_x + 3 >= (int)pad_w || src_y + 3 >= (int)pad_h) continue;
+                        if (!(src_y < cur_qy || (src_y == cur_qy && src_x < cur_qx))) continue;
+
+                        bool match = true;
+                        for (int dy = 0; dy < 4 && match; dy++) {
+                            for (int dx = 0; dx < 4; dx++) {
+                                if (padded[(cur_qy + dy) * pad_w + (cur_qx + dx)] !=
+                                    padded[(src_y + dy) * pad_w + (src_x + dx)]) {
+                                    match = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if (match) {
+                            tile4_candidate.indices[q] = (uint8_t)cand_idx;
+                            q_match_found = true;
+                            break;
+                        }
+                    }
+                    if (q_match_found) matches++;
+                    else break;
+                }
+                if (matches == 4) tile4_found = true;
+            }
+
             // Mode decision:
-            // Choose the minimum estimated bits among Copy / Palette / Filter.
+            // Choose the minimum estimated bits among TILE_MATCH4 / Copy / Palette / Filter.
+            int tile4_bits2 = std::numeric_limits<int>::max();
             int copy_bits2 = std::numeric_limits<int>::max();
             int palette_bits2 = std::numeric_limits<int>::max();
             int filter_bits2 = estimate_filter_bits(
                 padded.data(), pad_w, pad_h, cur_x, cur_y, use_photo_mode_bias
             );
+            if (tile4_found) {
+                tile4_bits2 = 36; // 2 bit mode + 4x4 bit indices = 18 bits (36 units)
+            }
             if (copy_found) {
                 copy_bits2 = estimate_copy_bits(copy_candidate, (int)pad_w, use_photo_mode_bias);
             }
@@ -1022,6 +1083,7 @@ public:
 
             if (use_photo_mode_bias) {
                 // P0: Mode Inertia (-2 bits = -4 units)
+                if (tile4_found && prev_mode == FileHeader::BlockType::TILE_MATCH4) tile4_bits2 -= 4;
                 if (copy_found && prev_mode == FileHeader::BlockType::COPY) copy_bits2 -= 4;
                 if (palette_found && prev_mode == FileHeader::BlockType::PALETTE) palette_bits2 -= 4;
                 if (prev_mode == FileHeader::BlockType::DCT) filter_bits2 -= 4;
@@ -1030,6 +1092,10 @@ public:
             auto& mode_stats = tl_lossless_mode_debug_stats_;
             mode_stats.total_blocks++;
             mode_stats.est_filter_bits_sum += (uint64_t)(filter_bits2 / 2);
+            if (tile4_found) {
+                // For telemetry we don't have tile4_candidates yet, let's just use existing ones for now
+                // or I could add it.
+            }
             if (copy_found) {
                 mode_stats.copy_candidates++;
                 mode_stats.est_copy_bits_sum += (uint64_t)(copy_bits2 / 2);
@@ -1041,7 +1107,9 @@ public:
             if (copy_found && palette_found) mode_stats.copy_palette_overlap++;
 
             FileHeader::BlockType best_mode = FileHeader::BlockType::DCT;
-            if (copy_bits2 <= palette_bits2 && copy_bits2 <= filter_bits2) {
+            if (tile4_bits2 <= copy_bits2 && tile4_bits2 <= palette_bits2 && tile4_bits2 <= filter_bits2) {
+                best_mode = FileHeader::BlockType::TILE_MATCH4;
+            } else if (copy_bits2 <= palette_bits2 && copy_bits2 <= filter_bits2) {
                 best_mode = FileHeader::BlockType::COPY;
             } else if (palette_bits2 <= filter_bits2) {
                 best_mode = FileHeader::BlockType::PALETTE;
@@ -1049,7 +1117,11 @@ public:
 
             block_types[i] = best_mode;
             prev_mode = best_mode;
-            if (best_mode == FileHeader::BlockType::COPY) {
+            if (best_mode == FileHeader::BlockType::TILE_MATCH4) {
+                tile4_results.push_back(tile4_candidate);
+                mode_stats.est_selected_bits_sum += (uint64_t)(tile4_bits2 / 2);
+                mode_stats.tile4_selected++;
+            } else if (best_mode == FileHeader::BlockType::COPY) {
                 mode_stats.copy_selected++;
                 mode_stats.est_selected_bits_sum += (uint64_t)(copy_bits2 / 2);
                 copy_ops.push_back(copy_candidate);
@@ -1156,10 +1228,15 @@ public:
             hi_stream = encode_byte_stream(hi_bytes);
         }
 
-        // --- Step 4: Encode block types, palette, copy ---
+        // --- Step 4: Encode block types, palette, copy, tile4 ---
         std::vector<uint8_t> bt_data = encode_block_types(block_types);
         std::vector<uint8_t> pal_data = PaletteCodec::encode_palette_stream(palettes, palette_indices);
         std::vector<uint8_t> cpy_data = CopyCodec::encode_copy_stream(copy_ops);
+        std::vector<uint8_t> tile4_data;
+        for (const auto& res : tile4_results) {
+            tile4_data.push_back((uint8_t)((res.indices[1] << 4) | (res.indices[0] & 0x0F)));
+            tile4_data.push_back((uint8_t)((res.indices[3] << 4) | (res.indices[2] & 0x0F)));
+        }
 
         // --- Step 5: Pack tile data (32-byte header) ---
         uint32_t hdr[8] = {
@@ -1170,7 +1247,7 @@ public:
             (uint32_t)bt_data.size(),
             (uint32_t)pal_data.size(),
             (uint32_t)cpy_data.size(),
-            0  // reserved
+            (uint32_t)tile4_data.size() // used reserved hdr[7]
         };
 
         std::vector<uint8_t> tile_data;
@@ -1182,6 +1259,7 @@ public:
         if (!bt_data.empty()) tile_data.insert(tile_data.end(), bt_data.begin(), bt_data.end());
         if (!pal_data.empty()) tile_data.insert(tile_data.end(), pal_data.begin(), pal_data.end());
         if (!cpy_data.empty()) tile_data.insert(tile_data.end(), cpy_data.begin(), cpy_data.end());
+        if (!tile4_data.empty()) tile_data.insert(tile_data.end(), tile4_data.begin(), tile4_data.end());
         return tile_data;
     }
 

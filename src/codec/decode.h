@@ -582,7 +582,7 @@ public:
         FileHeader hdr = FileHeader::read(hkn.data());
         ChunkDirectory dir = ChunkDirectory::deserialize(&hkn[48], hkn.size() - 48);
         const ChunkEntry* t0 = dir.find("TIL0");
-        auto plane = decode_plane_lossless(&hkn[t0->offset], t0->size, hdr.width, hdr.height);
+        auto plane = decode_plane_lossless(&hkn[t0->offset], t0->size, hdr.width, hdr.height, hdr.version);
 
         // int16_t -> uint8_t
         std::vector<uint8_t> out(hdr.width * hdr.height);
@@ -603,9 +603,9 @@ public:
         const ChunkEntry* t1 = dir.find("TIL1");
         const ChunkEntry* t2 = dir.find("TIL2");
 
-        auto y_plane  = decode_plane_lossless(&hkn[t0->offset], t0->size, w, h);
-        auto co_plane = decode_plane_lossless(&hkn[t1->offset], t1->size, w, h);
-        auto cg_plane = decode_plane_lossless(&hkn[t2->offset], t2->size, w, h);
+        auto y_plane  = decode_plane_lossless(&hkn[t0->offset], t0->size, w, h, hdr.version);
+        auto co_plane = decode_plane_lossless(&hkn[t1->offset], t1->size, w, h, hdr.version);
+        auto cg_plane = decode_plane_lossless(&hkn[t2->offset], t2->size, w, h, hdr.version);
 
         // YCoCg-R -> RGB
         std::vector<uint8_t> rgb(w * h * 3);
@@ -625,7 +625,8 @@ public:
      *   [filter_ids][lo_stream][hi_stream][block_types][palette_data][copy_data]
      */
     static std::vector<int16_t> decode_plane_lossless(
-        const uint8_t* td, size_t ts, uint32_t width, uint32_t height
+        const uint8_t* td, size_t ts, uint32_t width, uint32_t height,
+        uint16_t file_version = FileHeader::VERSION
     ) {
         // Pad dimensions to multiple of 8
         uint32_t pad_w = ((width + 7) / 8) * 8;
@@ -642,7 +643,7 @@ public:
         uint32_t block_types_size = hdr[4];
         uint32_t palette_data_size = hdr[5];
         uint32_t copy_data_size = hdr[6];
-        // hdr[7] = reserved
+        uint32_t tile4_data_size = (file_version >= FileHeader::VERSION_TILE_MATCH4) ? hdr[7] : 0;
 
         const uint8_t* ptr = td + 32;
 
@@ -689,6 +690,28 @@ public:
             ptr += copy_data_size;
         }
 
+        // Decode tile4 data
+        struct Tile4Result { uint8_t indices[4]; };
+        std::vector<Tile4Result> tile4_params;
+        const uint8_t* end = td + ts;
+        if (tile4_data_size > 0) {
+            // Guard malformed stream: odd byte size or truncated payload.
+            if ((tile4_data_size & 1u) != 0 || ptr > end || tile4_data_size > (uint32_t)(end - ptr)) {
+                tile4_data_size = 0;
+            }
+        }
+        if (tile4_data_size > 0) {
+            for (uint32_t i = 0; i < tile4_data_size; i += 2) {
+                Tile4Result res;
+                res.indices[0] = ptr[i] & 0x0F;
+                res.indices[1] = (ptr[i] >> 4) & 0x0F;
+                res.indices[2] = ptr[i+1] & 0x0F;
+                res.indices[3] = (ptr[i+1] >> 4) & 0x0F;
+                tile4_params.push_back(res);
+            }
+            ptr += tile4_data_size;
+        }
+
         // Combine lo/hi -> uint16_t -> zigzag decode -> int16_t (filter residuals)
         std::vector<int16_t> filter_residuals(filter_pixel_count);
         for (size_t i = 0; i < filter_pixel_count; i++) {
@@ -701,13 +724,15 @@ public:
         // 2. Process in raster order: Palette already filled, Copy from earlier data, Filter via unfilter
         std::vector<int16_t> padded(pad_w * pad_h, 0);
 
-        // Build per-block lookup for palette and copy
+        // Build per-block lookup for palette, copy, tile4
         std::vector<int> block_palette_idx(nb, -1);
         std::vector<int> block_copy_idx(nb, -1);
-        int pi = 0, ci = 0;
+        std::vector<int> block_tile4_idx(nb, -1);
+        int pi = 0, ci = 0, t4i = 0;
         for (int i = 0; i < nb; i++) {
             if (block_types[i] == FileHeader::BlockType::PALETTE) block_palette_idx[i] = pi++;
             else if (block_types[i] == FileHeader::BlockType::COPY) block_copy_idx[i] = ci++;
+            else if (block_types[i] == FileHeader::BlockType::TILE_MATCH4) block_tile4_idx[i] = t4i++;
         }
 
         // Pre-fill all Palette blocks
@@ -724,7 +749,14 @@ public:
                         (int16_t)p.colors[idx[py * 8 + px]] - 128;
         }
 
-        // Process rows in raster order: Copy and Filter blocks
+        // Process rows in raster order: Copy, Tile4, and Filter blocks
+        const CopyParams kTileMatch4Candidates[16] = {
+            CopyParams(-4, 0), CopyParams(0, -4), CopyParams(-4, -4), CopyParams(4, -4),
+            CopyParams(-8, 0), CopyParams(0, -8), CopyParams(-8, -8), CopyParams(8, -8),
+            CopyParams(-12, 0), CopyParams(0, -12), CopyParams(-12, -4), CopyParams(-4, -12),
+            CopyParams(-16, 0), CopyParams(0, -16), CopyParams(-16, -4), CopyParams(-4, -16)
+        };
+
         size_t residual_idx = 0;
         for (uint32_t y = 0; y < pad_h; y++) {
             uint8_t ftype = (y < filter_ids.size()) ? filter_ids[y] : 0;
@@ -740,6 +772,19 @@ public:
                     if (cidx >= 0 && cidx < (int)copy_params.size()) {
                         int src_x = (int)x + copy_params[cidx].dx;
                         int src_y = (int)y + copy_params[cidx].dy;
+                        src_x = std::clamp(src_x, 0, (int)pad_w - 1);
+                        src_y = std::clamp(src_y, 0, (int)pad_h - 1);
+                        padded[y * pad_w + x] = padded[src_y * pad_w + src_x];
+                    }
+                } else if (block_types[block_idx] == FileHeader::BlockType::TILE_MATCH4) {
+                    int t4idx = block_tile4_idx[block_idx];
+                    if (t4idx >= 0 && t4idx < (int)tile4_params.size()) {
+                        int qx = ((int)x % 8) / 4;
+                        int qy = ((int)y % 8) / 4;
+                        int q = qy * 2 + qx;
+                        int cand_idx = tile4_params[t4idx].indices[q];
+                        int src_x = (int)x + kTileMatch4Candidates[cand_idx].dx;
+                        int src_y = (int)y + kTileMatch4Candidates[cand_idx].dy;
                         src_x = std::clamp(src_x, 0, (int)pad_w - 1);
                         src_y = std::clamp(src_y, 0, (int)pad_h - 1);
                         padded[y * pad_w + x] = padded[src_y * pad_w + src_x];

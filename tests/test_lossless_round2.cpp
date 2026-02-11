@@ -8,6 +8,7 @@
 
 #include "../src/codec/encode.h"
 #include "../src/codec/decode.h"
+#include "../src/codec/headers.h"
 #include "../src/codec/lossless_filter.h"
 
 using namespace hakonyans;
@@ -279,6 +280,90 @@ void test_med_filter_photo_gate() {
     else { FAIL("No MED-selected seed found in search range"); }
 }
 
+// ============================================================
+// Test 9: TILE_MATCH4 (4x4) Roundtrip
+// ============================================================
+void test_tile_match4_roundtrip() {
+    TEST("TILE_MATCH4 (4x4) roundtrip");
+
+    const int W = 32, H = 32;
+    const int CW = W / 4, CH = H / 4; // 4x4 cell grid
+    bool found_tile4_case = false;
+
+    for (int seed = 1; seed <= 128 && !found_tile4_case; seed++) {
+        std::mt19937 rng(seed);
+        std::uniform_int_distribution<int> byte_dist(0, 255);
+        std::uniform_int_distribution<int> mode_dist(0, 3);
+
+        // Build image in 4x4 cells with local reuse (left/up), but not fully periodic.
+        std::vector<uint8_t> cells(CW * CH, 0);
+        for (int cy = 0; cy < CH; cy++) {
+            for (int cx = 0; cx < CW; cx++) {
+                int idx = cy * CW + cx;
+                int mode = mode_dist(rng);
+                if (cx > 0 && mode == 0) {
+                    cells[idx] = cells[idx - 1];            // left reuse
+                } else if (cy > 0 && mode == 1) {
+                    cells[idx] = cells[idx - CW];           // up reuse
+                } else if (cx > 0 && cy > 0 && mode == 2) {
+                    cells[idx] = cells[idx - CW - 1];       // up-left reuse
+                } else {
+                    cells[idx] = (uint8_t)byte_dist(rng);   // new value
+                }
+            }
+        }
+
+        std::vector<uint8_t> pixels(W * H, 0);
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                int cx = x / 4;
+                int cy = y / 4;
+                pixels[y * W + x] = cells[cy * CW + cx];
+            }
+        }
+
+        auto hkn = GrayscaleEncoder::encode_lossless(pixels.data(), W, H);
+        auto stats = GrayscaleEncoder::get_lossless_mode_debug_stats();
+        if (stats.tile4_selected == 0) continue;
+
+        auto decoded = GrayscaleDecoder::decode(hkn);
+        if (decoded != pixels) {
+            FAIL("TILE_MATCH4 roundtrip mismatch (seed=" + std::to_string(seed) + ")");
+            return;
+        }
+
+        bool tile4_used = false;
+        FileHeader hdr = FileHeader::read(hkn.data());
+        ChunkDirectory dir = ChunkDirectory::deserialize(&hkn[48], hkn.size() - 48);
+        const ChunkEntry* t0 = dir.find("TIL0");
+        if (!t0 || t0->size < 32) {
+            FAIL("Missing or invalid TIL0 chunk");
+            return;
+        }
+        const uint8_t* td = &hkn[t0->offset];
+        uint32_t th[8] = {};
+        std::memcpy(th, td, 32);
+        size_t bt_off = 32ull + th[0] + th[1] + th[2];
+        if (bt_off + th[4] <= t0->size) {
+            int nx = (int)((hdr.width + 7) / 8);
+            int ny = (int)((hdr.height + 7) / 8);
+            auto block_types = GrayscaleDecoder::decode_block_types(td + bt_off, th[4], nx * ny);
+            tile4_used = std::count(
+                block_types.begin(), block_types.end(), FileHeader::BlockType::TILE_MATCH4
+            ) > 0;
+        }
+        if (!tile4_used) {
+            FAIL("TILE_MATCH4 stats/stream mismatch (seed=" + std::to_string(seed) + ")");
+            return;
+        }
+
+        found_tile4_case = true;
+    }
+
+    if (found_tile4_case) { PASS(); }
+    else { FAIL("No TILE_MATCH4-selected seed found"); }
+}
+
 int main() {
     std::cout << "=== Phase 8 Round 2: Lossless Codec Tests ===" << std::endl;
 
@@ -290,6 +375,7 @@ int main() {
     test_flat_image();
     test_header_flags();
     test_med_filter_photo_gate();
+    test_tile_match4_roundtrip();
 
     std::cout << "\n=== Results: " << tests_passed << "/" << tests_run << " passed ===" << std::endl;
     return (tests_passed == tests_run) ? 0 : 1;

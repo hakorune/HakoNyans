@@ -32,6 +32,7 @@ struct Accounting {
     size_t block_types = 0;
     size_t palette = 0;
     size_t copy = 0;
+    size_t tile4 = 0;
     size_t unknown = 0;
 };
 
@@ -118,7 +119,8 @@ static void add_lossless_tile(Accounting& a, const uint8_t* tile_data, size_t ti
     a.block_types += sz[4];
     a.palette += sz[5];
     a.copy += sz[6];
-    size_t used = 32ull + sz[0] + sz[1] + sz[2] + sz[4] + sz[5] + sz[6];
+    a.tile4 += sz[7];
+    size_t used = 32ull + sz[0] + sz[1] + sz[2] + sz[4] + sz[5] + sz[6] + sz[7];
     if (tile_size > used) a.unknown += (tile_size - used);
 }
 
@@ -156,7 +158,7 @@ static Accounting analyze_file(const std::vector<uint8_t>& hkn) {
         a.file_header + a.chunk_dir + a.qmat + a.tile_header +
         a.dc + a.ac + a.pindex + a.qdelta + a.cfl +
         a.filter_ids + a.filter_lo + a.filter_hi +
-        a.block_types + a.palette + a.copy + a.unknown;
+        a.block_types + a.palette + a.copy + a.tile4 + a.unknown;
     if (a.total_file > accounted) a.unknown += (a.total_file - accounted);
     return a;
 }
@@ -203,6 +205,7 @@ static void print_accounting(const std::string& title, const Accounting& a, bool
     print_row("block_types", a.block_types, a.total_file);
     print_row("palette", a.palette, a.total_file);
     print_row("copy", a.copy, a.total_file);
+    print_row("tile4", a.tile4, a.total_file);
     print_row("unknown", a.unknown, a.total_file);
     std::cout << "----------------------------------------------\n";
     print_row("TOTAL", a.total_file, a.total_file);
@@ -223,6 +226,7 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
     print_mode_stat_row("palette_candidates", s.palette_candidates, s.total_blocks);
     print_mode_stat_row("copy_palette_overlap", s.copy_palette_overlap, s.total_blocks);
     print_mode_stat_row("copy_selected", s.copy_selected, s.total_blocks);
+    print_mode_stat_row("tile4_selected", s.tile4_selected, s.total_blocks);
     print_mode_stat_row("palette_selected", s.palette_selected, s.total_blocks);
     print_mode_stat_row("filter_any_selected", s.filter_selected, s.total_blocks);
     // filter_med_selected is count of ROWS using MED. 
