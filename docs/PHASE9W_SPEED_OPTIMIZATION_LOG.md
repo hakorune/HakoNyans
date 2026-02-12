@@ -242,3 +242,50 @@ Observed:
 ### Decision
 - Keep implementation for further controlled measurement (policy hooks + parallel fallback logic are correct and tested).
 - Do not claim a promoted speed win until reruns under tighter noise control.
+
+## 2026-02-12: Deep Observation Counters (filter_lo / reconstruct / parallel scheduler)
+
+### Objective
+- Add deeper observability before further speed tuning.
+- Make hotspot attribution explicit inside `plane_filter_lo` and `plane_reconstruct`.
+
+### Implementation
+- `src/codec/lossless_decode_debug_stats.h`
+  - Added decode parallel scheduler counters:
+    - `decode_plane_parallel_3way_count`, `decode_plane_parallel_seq_count`, `decode_plane_parallel_tokens_sum`
+    - `decode_ycocg_parallel_count`, `decode_ycocg_sequential_count`, `decode_ycocg_parallel_threads_sum`
+  - Added `filter_lo` decode internals:
+    - mode counters (`raw/1/2/3/4/5/invalid`)
+    - fallback/zero-pad counters
+    - inner timing (`decode_rans/shared_rans/tilelz`)
+    - mode4 parallel-context counters
+  - Added `reconstruct` internals:
+    - COPY/TM4 fast-vs-slow path counts
+    - clamp-path pixel counts
+    - residual consumed/missing counters
+- `src/codec/lossless_filter_lo_decode.h`
+  - Added timed wrappers for `decode_byte_stream`, `decode_byte_stream_shared_lz`, and TileLZ decompress.
+  - Added mode-wise counter accounting and fallback tracking.
+- `src/codec/lossless_plane_decode_core.h`
+  - Wired decode stats into `decode_filter_lo_stream(...)`.
+  - Added reconstruct fast/slow counters for COPY/TM4 and residual missing counts.
+- `src/codec/encode.h`, `src/codec/decode.h`, `src/codec/lossless_mode_debug_stats.h`
+  - Added encode/decode plane-parallel scheduler counters.
+- `bench/bench_png_compare.cpp`
+  - Added new CSV columns and console sections:
+    - plane Y/Co/Cg timings
+    - parallel scheduler counters
+    - decode deep counters (filter_lo modes, inner timings, reconstruct fast/slow)
+- `bench/bench_bit_accounting.cpp`
+  - Added `Encode parallel diagnostics` output.
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `ctest --test-dir build --output-on-failure`
+- Result: `17/17 PASS`
+- Smoke bench:
+  - `build/bench_png_compare --runs 1 --warmup 0 --out bench_results/tmp_stage_profile_deep_counters.csv`
+
+### Note
+- This change is instrumentation-focused.
+- No format change, no intended compression/quality behavior change.

@@ -220,6 +220,12 @@ struct LosslessModeDebugStats {
     uint64_t perf_encode_plane_cg_ns;
     uint64_t perf_encode_container_pack_ns;
 
+    // Encode parallel scheduler telemetry.
+    uint64_t perf_encode_plane_parallel_3way_count;
+    uint64_t perf_encode_plane_parallel_2way_count;
+    uint64_t perf_encode_plane_parallel_seq_count;
+    uint64_t perf_encode_plane_parallel_tokens_sum;
+
     uint64_t perf_encode_plane_total_ns;
     uint64_t perf_encode_plane_calls;
     uint64_t perf_encode_plane_pad_ns;

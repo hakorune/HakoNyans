@@ -15,6 +15,14 @@ struct LosslessDecodeDebugStats {
     uint64_t decode_plane_cg_ns;
     uint64_t decode_ycocg_to_rgb_ns;
 
+    // Decode parallel scheduler telemetry.
+    uint64_t decode_plane_parallel_3way_count;
+    uint64_t decode_plane_parallel_seq_count;
+    uint64_t decode_plane_parallel_tokens_sum;
+    uint64_t decode_ycocg_parallel_count;
+    uint64_t decode_ycocg_sequential_count;
+    uint64_t decode_ycocg_parallel_threads_sum;
+
     // decode_plane_lossless call envelope
     uint64_t decode_plane_total_ns;
     uint64_t decode_plane_calls;
@@ -32,6 +40,43 @@ struct LosslessDecodeDebugStats {
     uint64_t plane_residual_merge_ns;
     uint64_t plane_reconstruct_ns;
     uint64_t plane_crop_ns;
+
+    // filter_lo decode internals
+    uint64_t plane_filter_lo_mode_raw_count;
+    uint64_t plane_filter_lo_mode1_count;
+    uint64_t plane_filter_lo_mode2_count;
+    uint64_t plane_filter_lo_mode3_count;
+    uint64_t plane_filter_lo_mode4_count;
+    uint64_t plane_filter_lo_mode5_count;
+    uint64_t plane_filter_lo_mode_invalid_count;
+    uint64_t plane_filter_lo_mode5_shared_cdf_count;
+    uint64_t plane_filter_lo_mode5_legacy_cdf_count;
+    uint64_t plane_filter_lo_fallback_zero_fill_count;
+    uint64_t plane_filter_lo_zero_pad_bytes_sum;
+    uint64_t plane_filter_lo_mode3_active_rows_sum;
+    uint64_t plane_filter_lo_mode4_nonempty_ctx_sum;
+    uint64_t plane_filter_lo_mode4_parallel_ctx_tiles;
+    uint64_t plane_filter_lo_mode4_sequential_ctx_tiles;
+    uint64_t plane_filter_lo_decode_rans_ns;
+    uint64_t plane_filter_lo_decode_shared_rans_ns;
+    uint64_t plane_filter_lo_tilelz_decompress_ns;
+    uint64_t plane_filter_lo_mode3_row_lens_ns;
+    uint64_t plane_filter_lo_mode4_row_lens_ns;
+
+    // plane_reconstruct internals
+    uint64_t plane_recon_block_palette_count;
+    uint64_t plane_recon_block_copy_count;
+    uint64_t plane_recon_block_tile4_count;
+    uint64_t plane_recon_block_dct_count;
+    uint64_t plane_recon_copy_fast_rows;
+    uint64_t plane_recon_copy_slow_rows;
+    uint64_t plane_recon_copy_clamped_pixels;
+    uint64_t plane_recon_tile4_fast_quads;
+    uint64_t plane_recon_tile4_slow_quads;
+    uint64_t plane_recon_tile4_clamped_pixels;
+    uint64_t plane_recon_dct_pixels;
+    uint64_t plane_recon_residual_consumed;
+    uint64_t plane_recon_residual_missing;
 
     LosslessDecodeDebugStats() { reset(); }
     void reset() { std::memset(this, 0, sizeof(*this)); }

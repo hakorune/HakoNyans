@@ -735,6 +735,13 @@ public:
         std::vector<int16_t> y_plane, co_plane, cg_plane;
         const unsigned int hw_threads = thread_budget::max_threads();
         auto plane_decode_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(3);
+        if (plane_decode_tokens.acquired()) {
+            tl_lossless_decode_debug_stats_.decode_plane_parallel_3way_count++;
+            tl_lossless_decode_debug_stats_.decode_plane_parallel_tokens_sum +=
+                (uint64_t)plane_decode_tokens.count();
+        } else {
+            tl_lossless_decode_debug_stats_.decode_plane_parallel_seq_count++;
+        }
 
         if (plane_decode_tokens.acquired()) {
             auto fy = std::async(std::launch::async, [&]() {
@@ -795,6 +802,8 @@ public:
         );
         if (ycocg_to_rgb_tokens.acquired()) {
             rgb_threads = ycocg_to_rgb_tokens.count();
+            tl_lossless_decode_debug_stats_.decode_ycocg_parallel_count++;
+            tl_lossless_decode_debug_stats_.decode_ycocg_parallel_threads_sum += rgb_threads;
             std::vector<std::future<void>> futs;
             futs.reserve(rgb_threads);
             const int rows_per_task = h / (int)rgb_threads;
@@ -815,6 +824,7 @@ public:
             }
             for (auto& f : futs) f.get();
         } else {
+            tl_lossless_decode_debug_stats_.decode_ycocg_sequential_count++;
             for (int i = 0; i < w * h; i++) {
                 ycocg_r_to_rgb(y_plane[i], co_plane[i], cg_plane[i],
                                rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);

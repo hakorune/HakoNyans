@@ -531,6 +531,17 @@ public:
         std::vector<uint8_t> tile_y, tile_co, tile_cg;
         auto plane_tokens = thread_budget::ScopedThreadTokens::try_acquire_up_to(3, 2);
         if (plane_tokens.acquired()) {
+            tl_lossless_mode_debug_stats_.perf_encode_plane_parallel_tokens_sum +=
+                (uint64_t)plane_tokens.count();
+            if (plane_tokens.count() >= 3) {
+                tl_lossless_mode_debug_stats_.perf_encode_plane_parallel_3way_count++;
+            } else {
+                tl_lossless_mode_debug_stats_.perf_encode_plane_parallel_2way_count++;
+            }
+        } else {
+            tl_lossless_mode_debug_stats_.perf_encode_plane_parallel_seq_count++;
+        }
+        if (plane_tokens.acquired()) {
             auto fy = std::async(std::launch::async, [&]() {
                 thread_budget::ScopedParallelRegion guard;
                 return run_plane_task(y_plane.data(), true, false);

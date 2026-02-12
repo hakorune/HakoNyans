@@ -783,6 +783,19 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
             std::cout << "\n  Route policy diagnostics\n";
             std::cout << "  route_policy_skipped   " << s.route_compete_policy_skip_count << "\n";
         }
+        {
+            const uint64_t total_parallel_paths =
+                s.perf_encode_plane_parallel_3way_count +
+                s.perf_encode_plane_parallel_2way_count +
+                s.perf_encode_plane_parallel_seq_count;
+            if (total_parallel_paths > 0) {
+                std::cout << "\n  Encode parallel diagnostics\n";
+                std::cout << "  plane_parallel_3way    " << s.perf_encode_plane_parallel_3way_count << "\n";
+                std::cout << "  plane_parallel_2way    " << s.perf_encode_plane_parallel_2way_count << "\n";
+                std::cout << "  plane_parallel_seq     " << s.perf_encode_plane_parallel_seq_count << "\n";
+                std::cout << "  plane_parallel_tokens  " << s.perf_encode_plane_parallel_tokens_sum << "\n";
+            }
+        }
 
         std::cout << "\n  Lossless profile diagnostics\n";
         std::cout << "  profile_ui_tiles       " << s.profile_ui_tiles << "\n";

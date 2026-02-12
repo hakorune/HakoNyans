@@ -225,7 +225,8 @@ inline std::vector<int16_t> decode_plane_lossless(
         },
         [&](const uint8_t* data, size_t size, size_t raw_count) {
             return TileLZ::decompress(data, size, raw_count);
-        }
+        },
+        perf_stats
     );
     const auto t_lo1 = Clock::now();
     add_ns(perf_stats ? &perf_stats->plane_filter_lo_ns : nullptr, t_lo0, t_lo1);
@@ -405,9 +406,18 @@ inline std::vector<int16_t> decode_plane_lossless(
     std::vector<int> block_tile4_idx(nb, -1);
     int pi = 0, ci = 0, t4i = 0;
     for (int i = 0; i < nb; i++) {
-        if (block_types[i] == FileHeader::BlockType::PALETTE) block_palette_idx[i] = pi++;
-        else if (block_types[i] == FileHeader::BlockType::COPY) block_copy_idx[i] = ci++;
-        else if (block_types[i] == FileHeader::BlockType::TILE_MATCH4) block_tile4_idx[i] = t4i++;
+        if (block_types[i] == FileHeader::BlockType::PALETTE) {
+            block_palette_idx[i] = pi++;
+            if (perf_stats) perf_stats->plane_recon_block_palette_count++;
+        } else if (block_types[i] == FileHeader::BlockType::COPY) {
+            block_copy_idx[i] = ci++;
+            if (perf_stats) perf_stats->plane_recon_block_copy_count++;
+        } else if (block_types[i] == FileHeader::BlockType::TILE_MATCH4) {
+            block_tile4_idx[i] = t4i++;
+            if (perf_stats) perf_stats->plane_recon_block_tile4_count++;
+        } else {
+            if (perf_stats) perf_stats->plane_recon_block_dct_count++;
+        }
     }
 
     for (int i = 0; i < nb; i++) {
@@ -466,10 +476,15 @@ inline std::vector<int16_t> decode_plane_lossless(
                     const int src_y = (int)y + cp.dy;
                     const int src_x0 = (int)x_base + cp.dx;
                     if (src_y >= 0 && src_y < pad_h_i && src_x0 >= 0 && src_x0 + 7 < pad_w_i) {
+                        if (perf_stats) perf_stats->plane_recon_copy_fast_rows++;
                         int16_t* dst = &padded[row_base + (size_t)x_base];
                         int16_t* src = &padded[(size_t)src_y * (size_t)pad_w + (size_t)src_x0];
                         std::memcpy(dst, src, 8 * sizeof(int16_t));
                     } else {
+                        if (perf_stats) {
+                            perf_stats->plane_recon_copy_slow_rows++;
+                            perf_stats->plane_recon_copy_clamped_pixels += 8;
+                        }
                         for (uint32_t px = 0; px < 8; px++) {
                             const uint32_t x = x_base + px;
                             int src_x = (int)x + cp.dx;
@@ -496,10 +511,15 @@ inline std::vector<int16_t> decode_plane_lossless(
                         const int src_x0 = (int)seg_x_base + cand.dx;
 
                         if (src_y >= 0 && src_y < pad_h_i && src_x0 >= 0 && src_x0 + 3 < pad_w_i) {
+                            if (perf_stats) perf_stats->plane_recon_tile4_fast_quads++;
                             int16_t* dst = &padded[row_base + (size_t)seg_x_base];
                             int16_t* src = &padded[(size_t)src_y * (size_t)pad_w + (size_t)src_x0];
                             std::memcpy(dst, src, 4 * sizeof(int16_t));
                         } else {
+                            if (perf_stats) {
+                                perf_stats->plane_recon_tile4_slow_quads++;
+                                perf_stats->plane_recon_tile4_clamped_pixels += 4;
+                            }
                             for (uint32_t px = 0; px < 4; px++) {
                                 const uint32_t x = seg_x_base + px;
                                 int src_x = (int)x + cand.dx;
@@ -514,6 +534,7 @@ inline std::vector<int16_t> decode_plane_lossless(
                     continue;
                 }
 
+                if (perf_stats) perf_stats->plane_recon_dct_pixels += 8;
                 for (uint32_t px = 0; px < 8; px++) {
                     const uint32_t x = x_base + px;
                     const size_t pos = row_base + (size_t)x;
@@ -532,6 +553,9 @@ inline std::vector<int16_t> decode_plane_lossless(
                     }
                     if (residual_idx < residual_size) {
                         padded[pos] = filter_residuals[residual_idx++] + pred;
+                        if (perf_stats) perf_stats->plane_recon_residual_consumed++;
+                    } else if (perf_stats) {
+                        perf_stats->plane_recon_residual_missing++;
                     }
                 }
             }
