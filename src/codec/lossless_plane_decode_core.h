@@ -438,57 +438,77 @@ inline std::vector<int16_t> decode_plane_lossless(
     };
 
     size_t residual_idx = 0;
-    for (uint32_t y = 0; y < pad_h; y++) {
-        uint8_t ftype = (y < filter_ids.size()) ? filter_ids[y] : 0;
-        for (uint32_t x = 0; x < pad_w; x++) {
-            int bx_col = (int)(x / 8), by_row = (int)(y / 8);
-            int block_idx = by_row * nx + bx_col;
+    for (int by = 0; by < ny; by++) {
+        const int block_row_base = by * nx;
+        const uint32_t y_base = (uint32_t)(by * 8);
+        for (int yoff = 0; yoff < 8; yoff++) {
+            const uint32_t y = y_base + (uint32_t)yoff;
+            const uint8_t ftype = (y < filter_ids.size()) ? filter_ids[y] : 0;
+            const size_t row_base = (size_t)y * (size_t)pad_w;
+            const size_t up_row_base = (y > 0) ? ((size_t)(y - 1) * (size_t)pad_w) : 0;
 
-            if (block_types[(size_t)block_idx] == FileHeader::BlockType::PALETTE) {
-                continue;
-            } else if (block_types[(size_t)block_idx] == FileHeader::BlockType::COPY) {
-                int cidx = block_copy_idx[(size_t)block_idx];
-                if (cidx >= 0 && cidx < (int)copy_params.size()) {
-                    int src_x = (int)x + copy_params[(size_t)cidx].dx;
-                    int src_y = (int)y + copy_params[(size_t)cidx].dy;
-                    src_x = std::clamp(src_x, 0, (int)pad_w - 1);
-                    src_y = std::clamp(src_y, 0, (int)pad_h - 1);
-                    padded[(size_t)y * (size_t)pad_w + (size_t)x] =
-                        padded[(size_t)src_y * (size_t)pad_w + (size_t)src_x];
+            for (int bx = 0; bx < nx; bx++) {
+                const int block_idx = block_row_base + bx;
+                const uint32_t x_base = (uint32_t)(bx * 8);
+                const auto bt = block_types[(size_t)block_idx];
+
+                if (bt == FileHeader::BlockType::PALETTE) {
+                    continue;
                 }
-            } else if (block_types[(size_t)block_idx] == FileHeader::BlockType::TILE_MATCH4) {
-                int t4idx = block_tile4_idx[(size_t)block_idx];
-                if (t4idx >= 0 && t4idx < (int)tile4_params.size()) {
-                    int qx = ((int)x % 8) / 4;
-                    int qy = ((int)y % 8) / 4;
-                    int q = qy * 2 + qx;
-                    int cand_idx = tile4_params[(size_t)t4idx].indices[q];
-                    int src_x = (int)x + kTileMatch4Candidates[cand_idx].dx;
-                    int src_y = (int)y + kTileMatch4Candidates[cand_idx].dy;
-                    src_x = std::clamp(src_x, 0, (int)pad_w - 1);
-                    src_y = std::clamp(src_y, 0, (int)pad_h - 1);
-                    padded[(size_t)y * (size_t)pad_w + (size_t)x] =
-                        padded[(size_t)src_y * (size_t)pad_w + (size_t)src_x];
+                if (bt == FileHeader::BlockType::COPY) {
+                    const int cidx = block_copy_idx[(size_t)block_idx];
+                    if (cidx < 0 || cidx >= (int)copy_params.size()) continue;
+                    const auto& cp = copy_params[(size_t)cidx];
+                    for (uint32_t px = 0; px < 8; px++) {
+                        const uint32_t x = x_base + px;
+                        int src_x = (int)x + cp.dx;
+                        int src_y = (int)y + cp.dy;
+                        src_x = std::clamp(src_x, 0, (int)pad_w - 1);
+                        src_y = std::clamp(src_y, 0, (int)pad_h - 1);
+                        padded[row_base + (size_t)x] =
+                            padded[(size_t)src_y * (size_t)pad_w + (size_t)src_x];
+                    }
+                    continue;
                 }
-            } else {
-                int16_t a = (x > 0) ? padded[(size_t)y * (size_t)pad_w + (size_t)(x - 1)] : 0;
-                int16_t b = (y > 0) ? padded[(size_t)(y - 1) * (size_t)pad_w + (size_t)x] : 0;
-                int16_t c = (x > 0 && y > 0)
-                    ? padded[(size_t)(y - 1) * (size_t)pad_w + (size_t)(x - 1)]
-                    : 0;
-                int16_t pred;
-                switch (ftype) {
-                    case 0: pred = 0; break;
-                    case 1: pred = a; break;
-                    case 2: pred = b; break;
-                    case 3: pred = (int16_t)(((int)a + (int)b) / 2); break;
-                    case 4: pred = LosslessFilter::paeth_predictor(a, b, c); break;
-                    case 5: pred = LosslessFilter::med_predictor(a, b, c); break;
-                    default: pred = 0; break;
+                if (bt == FileHeader::BlockType::TILE_MATCH4) {
+                    const int t4idx = block_tile4_idx[(size_t)block_idx];
+                    if (t4idx < 0 || t4idx >= (int)tile4_params.size()) continue;
+                    const auto& t4 = tile4_params[(size_t)t4idx];
+                    const int qy = (yoff >= 4) ? 1 : 0;
+                    for (uint32_t px = 0; px < 8; px++) {
+                        const uint32_t x = x_base + px;
+                        const int qx = (px >= 4) ? 1 : 0;
+                        const int q = qy * 2 + qx;
+                        const int cand_idx = t4.indices[q];
+                        int src_x = (int)x + kTileMatch4Candidates[cand_idx].dx;
+                        int src_y = (int)y + kTileMatch4Candidates[cand_idx].dy;
+                        src_x = std::clamp(src_x, 0, (int)pad_w - 1);
+                        src_y = std::clamp(src_y, 0, (int)pad_h - 1);
+                        padded[row_base + (size_t)x] =
+                            padded[(size_t)src_y * (size_t)pad_w + (size_t)src_x];
+                    }
+                    continue;
                 }
-                if (residual_idx < filter_residuals.size()) {
-                    padded[(size_t)y * (size_t)pad_w + (size_t)x] =
-                        filter_residuals[residual_idx++] + pred;
+
+                for (uint32_t px = 0; px < 8; px++) {
+                    const uint32_t x = x_base + px;
+                    const size_t pos = row_base + (size_t)x;
+                    const int16_t a = (x > 0) ? padded[pos - 1] : 0;
+                    const int16_t b = (y > 0) ? padded[up_row_base + (size_t)x] : 0;
+                    const int16_t c = (x > 0 && y > 0) ? padded[up_row_base + (size_t)(x - 1)] : 0;
+                    int16_t pred = 0;
+                    switch (ftype) {
+                        case 0: pred = 0; break;
+                        case 1: pred = a; break;
+                        case 2: pred = b; break;
+                        case 3: pred = (int16_t)(((int)a + (int)b) / 2); break;
+                        case 4: pred = LosslessFilter::paeth_predictor(a, b, c); break;
+                        case 5: pred = LosslessFilter::med_predictor(a, b, c); break;
+                        default: pred = 0; break;
+                    }
+                    if (residual_idx < filter_residuals.size()) {
+                        padded[pos] = filter_residuals[residual_idx++] + pred;
+                    }
                 }
             }
         }
