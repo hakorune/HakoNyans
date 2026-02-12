@@ -962,7 +962,26 @@ MEDの効果（Photo/Natural）を維持しつつ、UI/Anime側の将来回帰�
      - `ctest` **17/17 PASS**
      - `anime_sunset` lossless total: **14,035B -> 13,731B**（-2.17%）
      - `vscode` lossless total: **4,881B**（維持）
-     - `nature_01` lossless total: **817,303B**（改善）
+   - `nature_01` lossless total: **817,303B**（改善）
+25. [x] Phase 9u-2: filter_lo Mode5 shared/static CDF化（v0x0011）✅ (2026-02-12)
+   - 実装:
+     - `src/codec/shared_cdf.h` を追加し、Mode5専用の共有CDF頻度モデルを導入
+     - `encode/decode` に `encode_byte_stream_shared_lz` / `decode_byte_stream_shared_lz` を追加
+     - `lo_mode=5` は `v0x0010`（旧: per-tile CDF）と `v0x0011+`（新: shared CDF）を両対応
+   - 検証:
+     - `ctest` **17/17 PASS**
+     - `anime_sunset` で `filter_lo_mode5` 採用を確認（微改善）
+26. [x] Phase 9u-3: screen-indexed 競合選択の再設計（Natural対策）✅ (2026-02-12)
+   - 実装:
+     - `PHOTO` の事前除外を廃止し、`legacy` と `screen-indexed` を常に競合
+     - 事前ゲートは `small tile` と安全上限（palette_count/bits）に限定
+     - 採用条件を profile 別に統一:
+       - UI: `screen <= legacy * 0.995`
+       - ANIME: `screen <= legacy * 0.990`
+       - PHOTO: `screen <= legacy * 1.000`（非悪化なら採用）
+     - `screen` 競合の内訳テレメトリを追加（small/build/palette/bits/compete ratio）
+   - 目的:
+     - Natural での「候補未評価」を減らし、タイル単位で非悪化フォールバックを保証
 
 **Phase 9t 所見**:
 - `Palette` が 8bit値 (`[-128,127]`) 制約のため、YCoCg chroma 平面で palette rescue がほぼ適用不能。
@@ -971,7 +990,9 @@ MEDの効果（Photo/Natural）を維持しつつ、UI/Anime側の将来回帰�
 
 **Phase 9u 所見**:
 - 値域制約の撤廃で、chromaを含む palette 候補の探索が可能になった。
-- 改善幅は `anime_sunset` で小〜中（-2.17%）に留まるため、次は `screen-indexed gate` と `palette index map` 側の改善が必要。
+- `Mode5(shared CDF)` で mode5実採用が確認され、候補評価の土台は整った。
+- `screen-indexed` は profile を問わず競合評価するよう更新。次は Natural の実データでゲート係数を再調整する。
+- 改善幅は `anime_sunset` で小〜中に留まるため、`palette index map` の符号化強化は継続課題。
 
 **受け入れ基準（DoD）**:
 - [ ] `ctest` 全PASS維持
