@@ -40,6 +40,7 @@
 #include "byte_stream_encoder.h"
 #include "filter_hi_wrapper.h"
 #include <vector>
+#include <chrono>
 #include <cerrno>
 #include <cstring>
 #include <cstdlib>
@@ -415,6 +416,8 @@ public:
      */
     static std::vector<uint8_t> encode_lossless(const uint8_t* pixels, uint32_t width, uint32_t height) {
         reset_lossless_mode_debug_stats();
+        using Clock = std::chrono::steady_clock;
+        const auto t_total0 = Clock::now();
 
         FileHeader header;
         header.width = width; header.height = height;
@@ -431,10 +434,20 @@ public:
             plane[i] = (int16_t)pixels[i];
         }
 
+        const auto t_cls0 = Clock::now();
         auto profile = classify_lossless_profile(plane.data(), width, height);
+        const auto t_cls1 = Clock::now();
+        tl_lossless_mode_debug_stats_.perf_encode_profile_classify_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_cls1 - t_cls0).count();
+
+        const auto t_plane0 = Clock::now();
         auto tile_data = encode_plane_lossless(plane.data(), width, height, profile);
+        const auto t_plane1 = Clock::now();
+        tl_lossless_mode_debug_stats_.perf_encode_plane_y_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_plane1 - t_plane0).count();
 
         // Build file: Header + ChunkDir + Tile
+        const auto t_pack0 = Clock::now();
         ChunkDirectory dir;
         dir.add("TIL0", 0, tile_data.size());
         auto dir_data = dir.serialize();
@@ -446,6 +459,11 @@ public:
         output.resize(48); header.write(output.data());
         output.insert(output.end(), dir_data.begin(), dir_data.end());
         output.insert(output.end(), tile_data.begin(), tile_data.end());
+        const auto t_pack1 = Clock::now();
+        tl_lossless_mode_debug_stats_.perf_encode_container_pack_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_pack1 - t_pack0).count();
+        tl_lossless_mode_debug_stats_.perf_encode_total_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_pack1 - t_total0).count();
         return output;
     }
 
@@ -454,22 +472,48 @@ public:
      */
     static std::vector<uint8_t> encode_color_lossless(const uint8_t* rgb_data, uint32_t width, uint32_t height) {
         reset_lossless_mode_debug_stats();
+        using Clock = std::chrono::steady_clock;
+        const auto t_total0 = Clock::now();
 
         // RGB -> YCoCg-R
         std::vector<int16_t> y_plane(width * height);
         std::vector<int16_t> co_plane(width * height);
         std::vector<int16_t> cg_plane(width * height);
 
+        const auto t_rgb0 = Clock::now();
         for (uint32_t i = 0; i < width * height; i++) {
             rgb_to_ycocg_r(rgb_data[i * 3], rgb_data[i * 3 + 1], rgb_data[i * 3 + 2],
                             y_plane[i], co_plane[i], cg_plane[i]);
         }
+        const auto t_rgb1 = Clock::now();
+        tl_lossless_mode_debug_stats_.perf_encode_rgb_to_ycocg_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_rgb1 - t_rgb0).count();
 
+        const auto t_cls0 = Clock::now();
         auto profile = classify_lossless_profile(y_plane.data(), width, height);
-        auto tile_y  = encode_plane_lossless(y_plane.data(), width, height, profile);
-        auto tile_co = encode_plane_lossless(co_plane.data(), width, height, profile);
-        auto tile_cg = encode_plane_lossless(cg_plane.data(), width, height, profile);
+        const auto t_cls1 = Clock::now();
+        tl_lossless_mode_debug_stats_.perf_encode_profile_classify_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_cls1 - t_cls0).count();
 
+        const auto t_plane_y0 = Clock::now();
+        auto tile_y  = encode_plane_lossless(y_plane.data(), width, height, profile);
+        const auto t_plane_y1 = Clock::now();
+        tl_lossless_mode_debug_stats_.perf_encode_plane_y_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_plane_y1 - t_plane_y0).count();
+
+        const auto t_plane_co0 = Clock::now();
+        auto tile_co = encode_plane_lossless(co_plane.data(), width, height, profile);
+        const auto t_plane_co1 = Clock::now();
+        tl_lossless_mode_debug_stats_.perf_encode_plane_co_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_plane_co1 - t_plane_co0).count();
+
+        const auto t_plane_cg0 = Clock::now();
+        auto tile_cg = encode_plane_lossless(cg_plane.data(), width, height, profile);
+        const auto t_plane_cg1 = Clock::now();
+        tl_lossless_mode_debug_stats_.perf_encode_plane_cg_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_plane_cg1 - t_plane_cg0).count();
+
+        const auto t_pack0 = Clock::now();
         FileHeader header;
         header.width = width; header.height = height;
         header.bit_depth = 8; header.num_channels = 3;
@@ -498,6 +542,11 @@ public:
         output.insert(output.end(), tile_y.begin(), tile_y.end());
         output.insert(output.end(), tile_co.begin(), tile_co.end());
         output.insert(output.end(), tile_cg.begin(), tile_cg.end());
+        const auto t_pack1 = Clock::now();
+        tl_lossless_mode_debug_stats_.perf_encode_container_pack_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_pack1 - t_pack0).count();
+        tl_lossless_mode_debug_stats_.perf_encode_total_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_pack1 - t_total0).count();
         return output;
     }
 
@@ -647,6 +696,10 @@ public:
     static std::vector<uint8_t> encode_plane_lossless(
         const int16_t* data, uint32_t width, uint32_t height, LosslessProfile profile = LosslessProfile::UI
     ) {
+        using Clock = std::chrono::steady_clock;
+        const auto t_plane_total0 = Clock::now();
+        tl_lossless_mode_debug_stats_.perf_encode_plane_calls++;
+
         // Pad dimensions to multiple of 8
         uint32_t pad_w = ((width + 7) / 8) * 8;
         uint32_t pad_h = ((height + 7) / 8) * 8;
@@ -658,13 +711,18 @@ public:
         else tl_lossless_mode_debug_stats_.profile_photo_tiles++;
 
         // Pad the int16_t image
+        const auto t_pad0 = Clock::now();
         std::vector<int16_t> padded(pad_w * pad_h, 0);
         for (uint32_t y = 0; y < pad_h; y++) {
             for (uint32_t x = 0; x < pad_w; x++) {
                 padded[y * pad_w + x] = data[std::min(y, height - 1) * width + std::min(x, width - 1)];
             }
         }
+        const auto t_pad1 = Clock::now();
+        tl_lossless_mode_debug_stats_.perf_encode_plane_pad_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_pad1 - t_pad0).count();
         // --- Step 1: Block classification ---
+        const auto t_cls0 = Clock::now();
         auto cls = lossless_block_classifier::classify_blocks(
             padded,
             pad_w,
@@ -672,6 +730,9 @@ public:
             static_cast<int>(profile),
             &tl_lossless_mode_debug_stats_
         );
+        const auto t_cls1 = Clock::now();
+        tl_lossless_mode_debug_stats_.perf_encode_plane_block_classify_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_cls1 - t_cls0).count();
         std::vector<FileHeader::BlockType> block_types = std::move(cls.block_types);
         std::vector<Palette> palettes = std::move(cls.palettes);
         std::vector<std::vector<uint8_t>> palette_indices = std::move(cls.palette_indices);
@@ -679,6 +740,7 @@ public:
         std::vector<lossless_tile4_codec::Tile4Result> tile4_results = std::move(cls.tile4_results);
 
         // --- Step 2: Custom filtering (block-type aware, full image context) ---
+        const auto t_filter_rows0 = Clock::now();
         std::vector<uint8_t> filter_ids;
         std::vector<int16_t> filter_residuals;
         lossless_filter_rows::build_filter_rows_and_residuals(
@@ -692,6 +754,9 @@ public:
             filter_ids,
             filter_residuals
         );
+        const auto t_filter_rows1 = Clock::now();
+        tl_lossless_mode_debug_stats_.perf_encode_plane_filter_rows_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_filter_rows1 - t_filter_rows0).count();
 
         // --- Step 3: ZigZag + rANS encode filter residuals (data-adaptive CDF) ---
         std::vector<uint8_t> lo_stream, hi_stream;
@@ -704,6 +769,7 @@ public:
                 lo_bytes[i] = (uint8_t)(zz & 0xFF);
                 hi_bytes[i] = (uint8_t)((zz >> 8) & 0xFF);
             }
+            const auto t_lo0 = Clock::now();
             lo_stream = lossless_filter_lo_codec::encode_filter_lo_stream(
                 lo_bytes,
                 filter_ids,
@@ -722,15 +788,23 @@ public:
                     return TileLZ::compress(bytes);
                 }
             );
+            const auto t_lo1 = Clock::now();
+            tl_lossless_mode_debug_stats_.perf_encode_plane_lo_stream_ns +=
+                (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_lo1 - t_lo0).count();
 
             // --- Phase 9n: filter_hi sparse-or-dense wrapper ---
+            const auto t_hi0 = Clock::now();
             hi_stream = filter_hi_wrapper::encode_filter_hi_stream(
                 hi_bytes, &tl_lossless_mode_debug_stats_
             );
+            const auto t_hi1 = Clock::now();
+            tl_lossless_mode_debug_stats_.perf_encode_plane_hi_stream_ns +=
+                (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_hi1 - t_hi0).count();
         }
 
         // --- Step 4: Encode block types, palette, copy, tile4 ---
         // --- Step 4: Encode block types, palette, copy, tile4 ---
+        const auto t_wrap0 = Clock::now();
         std::vector<uint8_t> bt_data = encode_block_types(block_types, true);
         
         int reorder_trials = 0;
@@ -790,8 +864,12 @@ public:
             cpy_data,
             copy_wrapper_mode
         );
+        const auto t_wrap1 = Clock::now();
+        tl_lossless_mode_debug_stats_.perf_encode_plane_stream_wrap_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_wrap1 - t_wrap0).count();
 
         // --- Step 5: Compress filter_ids (Phase 9n) ---
+        const auto t_fid0 = Clock::now();
         std::vector<uint8_t> filter_ids_packed = lossless_stream_wrappers::wrap_filter_ids_stream(
             filter_ids,
             [](const std::vector<uint8_t>& bytes) {
@@ -802,8 +880,12 @@ public:
             },
             &tl_lossless_mode_debug_stats_
         );
+        const auto t_fid1 = Clock::now();
+        tl_lossless_mode_debug_stats_.perf_encode_plane_filter_ids_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_fid1 - t_fid0).count();
 
         // --- Step 6: Pack tile data (32-byte header) ---
+        const auto t_pack0 = Clock::now();
         std::vector<uint8_t> tile_data = lossless_tile_packer::pack_tile_v2(
             filter_ids_packed,
             lo_stream,
@@ -814,7 +896,11 @@ public:
             cpy_data,
             tile4_data
         );
-        return lossless_route_competition::choose_best_tile(
+        const auto t_pack1 = Clock::now();
+        tl_lossless_mode_debug_stats_.perf_encode_plane_pack_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_pack1 - t_pack0).count();
+        const auto t_route0 = Clock::now();
+        auto best_tile = lossless_route_competition::choose_best_tile(
             tile_data,
             data,
             width,
@@ -834,6 +920,12 @@ public:
                 return GrayscaleEncoder::encode_plane_lossless_natural_row_tile(p, w, h);
             }
         );
+        const auto t_route1 = Clock::now();
+        tl_lossless_mode_debug_stats_.perf_encode_plane_route_compete_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_route1 - t_route0).count();
+        tl_lossless_mode_debug_stats_.perf_encode_plane_total_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_route1 - t_plane_total0).count();
+        return best_tile;
     }
 
 

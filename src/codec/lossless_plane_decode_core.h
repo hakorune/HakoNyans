@@ -6,11 +6,13 @@
 #include "lossless_filter.h"
 #include "lossless_filter_lo_decode.h"
 #include "lossless_natural_decode.h"
+#include "lossless_decode_debug_stats.h"
 #include "lossless_tile4_codec.h"
 #include "lz_tile.h"
 #include "palette.h"
 #include "zigzag.h"
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -26,13 +28,21 @@ inline std::vector<int16_t> decode_plane_lossless(
     uint32_t height,
     uint16_t file_version,
     DecodeByteStreamFn&& decode_byte_stream,
-    DecodeSharedLzFn&& decode_byte_stream_shared_lz
+    DecodeSharedLzFn&& decode_byte_stream_shared_lz,
+    ::hakonyans::LosslessDecodeDebugStats* perf_stats = nullptr
 ) {
+    using Clock = std::chrono::steady_clock;
+    auto add_ns = [&](uint64_t* dst, const Clock::time_point& t0, const Clock::time_point& t1) {
+        if (!dst) return;
+        *dst += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+    };
+
     uint32_t pad_w = ((width + 7) / 8) * 8;
     uint32_t pad_h = ((height + 7) / 8) * 8;
     int nx = (int)(pad_w / 8), ny = (int)(pad_h / 8), nb = nx * ny;
 
     std::vector<int16_t> natural_decoded;
+    const auto t_nat0 = Clock::now();
     if (lossless_natural_decode::try_decode_natural_row_wrapper(
             td,
             ts,
@@ -48,9 +58,14 @@ inline std::vector<int16_t> decode_plane_lossless(
                 return decode_byte_stream(data, size, raw_count);
             },
             natural_decoded)) {
+        const auto t_nat1 = Clock::now();
+        add_ns(perf_stats ? &perf_stats->plane_try_natural_ns : nullptr, t_nat0, t_nat1);
         return natural_decoded;
     }
+    const auto t_nat1 = Clock::now();
+    add_ns(perf_stats ? &perf_stats->plane_try_natural_ns : nullptr, t_nat0, t_nat1);
 
+    const auto t_screen0 = Clock::now();
     if (ts >= 14 &&
         file_version >= FileHeader::VERSION_SCREEN_INDEXED_TILE &&
         td[0] == FileHeader::WRAPPER_MAGIC_SCREEN_INDEXED) {
@@ -127,8 +142,12 @@ inline std::vector<int16_t> decode_plane_lossless(
         for (uint32_t y = 0; y < height; y++) {
             std::memcpy(&result[y * width], &padded[y * pad_w], width * sizeof(int16_t));
         }
+        const auto t_screen1 = Clock::now();
+        add_ns(perf_stats ? &perf_stats->plane_screen_wrapper_ns : nullptr, t_screen0, t_screen1);
         return result;
     }
+    const auto t_screen1 = Clock::now();
+    add_ns(perf_stats ? &perf_stats->plane_screen_wrapper_ns : nullptr, t_screen0, t_screen1);
 
     uint32_t hdr[8];
     std::memcpy(hdr, td, 32);
@@ -147,6 +166,7 @@ inline std::vector<int16_t> decode_plane_lossless(
     const uint8_t* ptr_hi = ptr_lo + lo_stream_size;
     const uint8_t* ptr_bt = ptr_hi + hi_stream_size;
 
+    const auto t_bt0 = Clock::now();
     std::vector<FileHeader::BlockType> block_types;
     if (block_types_size > 0) {
         block_types = lossless_block_types_codec::decode_block_types(
@@ -164,7 +184,10 @@ inline std::vector<int16_t> decode_plane_lossless(
     } else {
         block_types.assign(nb, FileHeader::BlockType::DCT);
     }
+    const auto t_bt1 = Clock::now();
+    add_ns(perf_stats ? &perf_stats->plane_block_types_ns : nullptr, t_bt0, t_bt1);
 
+    const auto t_fid0 = Clock::now();
     std::vector<uint8_t> filter_ids;
     if (filter_ids_size > 0 && ptr_filter_ids[0] == FileHeader::WRAPPER_MAGIC_FILTER_IDS &&
         filter_ids_size >= 3) {
@@ -180,8 +203,11 @@ inline std::vector<int16_t> decode_plane_lossless(
     } else {
         filter_ids.assign(ptr_filter_ids, ptr_filter_ids + filter_ids_size);
     }
+    const auto t_fid1 = Clock::now();
+    add_ns(perf_stats ? &perf_stats->plane_filter_ids_ns : nullptr, t_fid0, t_fid1);
     ptr += filter_ids_size;
 
+    const auto t_lo0 = Clock::now();
     std::vector<uint8_t> lo_bytes = lossless_filter_lo_decode::decode_filter_lo_stream(
         ptr_lo,
         lo_stream_size,
@@ -201,8 +227,11 @@ inline std::vector<int16_t> decode_plane_lossless(
             return TileLZ::decompress(data, size, raw_count);
         }
     );
+    const auto t_lo1 = Clock::now();
+    add_ns(perf_stats ? &perf_stats->plane_filter_lo_ns : nullptr, t_lo0, t_lo1);
     ptr += lo_stream_size;
 
+    const auto t_hi0 = Clock::now();
     std::vector<uint8_t> hi_bytes;
     if (hi_stream_size > 0 && filter_pixel_count > 0) {
         if (hi_stream_size >= 4 && ptr[0] == FileHeader::WRAPPER_MAGIC_FILTER_HI) {
@@ -230,10 +259,13 @@ inline std::vector<int16_t> decode_plane_lossless(
             hi_bytes = decode_byte_stream(ptr, hi_stream_size, filter_pixel_count);
         }
     }
+    const auto t_hi1 = Clock::now();
+    add_ns(perf_stats ? &perf_stats->plane_filter_hi_ns : nullptr, t_hi0, t_hi1);
     ptr += hi_stream_size;
 
     ptr += block_types_size;
 
+    const auto t_pal0 = Clock::now();
     std::vector<Palette> palettes;
     std::vector<std::vector<uint8_t>> palette_indices;
     if (palette_data_size > 0) {
@@ -268,7 +300,10 @@ inline std::vector<int16_t> decode_plane_lossless(
             pal_ptr, pal_size, palettes, palette_indices, num_palette);
         ptr += palette_data_size;
     }
+    const auto t_pal1 = Clock::now();
+    add_ns(perf_stats ? &perf_stats->plane_palette_ns : nullptr, t_pal0, t_pal1);
 
+    const auto t_copy0 = Clock::now();
     std::vector<CopyParams> copy_params;
     if (copy_data_size > 0) {
         const uint8_t* cptr = ptr;
@@ -301,7 +336,10 @@ inline std::vector<int16_t> decode_plane_lossless(
         CopyCodec::decode_copy_stream(cptr, csz, copy_params, num_copy);
         ptr += copy_data_size;
     }
+    const auto t_copy1 = Clock::now();
+    add_ns(perf_stats ? &perf_stats->plane_copy_ns : nullptr, t_copy0, t_copy1);
 
+    const auto t_t40 = Clock::now();
     std::vector<lossless_tile4_codec::Tile4Result> tile4_params;
     const uint8_t* end = td + ts;
     const uint8_t* t4_ptr = ptr;
@@ -346,14 +384,20 @@ inline std::vector<int16_t> decode_plane_lossless(
             tile4_params.push_back(res);
         }
     }
+    const auto t_t41 = Clock::now();
+    add_ns(perf_stats ? &perf_stats->plane_tile4_ns : nullptr, t_t40, t_t41);
     ptr += tile4_data_size;
 
+    const auto t_merge0 = Clock::now();
     std::vector<int16_t> filter_residuals(filter_pixel_count);
     for (size_t i = 0; i < filter_pixel_count; i++) {
         uint16_t zz = (uint16_t)lo_bytes[i] | ((uint16_t)hi_bytes[i] << 8);
         filter_residuals[i] = zigzag_decode_val(zz);
     }
+    const auto t_merge1 = Clock::now();
+    add_ns(perf_stats ? &perf_stats->plane_residual_merge_ns : nullptr, t_merge0, t_merge1);
 
+    const auto t_recon0 = Clock::now();
     std::vector<int16_t> padded(pad_w * pad_h, 0);
 
     std::vector<int> block_palette_idx(nb, -1);
@@ -449,13 +493,18 @@ inline std::vector<int16_t> decode_plane_lossless(
             }
         }
     }
+    const auto t_recon1 = Clock::now();
+    add_ns(perf_stats ? &perf_stats->plane_reconstruct_ns : nullptr, t_recon0, t_recon1);
 
+    const auto t_crop0 = Clock::now();
     std::vector<int16_t> result(width * height);
     for (uint32_t y = 0; y < height; y++) {
         std::memcpy(&result[(size_t)y * (size_t)width],
                     &padded[(size_t)y * (size_t)pad_w],
                     width * sizeof(int16_t));
     }
+    const auto t_crop1 = Clock::now();
+    add_ns(perf_stats ? &perf_stats->plane_crop_ns : nullptr, t_crop0, t_crop1);
 
     return result;
 }

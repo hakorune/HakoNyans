@@ -209,6 +209,27 @@ struct LosslessModeDebugStats {
     uint64_t class_active_bins_sum;
     uint64_t anime_palette_bonus_applied;
 
+    // Encode-side perf counters (nanoseconds), accumulated per encode call.
+    uint64_t perf_encode_total_ns;
+    uint64_t perf_encode_rgb_to_ycocg_ns;
+    uint64_t perf_encode_profile_classify_ns;
+    uint64_t perf_encode_plane_y_ns;
+    uint64_t perf_encode_plane_co_ns;
+    uint64_t perf_encode_plane_cg_ns;
+    uint64_t perf_encode_container_pack_ns;
+
+    uint64_t perf_encode_plane_total_ns;
+    uint64_t perf_encode_plane_calls;
+    uint64_t perf_encode_plane_pad_ns;
+    uint64_t perf_encode_plane_block_classify_ns;
+    uint64_t perf_encode_plane_filter_rows_ns;
+    uint64_t perf_encode_plane_lo_stream_ns;
+    uint64_t perf_encode_plane_hi_stream_ns;
+    uint64_t perf_encode_plane_stream_wrap_ns;
+    uint64_t perf_encode_plane_filter_ids_ns;
+    uint64_t perf_encode_plane_pack_ns;
+    uint64_t perf_encode_plane_route_compete_ns;
+
     LosslessModeDebugStats() { reset(); }
     void reset() { std::memset(this, 0, sizeof(*this)); }
 };

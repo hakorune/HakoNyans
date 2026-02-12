@@ -11,6 +11,7 @@
 #include "../entropy/nyans_p/parallel_decode.h"
 #include "../simd/simd_dispatch.h"
 #include <vector>
+#include <chrono>
 #include <cstring>
 #include <stdexcept>
 #include <future>
@@ -24,11 +25,26 @@
 #include "lz_tile.h"
 #include "shared_cdf.h"
 #include "lossless_block_types_codec.h"
+#include "lossless_decode_debug_stats.h"
 #include "lossless_plane_decode_core.h"
 
 namespace hakonyans {
 
 class GrayscaleDecoder {
+public:
+    using LosslessDecodeDebugStats = ::hakonyans::LosslessDecodeDebugStats;
+
+    static void reset_lossless_decode_debug_stats() {
+        tl_lossless_decode_debug_stats_.reset();
+    }
+
+    static LosslessDecodeDebugStats get_lossless_decode_debug_stats() {
+        return tl_lossless_decode_debug_stats_;
+    }
+
+private:
+    inline static thread_local LosslessDecodeDebugStats tl_lossless_decode_debug_stats_;
+
 public:
     static std::vector<uint8_t> pad_image(const uint8_t* p, uint32_t w, uint32_t h, uint32_t pw, uint32_t ph) {
         std::vector<uint8_t> out(pw * ph); for (uint32_t y = 0; y < ph; y++) for (uint32_t x = 0; x < pw; x++) out[y * pw + x] = p[std::min(y, h-1) * w + std::min(x, w-1)]; return out;
@@ -588,16 +604,32 @@ public:
      * Decode a lossless grayscale .hkn file.
      */
     static std::vector<uint8_t> decode_lossless(const std::vector<uint8_t>& hkn) {
+        reset_lossless_decode_debug_stats();
+        using Clock = std::chrono::steady_clock;
+        const auto t_total0 = Clock::now();
+
+        const auto t_hdr0 = Clock::now();
         FileHeader hdr = FileHeader::read(hkn.data());
         ChunkDirectory dir = ChunkDirectory::deserialize(&hkn[48], hkn.size() - 48);
         const ChunkEntry* t0 = dir.find("TIL0");
+        const auto t_hdr1 = Clock::now();
+        tl_lossless_decode_debug_stats_.decode_header_dir_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_hdr1 - t_hdr0).count();
+
+        const auto t_plane0 = Clock::now();
         auto plane = decode_plane_lossless(&hkn[t0->offset], t0->size, hdr.width, hdr.height, hdr.version);
+        const auto t_plane1 = Clock::now();
+        tl_lossless_decode_debug_stats_.decode_plane_y_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_plane1 - t_plane0).count();
 
         // int16_t -> uint8_t
         std::vector<uint8_t> out(hdr.width * hdr.height);
         for (size_t i = 0; i < out.size(); i++) {
             out[i] = (uint8_t)std::clamp((int)plane[i], 0, 255);
         }
+        const auto t_total1 = Clock::now();
+        tl_lossless_decode_debug_stats_.decode_color_total_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_total1 - t_total0).count();
         return out;
     }
 
@@ -605,23 +637,51 @@ public:
      * Decode a lossless color .hkn file (YCoCg-R).
      */
     static std::vector<uint8_t> decode_color_lossless(const std::vector<uint8_t>& hkn, int& w, int& h) {
+        reset_lossless_decode_debug_stats();
+        using Clock = std::chrono::steady_clock;
+        const auto t_total0 = Clock::now();
+
+        const auto t_hdr0 = Clock::now();
         FileHeader hdr = FileHeader::read(hkn.data());
         w = hdr.width; h = hdr.height;
         ChunkDirectory dir = ChunkDirectory::deserialize(&hkn[48], hkn.size() - 48);
         const ChunkEntry* t0 = dir.find("TIL0");
         const ChunkEntry* t1 = dir.find("TIL1");
         const ChunkEntry* t2 = dir.find("TIL2");
+        const auto t_hdr1 = Clock::now();
+        tl_lossless_decode_debug_stats_.decode_header_dir_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_hdr1 - t_hdr0).count();
 
+        const auto t_y0 = Clock::now();
         auto y_plane  = decode_plane_lossless(&hkn[t0->offset], t0->size, w, h, hdr.version);
+        const auto t_y1 = Clock::now();
+        tl_lossless_decode_debug_stats_.decode_plane_y_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_y1 - t_y0).count();
+
+        const auto t_co0 = Clock::now();
         auto co_plane = decode_plane_lossless(&hkn[t1->offset], t1->size, w, h, hdr.version);
+        const auto t_co1 = Clock::now();
+        tl_lossless_decode_debug_stats_.decode_plane_co_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_co1 - t_co0).count();
+
+        const auto t_cg0 = Clock::now();
         auto cg_plane = decode_plane_lossless(&hkn[t2->offset], t2->size, w, h, hdr.version);
+        const auto t_cg1 = Clock::now();
+        tl_lossless_decode_debug_stats_.decode_plane_cg_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_cg1 - t_cg0).count();
 
         // YCoCg-R -> RGB
+        const auto t_rgb0 = Clock::now();
         std::vector<uint8_t> rgb(w * h * 3);
         for (int i = 0; i < w * h; i++) {
             ycocg_r_to_rgb(y_plane[i], co_plane[i], cg_plane[i],
                            rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
         }
+        const auto t_rgb1 = Clock::now();
+        tl_lossless_decode_debug_stats_.decode_ycocg_to_rgb_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_rgb1 - t_rgb0).count();
+        tl_lossless_decode_debug_stats_.decode_color_total_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_rgb1 - t_total0).count();
         return rgb;
     }
 
@@ -637,7 +697,9 @@ public:
         const uint8_t* td, size_t ts, uint32_t width, uint32_t height,
         uint16_t file_version = FileHeader::VERSION
     ) {
-        return lossless_plane_decode_core::decode_plane_lossless(
+        using Clock = std::chrono::steady_clock;
+        const auto t0 = Clock::now();
+        auto out = lossless_plane_decode_core::decode_plane_lossless(
             td,
             ts,
             width,
@@ -648,8 +710,14 @@ public:
             },
             [](const uint8_t* data, size_t size, size_t raw_count) {
                 return GrayscaleDecoder::decode_byte_stream_shared_lz(data, size, raw_count);
-            }
+            },
+            &tl_lossless_decode_debug_stats_
         );
+        const auto t1 = Clock::now();
+        tl_lossless_decode_debug_stats_.decode_plane_total_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+        tl_lossless_decode_debug_stats_.decode_plane_calls++;
+        return out;
     }
 
 

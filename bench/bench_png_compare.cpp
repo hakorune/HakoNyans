@@ -54,6 +54,34 @@ struct ResultRow {
     double png_over_hkn = 0.0;
 
     double dec_ms = 0.0; // Median
+    double hkn_enc_ms = 0.0; // Median
+    double hkn_dec_ms = 0.0; // Median (same value as dec_ms for compatibility)
+    double png_enc_ms = 0.0; // Median
+    double png_dec_ms = 0.0; // Median
+
+    // HKN encode stage timings (Median)
+    double hkn_enc_rgb_to_ycocg_ms = 0.0;
+    double hkn_enc_profile_ms = 0.0;
+    double hkn_enc_plane_total_ms = 0.0;
+    double hkn_enc_plane_block_classify_ms = 0.0;
+    double hkn_enc_plane_filter_rows_ms = 0.0;
+    double hkn_enc_plane_lo_stream_ms = 0.0;
+    double hkn_enc_plane_hi_stream_ms = 0.0;
+    double hkn_enc_plane_stream_wrap_ms = 0.0;
+    double hkn_enc_plane_route_ms = 0.0;
+    double hkn_enc_container_pack_ms = 0.0;
+
+    // HKN decode stage timings (Median)
+    double hkn_dec_header_ms = 0.0;
+    double hkn_dec_plane_total_ms = 0.0;
+    double hkn_dec_ycocg_to_rgb_ms = 0.0;
+    double hkn_dec_plane_try_natural_ms = 0.0;
+    double hkn_dec_plane_screen_wrapper_ms = 0.0;
+    double hkn_dec_plane_block_types_ms = 0.0;
+    double hkn_dec_plane_filter_ids_ms = 0.0;
+    double hkn_dec_plane_filter_lo_ms = 0.0;
+    double hkn_dec_plane_filter_hi_ms = 0.0;
+    double hkn_dec_plane_reconstruct_ms = 0.0;
 
     uint64_t natural_row_selected = 0;
     uint64_t natural_row_candidates = 0;
@@ -88,6 +116,10 @@ double median_value(std::vector<double> v) {
     size_t n = v.size();
     if ((n & 1u) != 0u) return v[n / 2];
     return 0.5 * (v[n / 2 - 1] + v[n / 2]);
+}
+
+inline double ns_to_ms(uint64_t ns) {
+    return (double)ns / 1000000.0;
 }
 
 bool parse_int_arg(const std::string& s, int* out) {
@@ -193,7 +225,7 @@ void write_results_csv(const std::string& path, const std::vector<ResultRow>& ro
         throw std::runtime_error("Failed to write CSV: " + path);
     }
 
-    ofs << "image_id,image_name,width,height,hkn_bytes,png_bytes,png_over_hkn,dec_ms,natural_row_selected,natural_row_candidates,natural_row_selected_rate,gain_bytes,loss_bytes\n";
+    ofs << "image_id,image_name,width,height,hkn_bytes,png_bytes,png_over_hkn,dec_ms,natural_row_selected,natural_row_candidates,natural_row_selected_rate,gain_bytes,loss_bytes,hkn_enc_ms,hkn_dec_ms,png_enc_ms,png_dec_ms,hkn_enc_rgb_to_ycocg_ms,hkn_enc_profile_ms,hkn_enc_plane_total_ms,hkn_enc_plane_block_classify_ms,hkn_enc_plane_filter_rows_ms,hkn_enc_plane_lo_stream_ms,hkn_enc_plane_hi_stream_ms,hkn_enc_plane_stream_wrap_ms,hkn_enc_plane_route_ms,hkn_enc_container_pack_ms,hkn_dec_header_ms,hkn_dec_plane_total_ms,hkn_dec_ycocg_to_rgb_ms,hkn_dec_plane_try_natural_ms,hkn_dec_plane_screen_wrapper_ms,hkn_dec_plane_block_types_ms,hkn_dec_plane_filter_ids_ms,hkn_dec_plane_filter_lo_ms,hkn_dec_plane_filter_hi_ms,hkn_dec_plane_reconstruct_ms\n";
     ofs << std::fixed << std::setprecision(6);
     for (const auto& r : rows) {
         ofs << r.image_id << ","
@@ -208,7 +240,31 @@ void write_results_csv(const std::string& path, const std::vector<ResultRow>& ro
             << r.natural_row_candidates << ","
             << r.natural_row_selected_rate << ","
             << r.gain_bytes << ","
-            << r.loss_bytes << "\n";
+            << r.loss_bytes << ","
+            << r.hkn_enc_ms << ","
+            << r.hkn_dec_ms << ","
+            << r.png_enc_ms << ","
+            << r.png_dec_ms << ","
+            << r.hkn_enc_rgb_to_ycocg_ms << ","
+            << r.hkn_enc_profile_ms << ","
+            << r.hkn_enc_plane_total_ms << ","
+            << r.hkn_enc_plane_block_classify_ms << ","
+            << r.hkn_enc_plane_filter_rows_ms << ","
+            << r.hkn_enc_plane_lo_stream_ms << ","
+            << r.hkn_enc_plane_hi_stream_ms << ","
+            << r.hkn_enc_plane_stream_wrap_ms << ","
+            << r.hkn_enc_plane_route_ms << ","
+            << r.hkn_enc_container_pack_ms << ","
+            << r.hkn_dec_header_ms << ","
+            << r.hkn_dec_plane_total_ms << ","
+            << r.hkn_dec_ycocg_to_rgb_ms << ","
+            << r.hkn_dec_plane_try_natural_ms << ","
+            << r.hkn_dec_plane_screen_wrapper_ms << ","
+            << r.hkn_dec_plane_block_types_ms << ","
+            << r.hkn_dec_plane_filter_ids_ms << ","
+            << r.hkn_dec_plane_filter_lo_ms << ","
+            << r.hkn_dec_plane_filter_hi_ms << ","
+            << r.hkn_dec_plane_reconstruct_ms << "\n";
     }
 }
 
@@ -224,48 +280,127 @@ ResultRow benchmark_one(const EvalImage& img, const Args& args) {
 
     std::cout << "[RUN] " << img.name << " ... " << std::flush;
 
-    // PNG size reference
-    auto png_enc = encode_png(ppm.rgb_data.data(), ppm.width, ppm.height);
-    row.png_bytes = png_enc.png_data.size();
-
     std::vector<size_t> hkn_size_samples;
-    std::vector<double> dec_samples_ms;
+    std::vector<size_t> png_size_samples;
+    std::vector<double> hkn_enc_samples_ms;
+    std::vector<double> hkn_dec_samples_ms;
+    std::vector<double> png_enc_samples_ms;
+    std::vector<double> png_dec_samples_ms;
+    std::vector<double> hkn_enc_rgb_to_ycocg_samples_ms;
+    std::vector<double> hkn_enc_profile_samples_ms;
+    std::vector<double> hkn_enc_plane_total_samples_ms;
+    std::vector<double> hkn_enc_plane_block_classify_samples_ms;
+    std::vector<double> hkn_enc_plane_filter_rows_samples_ms;
+    std::vector<double> hkn_enc_plane_lo_stream_samples_ms;
+    std::vector<double> hkn_enc_plane_hi_stream_samples_ms;
+    std::vector<double> hkn_enc_plane_stream_wrap_samples_ms;
+    std::vector<double> hkn_enc_plane_route_samples_ms;
+    std::vector<double> hkn_enc_container_pack_samples_ms;
+    std::vector<double> hkn_dec_header_samples_ms;
+    std::vector<double> hkn_dec_plane_total_samples_ms;
+    std::vector<double> hkn_dec_ycocg_to_rgb_samples_ms;
+    std::vector<double> hkn_dec_plane_try_natural_samples_ms;
+    std::vector<double> hkn_dec_plane_screen_wrapper_samples_ms;
+    std::vector<double> hkn_dec_plane_block_types_samples_ms;
+    std::vector<double> hkn_dec_plane_filter_ids_samples_ms;
+    std::vector<double> hkn_dec_plane_filter_lo_samples_ms;
+    std::vector<double> hkn_dec_plane_filter_hi_samples_ms;
+    std::vector<double> hkn_dec_plane_reconstruct_samples_ms;
     std::vector<uint64_t> selected_samples;
     std::vector<uint64_t> candidate_samples;
     std::vector<uint64_t> gain_samples;
     std::vector<uint64_t> loss_samples;
 
     for (int i = 0; i < args.warmup + args.runs; i++) {
+        auto hkn_t0 = std::chrono::steady_clock::now();
         auto hkn = GrayscaleEncoder::encode_color_lossless(
             ppm.rgb_data.data(),
             (uint32_t)ppm.width,
             (uint32_t)ppm.height
         );
-        auto stats = GrayscaleEncoder::get_lossless_mode_debug_stats();
+        auto hkn_t1 = std::chrono::steady_clock::now();
+        double hkn_enc_ms = std::chrono::duration<double, std::milli>(hkn_t1 - hkn_t0).count();
+        auto enc_stats = GrayscaleEncoder::get_lossless_mode_debug_stats();
 
         int dec_w = 0;
         int dec_h = 0;
         auto t0 = std::chrono::steady_clock::now();
         auto dec = GrayscaleDecoder::decode_color_lossless(hkn, dec_w, dec_h);
         auto t1 = std::chrono::steady_clock::now();
-        double dec_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        double hkn_dec_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        auto dec_stats = GrayscaleDecoder::get_lossless_decode_debug_stats();
 
         if (dec_w != ppm.width || dec_h != ppm.height || dec != ppm.rgb_data) {
             throw std::runtime_error("Lossless roundtrip failed for " + img.rel_path);
         }
 
+        auto png_enc = encode_png(ppm.rgb_data.data(), ppm.width, ppm.height);
+        auto png_dec = decode_png(png_enc.png_data.data(), png_enc.png_data.size());
+        if (png_dec.width != ppm.width || png_dec.height != ppm.height) {
+            throw std::runtime_error("PNG roundtrip failed for " + img.rel_path);
+        }
+
         if (i >= args.warmup) {
             hkn_size_samples.push_back(hkn.size());
-            dec_samples_ms.push_back(dec_ms);
-            selected_samples.push_back(stats.natural_row_selected_count);
-            candidate_samples.push_back(stats.natural_row_candidate_count);
-            gain_samples.push_back(stats.natural_row_gain_bytes_sum);
-            loss_samples.push_back(stats.natural_row_loss_bytes_sum);
+            png_size_samples.push_back(png_enc.png_data.size());
+            hkn_enc_samples_ms.push_back(hkn_enc_ms);
+            hkn_dec_samples_ms.push_back(hkn_dec_ms);
+            png_enc_samples_ms.push_back(png_enc.encode_time_ms);
+            png_dec_samples_ms.push_back(png_dec.decode_time_ms);
+            hkn_enc_rgb_to_ycocg_samples_ms.push_back(ns_to_ms(enc_stats.perf_encode_rgb_to_ycocg_ns));
+            hkn_enc_profile_samples_ms.push_back(ns_to_ms(enc_stats.perf_encode_profile_classify_ns));
+            hkn_enc_plane_total_samples_ms.push_back(ns_to_ms(enc_stats.perf_encode_plane_total_ns));
+            hkn_enc_plane_block_classify_samples_ms.push_back(ns_to_ms(enc_stats.perf_encode_plane_block_classify_ns));
+            hkn_enc_plane_filter_rows_samples_ms.push_back(ns_to_ms(enc_stats.perf_encode_plane_filter_rows_ns));
+            hkn_enc_plane_lo_stream_samples_ms.push_back(ns_to_ms(enc_stats.perf_encode_plane_lo_stream_ns));
+            hkn_enc_plane_hi_stream_samples_ms.push_back(ns_to_ms(enc_stats.perf_encode_plane_hi_stream_ns));
+            hkn_enc_plane_stream_wrap_samples_ms.push_back(ns_to_ms(enc_stats.perf_encode_plane_stream_wrap_ns));
+            hkn_enc_plane_route_samples_ms.push_back(ns_to_ms(enc_stats.perf_encode_plane_route_compete_ns));
+            hkn_enc_container_pack_samples_ms.push_back(ns_to_ms(enc_stats.perf_encode_container_pack_ns));
+            hkn_dec_header_samples_ms.push_back(ns_to_ms(dec_stats.decode_header_dir_ns));
+            hkn_dec_plane_total_samples_ms.push_back(ns_to_ms(dec_stats.decode_plane_total_ns));
+            hkn_dec_ycocg_to_rgb_samples_ms.push_back(ns_to_ms(dec_stats.decode_ycocg_to_rgb_ns));
+            hkn_dec_plane_try_natural_samples_ms.push_back(ns_to_ms(dec_stats.plane_try_natural_ns));
+            hkn_dec_plane_screen_wrapper_samples_ms.push_back(ns_to_ms(dec_stats.plane_screen_wrapper_ns));
+            hkn_dec_plane_block_types_samples_ms.push_back(ns_to_ms(dec_stats.plane_block_types_ns));
+            hkn_dec_plane_filter_ids_samples_ms.push_back(ns_to_ms(dec_stats.plane_filter_ids_ns));
+            hkn_dec_plane_filter_lo_samples_ms.push_back(ns_to_ms(dec_stats.plane_filter_lo_ns));
+            hkn_dec_plane_filter_hi_samples_ms.push_back(ns_to_ms(dec_stats.plane_filter_hi_ns));
+            hkn_dec_plane_reconstruct_samples_ms.push_back(ns_to_ms(dec_stats.plane_reconstruct_ns));
+            selected_samples.push_back(enc_stats.natural_row_selected_count);
+            candidate_samples.push_back(enc_stats.natural_row_candidate_count);
+            gain_samples.push_back(enc_stats.natural_row_gain_bytes_sum);
+            loss_samples.push_back(enc_stats.natural_row_loss_bytes_sum);
         }
     }
 
     row.hkn_bytes = median_value(hkn_size_samples);
-    row.dec_ms = median_value(dec_samples_ms);
+    row.png_bytes = median_value(png_size_samples);
+    row.hkn_enc_ms = median_value(hkn_enc_samples_ms);
+    row.hkn_dec_ms = median_value(hkn_dec_samples_ms);
+    row.png_enc_ms = median_value(png_enc_samples_ms);
+    row.png_dec_ms = median_value(png_dec_samples_ms);
+    row.hkn_enc_rgb_to_ycocg_ms = median_value(hkn_enc_rgb_to_ycocg_samples_ms);
+    row.hkn_enc_profile_ms = median_value(hkn_enc_profile_samples_ms);
+    row.hkn_enc_plane_total_ms = median_value(hkn_enc_plane_total_samples_ms);
+    row.hkn_enc_plane_block_classify_ms = median_value(hkn_enc_plane_block_classify_samples_ms);
+    row.hkn_enc_plane_filter_rows_ms = median_value(hkn_enc_plane_filter_rows_samples_ms);
+    row.hkn_enc_plane_lo_stream_ms = median_value(hkn_enc_plane_lo_stream_samples_ms);
+    row.hkn_enc_plane_hi_stream_ms = median_value(hkn_enc_plane_hi_stream_samples_ms);
+    row.hkn_enc_plane_stream_wrap_ms = median_value(hkn_enc_plane_stream_wrap_samples_ms);
+    row.hkn_enc_plane_route_ms = median_value(hkn_enc_plane_route_samples_ms);
+    row.hkn_enc_container_pack_ms = median_value(hkn_enc_container_pack_samples_ms);
+    row.hkn_dec_header_ms = median_value(hkn_dec_header_samples_ms);
+    row.hkn_dec_plane_total_ms = median_value(hkn_dec_plane_total_samples_ms);
+    row.hkn_dec_ycocg_to_rgb_ms = median_value(hkn_dec_ycocg_to_rgb_samples_ms);
+    row.hkn_dec_plane_try_natural_ms = median_value(hkn_dec_plane_try_natural_samples_ms);
+    row.hkn_dec_plane_screen_wrapper_ms = median_value(hkn_dec_plane_screen_wrapper_samples_ms);
+    row.hkn_dec_plane_block_types_ms = median_value(hkn_dec_plane_block_types_samples_ms);
+    row.hkn_dec_plane_filter_ids_ms = median_value(hkn_dec_plane_filter_ids_samples_ms);
+    row.hkn_dec_plane_filter_lo_ms = median_value(hkn_dec_plane_filter_lo_samples_ms);
+    row.hkn_dec_plane_filter_hi_ms = median_value(hkn_dec_plane_filter_hi_samples_ms);
+    row.hkn_dec_plane_reconstruct_ms = median_value(hkn_dec_plane_reconstruct_samples_ms);
+    row.dec_ms = row.hkn_dec_ms;
     row.natural_row_selected = median_value(selected_samples);
     row.natural_row_candidates = median_value(candidate_samples);
     row.gain_bytes = median_value(gain_samples);
@@ -307,16 +442,21 @@ int main(int argc, char** argv) {
         write_results_csv(args.out_csv, rows);
 
         std::cout << "\n=== Per-image Metrics (fixed 6) ===\n";
-        std::cout << "Image       size_bytes(HKN/PNG)    Dec(ms)  natural_row_selected   gain_bytes  loss_bytes  PNG/HKN\n";
+        std::cout << "Image       size_bytes(HKN/PNG)    Enc(ms HKN/PNG)   Dec(ms HKN/PNG)   natural_row_selected   gain_bytes  loss_bytes  PNG/HKN\n";
         for (const auto& r : rows) {
             std::ostringstream sel;
             sel << r.natural_row_selected << "/" << r.natural_row_candidates
                 << " (" << std::fixed << std::setprecision(1)
                 << r.natural_row_selected_rate << "%)";
+            std::ostringstream enc_pair;
+            enc_pair << std::fixed << std::setprecision(3) << r.hkn_enc_ms << "/" << r.png_enc_ms;
+            std::ostringstream dec_pair;
+            dec_pair << std::fixed << std::setprecision(3) << r.hkn_dec_ms << "/" << r.png_dec_ms;
             std::cout << std::left << std::setw(10) << r.image_name
                       << std::right << std::setw(12) << r.hkn_bytes << "/"
                       << std::left << std::setw(12) << r.png_bytes
-                      << std::right << std::setw(9) << std::fixed << std::setprecision(3) << r.dec_ms
+                      << std::right << std::setw(19) << enc_pair.str()
+                      << std::setw(19) << dec_pair.str()
                       << std::setw(23) << sel.str()
                       << std::setw(12) << r.gain_bytes
                       << std::setw(11) << r.loss_bytes
@@ -330,6 +470,125 @@ int main(int argc, char** argv) {
         double median_ratio = median_value(ratios);
         std::cout << "\nmedian(PNG_bytes/HKN_bytes): "
                   << std::fixed << std::setprecision(4) << median_ratio << "\n";
+
+        std::vector<double> hkn_enc, hkn_dec, png_enc, png_dec;
+        hkn_enc.reserve(rows.size());
+        hkn_dec.reserve(rows.size());
+        png_enc.reserve(rows.size());
+        png_dec.reserve(rows.size());
+        for (const auto& r : rows) {
+            hkn_enc.push_back(r.hkn_enc_ms);
+            hkn_dec.push_back(r.hkn_dec_ms);
+            png_enc.push_back(r.png_enc_ms);
+            png_dec.push_back(r.png_dec_ms);
+        }
+        double med_hkn_enc = median_value(hkn_enc);
+        double med_hkn_dec = median_value(hkn_dec);
+        double med_png_enc = median_value(png_enc);
+        double med_png_dec = median_value(png_dec);
+        std::cout << "median Enc(ms) HKN/PNG: "
+                  << std::fixed << std::setprecision(3)
+                  << med_hkn_enc << "/" << med_png_enc;
+        if (med_png_enc > 0.0) {
+            std::cout << " (HKN/PNG=" << std::setprecision(3) << (med_hkn_enc / med_png_enc) << ")";
+        }
+        std::cout << "\n";
+        std::cout << "median Dec(ms) HKN/PNG: "
+                  << std::fixed << std::setprecision(3)
+                  << med_hkn_dec << "/" << med_png_dec;
+        if (med_png_dec > 0.0) {
+            std::cout << " (HKN/PNG=" << std::setprecision(3) << (med_hkn_dec / med_png_dec) << ")";
+        }
+        std::cout << "\n";
+
+        std::vector<double> v_enc_rgb, v_enc_cls, v_enc_plane, v_enc_blk, v_enc_rows, v_enc_lo, v_enc_hi, v_enc_wrap, v_enc_route, v_enc_pack;
+        std::vector<double> v_dec_hdr, v_dec_plane, v_dec_ycocg, v_dec_nat, v_dec_screen, v_dec_bt, v_dec_fid, v_dec_lo, v_dec_hi, v_dec_recon;
+        v_enc_rgb.reserve(rows.size());
+        v_enc_cls.reserve(rows.size());
+        v_enc_plane.reserve(rows.size());
+        v_enc_blk.reserve(rows.size());
+        v_enc_rows.reserve(rows.size());
+        v_enc_lo.reserve(rows.size());
+        v_enc_hi.reserve(rows.size());
+        v_enc_wrap.reserve(rows.size());
+        v_enc_route.reserve(rows.size());
+        v_enc_pack.reserve(rows.size());
+        v_dec_hdr.reserve(rows.size());
+        v_dec_plane.reserve(rows.size());
+        v_dec_ycocg.reserve(rows.size());
+        v_dec_nat.reserve(rows.size());
+        v_dec_screen.reserve(rows.size());
+        v_dec_bt.reserve(rows.size());
+        v_dec_fid.reserve(rows.size());
+        v_dec_lo.reserve(rows.size());
+        v_dec_hi.reserve(rows.size());
+        v_dec_recon.reserve(rows.size());
+        for (const auto& r : rows) {
+            v_enc_rgb.push_back(r.hkn_enc_rgb_to_ycocg_ms);
+            v_enc_cls.push_back(r.hkn_enc_profile_ms);
+            v_enc_plane.push_back(r.hkn_enc_plane_total_ms);
+            v_enc_blk.push_back(r.hkn_enc_plane_block_classify_ms);
+            v_enc_rows.push_back(r.hkn_enc_plane_filter_rows_ms);
+            v_enc_lo.push_back(r.hkn_enc_plane_lo_stream_ms);
+            v_enc_hi.push_back(r.hkn_enc_plane_hi_stream_ms);
+            v_enc_wrap.push_back(r.hkn_enc_plane_stream_wrap_ms);
+            v_enc_route.push_back(r.hkn_enc_plane_route_ms);
+            v_enc_pack.push_back(r.hkn_enc_container_pack_ms);
+            v_dec_hdr.push_back(r.hkn_dec_header_ms);
+            v_dec_plane.push_back(r.hkn_dec_plane_total_ms);
+            v_dec_ycocg.push_back(r.hkn_dec_ycocg_to_rgb_ms);
+            v_dec_nat.push_back(r.hkn_dec_plane_try_natural_ms);
+            v_dec_screen.push_back(r.hkn_dec_plane_screen_wrapper_ms);
+            v_dec_bt.push_back(r.hkn_dec_plane_block_types_ms);
+            v_dec_fid.push_back(r.hkn_dec_plane_filter_ids_ms);
+            v_dec_lo.push_back(r.hkn_dec_plane_filter_lo_ms);
+            v_dec_hi.push_back(r.hkn_dec_plane_filter_hi_ms);
+            v_dec_recon.push_back(r.hkn_dec_plane_reconstruct_ms);
+        }
+        const double med_enc_rgb = median_value(v_enc_rgb);
+        const double med_enc_cls = median_value(v_enc_cls);
+        const double med_enc_plane = median_value(v_enc_plane);
+        const double med_enc_blk = median_value(v_enc_blk);
+        const double med_enc_rows = median_value(v_enc_rows);
+        const double med_enc_lo = median_value(v_enc_lo);
+        const double med_enc_hi = median_value(v_enc_hi);
+        const double med_enc_wrap = median_value(v_enc_wrap);
+        const double med_enc_route = median_value(v_enc_route);
+        const double med_enc_pack = median_value(v_enc_pack);
+        const double med_dec_hdr = median_value(v_dec_hdr);
+        const double med_dec_plane = median_value(v_dec_plane);
+        const double med_dec_ycocg = median_value(v_dec_ycocg);
+        const double med_dec_nat = median_value(v_dec_nat);
+        const double med_dec_screen = median_value(v_dec_screen);
+        const double med_dec_bt = median_value(v_dec_bt);
+        const double med_dec_fid = median_value(v_dec_fid);
+        const double med_dec_lo = median_value(v_dec_lo);
+        const double med_dec_hi = median_value(v_dec_hi);
+        const double med_dec_recon = median_value(v_dec_recon);
+
+        std::cout << "\n=== HKN Stage Breakdown (median over fixed 6) ===\n";
+        std::cout << "Encode total(ms): " << std::fixed << std::setprecision(3) << med_hkn_enc << "\n";
+        std::cout << "  rgb_to_ycocg:      " << med_enc_rgb << "\n";
+        std::cout << "  profile_classify:  " << med_enc_cls << "\n";
+        std::cout << "  planes_total:      " << med_enc_plane << "\n";
+        std::cout << "  plane_block_class: " << med_enc_blk << "\n";
+        std::cout << "  plane_filter_rows: " << med_enc_rows << "\n";
+        std::cout << "  plane_lo_stream:   " << med_enc_lo << "\n";
+        std::cout << "  plane_hi_stream:   " << med_enc_hi << "\n";
+        std::cout << "  plane_stream_wrap: " << med_enc_wrap << "\n";
+        std::cout << "  plane_route_comp:  " << med_enc_route << "\n";
+        std::cout << "  container_pack:    " << med_enc_pack << "\n";
+        std::cout << "Decode total(ms): " << med_hkn_dec << "\n";
+        std::cout << "  header_dir:        " << med_dec_hdr << "\n";
+        std::cout << "  planes_total:      " << med_dec_plane << "\n";
+        std::cout << "  ycocg_to_rgb:      " << med_dec_ycocg << "\n";
+        std::cout << "  plane_try_natural: " << med_dec_nat << "\n";
+        std::cout << "  plane_screen_wrap: " << med_dec_screen << "\n";
+        std::cout << "  plane_block_types: " << med_dec_bt << "\n";
+        std::cout << "  plane_filter_ids:  " << med_dec_fid << "\n";
+        std::cout << "  plane_filter_lo:   " << med_dec_lo << "\n";
+        std::cout << "  plane_filter_hi:   " << med_dec_hi << "\n";
+        std::cout << "  plane_reconstruct: " << med_dec_recon << "\n";
         std::cout << "CSV saved: " << args.out_csv << "\n";
 
         if (!args.baseline_csv.empty()) {
