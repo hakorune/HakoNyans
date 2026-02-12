@@ -519,9 +519,8 @@ public:
         };
 
         std::vector<uint8_t> tile_y, tile_co, tile_cg;
-        const bool use_parallel_planes = thread_budget::can_spawn(3);
-
-        if (use_parallel_planes) {
+        auto plane_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(3);
+        if (plane_tokens.acquired()) {
             auto fy = std::async(std::launch::async, [&]() {
                 thread_budget::ScopedParallelRegion guard;
                 return run_plane_task(y_plane.data());

@@ -168,8 +168,11 @@ inline std::vector<uint8_t> decode_filter_lo_stream(
                 }
 
                 const unsigned int hw_threads = thread_budget::max_threads();
-                const bool allow_parallel_ctx =
-                    (hw_threads >= 6 && raw_count >= 8192 && thread_budget::can_spawn(6));
+                thread_budget::ScopedThreadTokens ctx_parallel_tokens;
+                if (hw_threads >= 6 && raw_count >= 8192) {
+                    ctx_parallel_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(6);
+                }
+                const bool allow_parallel_ctx = ctx_parallel_tokens.acquired();
                 if (allow_parallel_ctx) {
                     std::vector<std::future<std::vector<uint8_t>>> futs(6);
                     std::vector<bool> launched(6, false);

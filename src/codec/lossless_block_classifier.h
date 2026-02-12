@@ -292,10 +292,16 @@ inline ClassificationResult classify_blocks(
 
     std::vector<BlockEval> evals((size_t)nb);
     const unsigned int hw_threads = thread_budget::max_threads();
-    const bool use_parallel_eval = (hw_threads >= 2 && nb >= 256 && thread_budget::can_spawn(2));
-    if (use_parallel_eval) {
-        int task_count = std::min<int>((int)hw_threads, std::max(1, nb / 64));
-        task_count = std::max(1, task_count);
+    int task_count = std::min<int>((int)hw_threads, std::max(1, nb / 64));
+    task_count = std::max(1, task_count);
+    thread_budget::ScopedThreadTokens eval_tokens;
+    if (nb >= 256 && task_count >= 2) {
+        eval_tokens = thread_budget::ScopedThreadTokens::try_acquire_up_to(
+            (unsigned int)task_count, 2
+        );
+    }
+    if (eval_tokens.acquired()) {
+        task_count = (int)eval_tokens.count();
         int chunk = (nb + task_count - 1) / task_count;
         std::vector<std::future<void>> futs;
         futs.reserve((size_t)task_count);

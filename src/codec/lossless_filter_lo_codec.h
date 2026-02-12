@@ -30,8 +30,11 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
     if (lo_bytes.empty()) return {};
 
     const unsigned int hw_threads = thread_budget::max_threads();
-    const bool allow_parallel_base =
-        (hw_threads >= 4 && lo_bytes.size() >= 4096 && thread_budget::can_spawn(2));
+    thread_budget::ScopedThreadTokens base_parallel_tokens;
+    if (hw_threads >= 4 && lo_bytes.size() >= 4096) {
+        base_parallel_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(2);
+    }
+    const bool allow_parallel_base = base_parallel_tokens.acquired();
 
     std::vector<uint8_t> lo_legacy;
     std::vector<uint8_t> lo_lz;
@@ -235,8 +238,11 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
         int nonempty_ctx = 0;
         std::vector<std::vector<uint8_t>> ctx_streams(6);
         std::vector<uint32_t> ctx_raw_counts(6, 0);
-        const bool allow_parallel_ctx =
-            (hw_threads >= 6 && lo_bytes.size() >= 8192 && thread_budget::can_spawn(6));
+        thread_budget::ScopedThreadTokens ctx_parallel_tokens;
+        if (hw_threads >= 6 && lo_bytes.size() >= 8192) {
+            ctx_parallel_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(6);
+        }
+        const bool allow_parallel_ctx = ctx_parallel_tokens.acquired();
         if (allow_parallel_ctx) {
             std::vector<std::future<std::vector<uint8_t>>> futs(6);
             std::vector<bool> launched(6, false);

@@ -86,8 +86,12 @@ inline std::vector<uint8_t> choose_best_tile(
         screen_prefilter_valid && (pre_metrics.unique_sample >= kNaturalCompeteUniqueMin);
     const bool allow_natural_route = natural_like && natural_compete_prefilter;
     const bool try_natural_route = large_image && allow_natural_route;
+    thread_budget::ScopedThreadTokens compete_tokens;
+    if (allow_screen_route && try_natural_route) {
+        compete_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(2);
+    }
     const bool can_parallel_compete =
-        allow_screen_route && try_natural_route && thread_budget::can_spawn(2);
+        allow_screen_route && try_natural_route && compete_tokens.acquired();
 
     struct ScreenCandidateResult {
         bool attempted = false;

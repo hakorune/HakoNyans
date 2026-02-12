@@ -108,8 +108,8 @@ public:
             } else y_ref = yp_v;
         }
         std::vector<uint8_t> cb_raw, cr_raw;
-        const bool use_parallel_chroma = thread_budget::can_spawn(2);
-        if (use_parallel_chroma) {
+        auto chroma_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(2);
+        if (chroma_tokens.acquired()) {
             auto f1 = std::async(std::launch::async, [=, &hkn, &y_ref]() {
                 thread_budget::ScopedParallelRegion guard;
                 return decode_plane(&hkn[t1->offset], t1->size, pcw, pch, deq_cb, is_cfl ? &y_ref : nullptr, hdr.version);
@@ -136,7 +136,9 @@ public:
         std::vector<uint8_t> rgb(w * h * 3);
         unsigned int nt = thread_budget::max_threads(8);
         nt = std::max(1u, std::min<unsigned int>(nt, (unsigned int)h));
-        if (nt >= 2 && thread_budget::can_spawn(2)) {
+        auto ycbcr_to_rgb_tokens = thread_budget::ScopedThreadTokens::try_acquire_up_to(nt, 2);
+        if (ycbcr_to_rgb_tokens.acquired()) {
+            nt = ycbcr_to_rgb_tokens.count();
             std::vector<std::future<void>> futs;
             int rpt = h / (int)nt;
             for (unsigned int t = 0; t < nt; t++) {
@@ -312,7 +314,8 @@ public:
                 );
             }
 
-            if (thread_budget::can_spawn(3)) {
+            auto band_decode_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(3);
+            if (band_decode_tokens.acquired()) {
                 auto f_low = std::async(std::launch::async, [=, &sz, &band_pi]() {
                     thread_budget::ScopedParallelRegion guard;
                     if (has_band_pindex && band_pi.has_low) {
@@ -444,8 +447,14 @@ public:
         // to ensure Intra-Block Copy vectors point to already-decoded pixels.
         unsigned int nt = thread_budget::max_threads(8);
         nt = std::max(1u, std::min<unsigned int>(nt, (unsigned int)nb));
-        if (copy_size > 0 || !thread_budget::can_spawn(2)) {
+        thread_budget::ScopedThreadTokens block_decode_tokens;
+        if (copy_size == 0 && nt >= 2) {
+            block_decode_tokens = thread_budget::ScopedThreadTokens::try_acquire_up_to(nt, 2);
+        }
+        if (copy_size > 0 || !block_decode_tokens.acquired()) {
             nt = 1;
+        } else {
+            nt = block_decode_tokens.count();
         }
 
         auto decode_block_range = [&](int sb, int eb) {
@@ -635,7 +644,9 @@ public:
         uint32_t tc; std::memcpy(&tc, s+4+cs, 4);
         uint32_t rs; std::memcpy(&rs, s+8+cs, 4);
         unsigned int nt = thread_budget::max_threads(8);
-        if (!thread_budget::can_spawn(2)) nt = 1;
+        auto stream_decode_tokens = thread_budget::ScopedThreadTokens::try_acquire_up_to(nt, 2);
+        if (stream_decode_tokens.acquired()) nt = stream_decode_tokens.count();
+        else nt = 1;
         auto syms = ParallelDecoder::decode(std::span<const uint8_t>(s+12+cs, rs), pi, cdf, nt);
         std::vector<Token> t; t.reserve(tc);
         for (int x : syms) t.emplace_back((TokenType)x, 0, 0);
@@ -723,9 +734,9 @@ public:
 
         std::vector<int16_t> y_plane, co_plane, cg_plane;
         const unsigned int hw_threads = thread_budget::max_threads();
-        const bool use_parallel_planes = thread_budget::can_spawn(3);
+        auto plane_decode_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(3);
 
-        if (use_parallel_planes) {
+        if (plane_decode_tokens.acquired()) {
             auto fy = std::async(std::launch::async, [&]() {
                 thread_budget::ScopedParallelRegion guard;
                 return run_plane_task(t0->offset, t0->size);
@@ -777,9 +788,13 @@ public:
         // YCoCg-R -> RGB
         const auto t_rgb0 = Clock::now();
         std::vector<uint8_t> rgb(w * h * 3);
-        const unsigned int rgb_threads =
+        unsigned int rgb_threads =
             std::max(1u, std::min<unsigned int>(hw_threads, (unsigned int)h));
-        if (rgb_threads >= 2 && thread_budget::can_spawn(2)) {
+        auto ycocg_to_rgb_tokens = thread_budget::ScopedThreadTokens::try_acquire_up_to(
+            rgb_threads, 2
+        );
+        if (ycocg_to_rgb_tokens.acquired()) {
+            rgb_threads = ycocg_to_rgb_tokens.count();
             std::vector<std::future<void>> futs;
             futs.reserve(rgb_threads);
             const int rows_per_task = h / (int)rgb_threads;
