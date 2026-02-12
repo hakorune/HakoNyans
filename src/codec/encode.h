@@ -503,11 +503,21 @@ public:
             uint64_t elapsed_ns = 0;
         };
 
-        auto run_plane_task = [width, height, profile](const int16_t* plane) -> PlaneEncodeTaskResult {
+        bool allow_chroma_route_compete = route_compete_chroma_enabled();
+        if (profile == LosslessProfile::PHOTO && !route_compete_photo_chroma_enabled()) {
+            allow_chroma_route_compete = false;
+        }
+        const bool conservative_chroma_route_policy =
+            parse_bool_env("HKN_ROUTE_COMPETE_CHROMA_CONSERVATIVE", false);
+        auto run_plane_task = [width, height, profile](
+            const int16_t* plane, bool enable_route_compete, bool conservative_chroma_policy
+        ) -> PlaneEncodeTaskResult {
             using TaskClock = std::chrono::steady_clock;
             GrayscaleEncoder::reset_lossless_mode_debug_stats();
             const auto t0 = TaskClock::now();
-            auto tile = GrayscaleEncoder::encode_plane_lossless(plane, width, height, profile);
+            auto tile = GrayscaleEncoder::encode_plane_lossless(
+                plane, width, height, profile, enable_route_compete, conservative_chroma_policy
+            );
             const auto t1 = TaskClock::now();
 
             PlaneEncodeTaskResult out;
@@ -519,24 +529,39 @@ public:
         };
 
         std::vector<uint8_t> tile_y, tile_co, tile_cg;
-        auto plane_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(3);
+        auto plane_tokens = thread_budget::ScopedThreadTokens::try_acquire_up_to(3, 2);
         if (plane_tokens.acquired()) {
             auto fy = std::async(std::launch::async, [&]() {
                 thread_budget::ScopedParallelRegion guard;
-                return run_plane_task(y_plane.data());
+                return run_plane_task(y_plane.data(), true, false);
             });
             auto fco = std::async(std::launch::async, [&]() {
                 thread_budget::ScopedParallelRegion guard;
-                return run_plane_task(co_plane.data());
-            });
-            auto fcg = std::async(std::launch::async, [&]() {
-                thread_budget::ScopedParallelRegion guard;
-                return run_plane_task(cg_plane.data());
+                return run_plane_task(
+                    co_plane.data(), allow_chroma_route_compete, conservative_chroma_route_policy
+                );
             });
 
-            auto y_res = fy.get();
-            auto co_res = fco.get();
-            auto cg_res = fcg.get();
+            PlaneEncodeTaskResult y_res;
+            PlaneEncodeTaskResult co_res;
+            PlaneEncodeTaskResult cg_res;
+            if (plane_tokens.count() >= 3) {
+                auto fcg = std::async(std::launch::async, [&]() {
+                    thread_budget::ScopedParallelRegion guard;
+                    return run_plane_task(
+                        cg_plane.data(), allow_chroma_route_compete, conservative_chroma_route_policy
+                    );
+                });
+                y_res = fy.get();
+                co_res = fco.get();
+                cg_res = fcg.get();
+            } else {
+                cg_res = run_plane_task(
+                    cg_plane.data(), allow_chroma_route_compete, conservative_chroma_route_policy
+                );
+                y_res = fy.get();
+                co_res = fco.get();
+            }
 
             tile_y = std::move(y_res.tile);
             tile_co = std::move(co_res.tile);
@@ -551,19 +576,25 @@ public:
             tl_lossless_mode_debug_stats_.perf_encode_plane_cg_ns += cg_res.elapsed_ns;
         } else {
             const auto t_plane_y0 = Clock::now();
-            tile_y = encode_plane_lossless(y_plane.data(), width, height, profile);
+            tile_y = encode_plane_lossless(y_plane.data(), width, height, profile, true, false);
             const auto t_plane_y1 = Clock::now();
             tl_lossless_mode_debug_stats_.perf_encode_plane_y_ns +=
                 (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_plane_y1 - t_plane_y0).count();
 
             const auto t_plane_co0 = Clock::now();
-            tile_co = encode_plane_lossless(co_plane.data(), width, height, profile);
+            tile_co = encode_plane_lossless(
+                co_plane.data(), width, height, profile,
+                allow_chroma_route_compete, conservative_chroma_route_policy
+            );
             const auto t_plane_co1 = Clock::now();
             tl_lossless_mode_debug_stats_.perf_encode_plane_co_ns +=
                 (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_plane_co1 - t_plane_co0).count();
 
             const auto t_plane_cg0 = Clock::now();
-            tile_cg = encode_plane_lossless(cg_plane.data(), width, height, profile);
+            tile_cg = encode_plane_lossless(
+                cg_plane.data(), width, height, profile,
+                allow_chroma_route_compete, conservative_chroma_route_policy
+            );
             const auto t_plane_cg1 = Clock::now();
             tl_lossless_mode_debug_stats_.perf_encode_plane_cg_ns +=
                 (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_plane_cg1 - t_plane_cg0).count();
@@ -649,6 +680,8 @@ public:
         static constexpr uint16_t AVG_RUN_MAX_X100 = 460;
         static constexpr uint16_t MAD_MIN_X100 = 20;
         static constexpr uint16_t ENTROPY_MIN_X100 = 5;
+        static constexpr uint16_t CHROMA_ROUTE_MAD_MAX_X100 = 80;
+        static constexpr uint16_t CHROMA_ROUTE_AVG_RUN_MIN_X100 = 320;
     };
 
     struct NaturalThresholdRuntime {
@@ -669,6 +702,50 @@ public:
         if (errno != 0 || end == raw || *end != '\0') return fallback;
         if (v < (long)min_v || v > (long)max_v) return fallback;
         return (uint16_t)v;
+    }
+
+    static bool parse_bool_env(const char* key, bool fallback) {
+        const char* raw = std::getenv(key);
+        if (!raw || raw[0] == '\0') return fallback;
+        if (std::strcmp(raw, "1") == 0 || std::strcmp(raw, "true") == 0 ||
+            std::strcmp(raw, "TRUE") == 0 || std::strcmp(raw, "on") == 0 ||
+            std::strcmp(raw, "ON") == 0) {
+            return true;
+        }
+        if (std::strcmp(raw, "0") == 0 || std::strcmp(raw, "false") == 0 ||
+            std::strcmp(raw, "FALSE") == 0 || std::strcmp(raw, "off") == 0 ||
+            std::strcmp(raw, "OFF") == 0) {
+            return false;
+        }
+        return fallback;
+    }
+
+    static bool route_compete_chroma_enabled() {
+        static const bool kEnabled = parse_bool_env("HKN_ROUTE_COMPETE_CHROMA", true);
+        return kEnabled;
+    }
+
+    static bool route_compete_photo_chroma_enabled() {
+        static const bool kEnabled = parse_bool_env("HKN_ROUTE_COMPETE_PHOTO_CHROMA", false);
+        return kEnabled;
+    }
+
+    static uint16_t route_chroma_mad_max_x100() {
+        static const uint16_t kV = parse_natural_threshold_env(
+            "HKN_ROUTE_CHROMA_MAD_MAX",
+            NaturalThresholds::CHROMA_ROUTE_MAD_MAX_X100,
+            0, 65535
+        );
+        return kV;
+    }
+
+    static uint16_t route_chroma_avg_run_min_x100() {
+        static const uint16_t kV = parse_natural_threshold_env(
+            "HKN_ROUTE_CHROMA_AVG_RUN_MIN",
+            NaturalThresholds::CHROMA_ROUTE_AVG_RUN_MIN_X100,
+            0, 65535
+        );
+        return kV;
     }
 
     static const NaturalThresholdRuntime& natural_thresholds_runtime() {
@@ -773,11 +850,16 @@ public:
         const int16_t* data, uint32_t width, uint32_t height, bool use_photo_mode_bias
     ) {
         return encode_plane_lossless(data, width, height,
-            use_photo_mode_bias ? LosslessProfile::PHOTO : LosslessProfile::UI);
+            use_photo_mode_bias ? LosslessProfile::PHOTO : LosslessProfile::UI,
+            true,
+            false);
     }
 
     static std::vector<uint8_t> encode_plane_lossless(
-        const int16_t* data, uint32_t width, uint32_t height, LosslessProfile profile = LosslessProfile::UI
+        const int16_t* data, uint32_t width, uint32_t height,
+        LosslessProfile profile = LosslessProfile::UI,
+        bool enable_route_competition = true,
+        bool conservative_chroma_route_policy = false
     ) {
         using Clock = std::chrono::steady_clock;
         const auto t_plane_total0 = Clock::now();
@@ -982,6 +1064,25 @@ public:
         const auto t_pack1 = Clock::now();
         tl_lossless_mode_debug_stats_.perf_encode_plane_pack_ns +=
             (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_pack1 - t_pack0).count();
+        if (!enable_route_competition) {
+            tl_lossless_mode_debug_stats_.route_compete_policy_skip_count++;
+            tl_lossless_mode_debug_stats_.perf_encode_plane_total_ns +=
+                (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_pack1 - t_plane_total0).count();
+            return tile_data;
+        }
+        if (conservative_chroma_route_policy) {
+            const auto m = analyze_screen_indexed_preflight(data, width, height);
+            const bool allow_chroma_route =
+                (m.mean_abs_diff_x100 <= route_chroma_mad_max_x100()) &&
+                (m.avg_run_x100 >= route_chroma_avg_run_min_x100());
+            if (!allow_chroma_route) {
+                tl_lossless_mode_debug_stats_.route_compete_policy_skip_count++;
+                tl_lossless_mode_debug_stats_.perf_encode_plane_total_ns +=
+                    (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_pack1 - t_plane_total0).count();
+                return tile_data;
+            }
+        }
+
         const auto t_route0 = Clock::now();
         auto best_tile = lossless_route_competition::choose_best_tile(
             tile_data,

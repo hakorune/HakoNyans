@@ -188,3 +188,57 @@ Interpretation:
 - Size/ratio invariants are preserved.
 - Decode gain is not yet stable against run-to-run noise; this is **not promoted as a clear speed win**.
 - Next work should move to larger hotspots (`plane_filter_lo`, route-comp encode cost), with stronger per-stage counters before further decode micro-tuning.
+
+## 2026-02-13: Route Policy + Partial Plane Parallelism
+
+### Objective
+- Reduce wasted route-competition work ("low-effect boxes") without changing format.
+- Improve robustness of plane-level parallelism under constrained worker tokens.
+
+### Implementation
+- `src/codec/encode.h`
+  - Added route policy env parsing:
+    - `HKN_ROUTE_COMPETE_CHROMA` (default: `true`)
+    - `HKN_ROUTE_COMPETE_PHOTO_CHROMA` (default: `false`)
+    - `HKN_ROUTE_COMPETE_CHROMA_CONSERVATIVE` (default: `false`, experimental)
+  - Added conservative chroma route gate knobs (env-overridable):
+    - `HKN_ROUTE_CHROMA_MAD_MAX` (default: `80`)
+    - `HKN_ROUTE_CHROMA_AVG_RUN_MIN` (default: `320`)
+  - Extended `encode_plane_lossless(...)` with route-policy controls:
+    - `enable_route_competition`
+    - `conservative_chroma_route_policy`
+  - Added `route_compete_policy_skip_count` accounting when policy skips route-comp.
+  - Plane-parallel execution now uses `try_acquire_up_to(3, 2)`:
+    - 3 tokens: Y/Co/Cg all async
+    - 2 tokens: Y+Co async, Cg on caller thread
+    - else: sequential fallback
+- `src/codec/lossless_mode_debug_stats.h`
+  - Added `route_compete_policy_skip_count`.
+- `bench/bench_bit_accounting.cpp`
+  - Added `Route policy diagnostics` section to print skip counts.
+
+### Validation
+- Build: `cmake --build . -j` (in `build/`)
+- Tests: `ctest --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- `bench_results/phase9w_speed_stage_profile_after_route_policy_parallel_partial.csv`
+- `bench_results/phase9w_speed_stage_profile_after_route_policy_parallel_partial_rerun.csv`
+- `bench_results/phase9w_speed_stage_profile_after_route_policy_parallel_partial_rerun2.csv`
+
+### Result Summary (vs route-dedupe rerun2)
+- Reference:
+  - `bench_results/phase9w_speed_stage_profile_after_route_dedupe_rerun2.csv`
+- New runs:
+  - `bench_results/phase9w_speed_stage_profile_after_route_policy_parallel_partial*.csv`
+
+Observed:
+- Compression invariants held in all runs:
+  - `median PNG/HKN = 0.2610`
+  - `total HKN bytes = 2,977,544`
+- `plane_route_comp` median stage time dropped in two runs (`~90ms` vs `130.674ms` baseline), but wall-clock medians showed large host-side variance (`Enc 134.6ms` to `188.1ms`).
+
+### Decision
+- Keep implementation for further controlled measurement (policy hooks + parallel fallback logic are correct and tested).
+- Do not claim a promoted speed win until reruns under tighter noise control.

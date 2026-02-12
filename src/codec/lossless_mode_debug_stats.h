@@ -195,6 +195,7 @@ struct LosslessModeDebugStats {
     uint64_t natural_prefilter_avg_run_x100_sum;
     uint64_t natural_prefilter_mad_x100_sum;
     uint64_t natural_prefilter_entropy_x100_sum;
+    uint64_t route_compete_policy_skip_count;
 
     uint64_t palette_reorder_trials;
     uint64_t palette_reorder_adopted;

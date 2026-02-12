@@ -779,6 +779,10 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
                           << avg_mad << " / " << avg_entropy << "\n";
             }
         }
+        if (s.route_compete_policy_skip_count > 0) {
+            std::cout << "\n  Route policy diagnostics\n";
+            std::cout << "  route_policy_skipped   " << s.route_compete_policy_skip_count << "\n";
+        }
 
         std::cout << "\n  Lossless profile diagnostics\n";
         std::cout << "  profile_ui_tiles       " << s.profile_ui_tiles << "\n";
