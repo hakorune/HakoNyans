@@ -645,6 +645,7 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
             print_reject("cost_gate", s.screen_rejected_cost_gate, rejected_total);
             if (s.screen_rejected_pre_gate > 0) {
                 std::cout << "    pre_small_tile       " << s.screen_rejected_small_tile << "\n";
+                std::cout << "    pre_texture_gate     " << s.screen_rejected_prefilter_texture << "\n";
                 std::cout << "    pre_build_fail       " << s.screen_rejected_build_fail << "\n";
                 std::cout << "    pre_palette_limit    " << s.screen_rejected_palette_limit << "\n";
                 std::cout << "    pre_bits_limit       " << s.screen_rejected_bits_limit << "\n";
@@ -675,6 +676,15 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
                                 (double)s.screen_compete_legacy_bytes_sum;
                  std::cout << "  compete_ratio(screen/legacy) " << std::fixed << std::setprecision(4)
                            << ratio << "\n";
+            }
+            if (s.screen_prefilter_eval_count > 0) {
+                double avg_unique = (double)s.screen_prefilter_unique_sum /
+                                    (double)s.screen_prefilter_eval_count;
+                double avg_run = ((double)s.screen_prefilter_avg_run_x100_sum /
+                                  (double)s.screen_prefilter_eval_count) / 100.0;
+                std::cout << "  prefilter_avg(unique/run) "
+                          << std::fixed << std::setprecision(1)
+                          << avg_unique << " / " << avg_run << "\n";
             }
             if (s.screen_rejected_cost_gate > 0) {
                  print_gain("total_avoided_bloat", s.screen_loss_bytes_sum);

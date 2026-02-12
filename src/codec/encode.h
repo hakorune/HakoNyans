@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <unordered_set>
 
 namespace hakonyans {
 
@@ -200,6 +201,7 @@ public:
         uint64_t screen_rejected_pre_gate;
         uint64_t screen_rejected_cost_gate;
         uint64_t screen_rejected_small_tile;
+        uint64_t screen_rejected_prefilter_texture;
         uint64_t screen_rejected_build_fail;
         uint64_t screen_rejected_palette_limit;
         uint64_t screen_rejected_bits_limit;
@@ -212,6 +214,9 @@ public:
         uint64_t screen_loss_bytes_sum;
         uint64_t screen_compete_legacy_bytes_sum;
         uint64_t screen_compete_screen_bytes_sum;
+        uint64_t screen_prefilter_eval_count;
+        uint64_t screen_prefilter_unique_sum;
+        uint64_t screen_prefilter_avg_run_x100_sum;
 
         // Phase 9s-4: Palette Reorder Telemetry
         uint64_t palette_reorder_trials;
@@ -374,6 +379,7 @@ public:
             screen_rejected_pre_gate = 0;
             screen_rejected_cost_gate = 0;
             screen_rejected_small_tile = 0;
+            screen_rejected_prefilter_texture = 0;
             screen_rejected_build_fail = 0;
             screen_rejected_palette_limit = 0;
             screen_rejected_bits_limit = 0;
@@ -386,6 +392,9 @@ public:
             screen_loss_bytes_sum = 0;
             screen_compete_legacy_bytes_sum = 0;
             screen_compete_screen_bytes_sum = 0;
+            screen_prefilter_eval_count = 0;
+            screen_prefilter_unique_sum = 0;
+            screen_prefilter_avg_run_x100_sum = 0;
             palette_reorder_trials = 0;
             palette_reorder_adopted = 0;
             palette_reorder_gain_bytes_sum = 0;
@@ -1561,6 +1570,62 @@ public:
         }
         if (acc_bits > 0) out.push_back((uint8_t)(acc & 0xFFu));
         return out;
+    }
+
+    struct ScreenPreflightMetrics {
+        uint16_t unique_sample = 0;
+        uint16_t avg_run_x100 = 0;
+        bool likely_screen = false;
+    };
+
+    static ScreenPreflightMetrics analyze_screen_indexed_preflight(
+        const int16_t* plane, uint32_t width, uint32_t height
+    ) {
+        ScreenPreflightMetrics m;
+        if (!plane || width == 0 || height == 0) return m;
+
+        // 1) Low-cost unique-value sampling on a coarse grid.
+        const uint32_t sx = std::max<uint32_t>(1, width / 64);
+        const uint32_t sy = std::max<uint32_t>(1, height / 64);
+        std::unordered_set<int16_t> uniq;
+        uniq.reserve(128);
+        for (uint32_t y = 0; y < height; y += sy) {
+            const int16_t* row = plane + (size_t)y * width;
+            for (uint32_t x = 0; x < width; x += sx) {
+                uniq.insert(row[x]);
+                if (uniq.size() > 192) break;
+            }
+            if (uniq.size() > 192) break;
+        }
+        m.unique_sample = (uint16_t)std::min<size_t>(uniq.size(), 65535);
+
+        // 2) Horizontal run-length estimate from sampled rows.
+        uint32_t sampled_rows = std::min<uint32_t>(height, 32);
+        uint32_t row_step = std::max<uint32_t>(1, height / std::max<uint32_t>(1, sampled_rows));
+        uint64_t total_pixels = 0;
+        uint64_t total_runs = 0;
+        for (uint32_t y = 0; y < height; y += row_step) {
+            const int16_t* row = plane + (size_t)y * width;
+            if (width == 0) continue;
+            total_runs += 1;
+            total_pixels += width;
+            int16_t prev = row[0];
+            for (uint32_t x = 1; x < width; x++) {
+                int16_t v = row[x];
+                if (v != prev) {
+                    total_runs++;
+                    prev = v;
+                }
+            }
+        }
+        double avg_run = (total_runs > 0) ? ((double)total_pixels / (double)total_runs) : 0.0;
+        m.avg_run_x100 = (uint16_t)std::clamp<int>((int)std::lround(avg_run * 100.0), 0, 65535);
+
+        // 3) Decision (screen-like content tends to have fewer unique values and longer runs).
+        if (m.unique_sample <= 48) m.likely_screen = true;
+        else if (m.unique_sample <= 96 && m.avg_run_x100 >= 280) m.likely_screen = true;
+        else m.likely_screen = false;
+        return m;
     }
 
     // Screen-profile v1 candidate:
@@ -2819,6 +2884,17 @@ public:
             tl_lossless_mode_debug_stats_.screen_rejected_pre_gate++;
             tl_lossless_mode_debug_stats_.screen_rejected_small_tile++;
         } else {
+            // Low-cost texture preflight to avoid wasted candidate generation on Natural/Photo tiles.
+            const auto pre = analyze_screen_indexed_preflight(data, width, height);
+            tl_lossless_mode_debug_stats_.screen_prefilter_eval_count++;
+            tl_lossless_mode_debug_stats_.screen_prefilter_unique_sum += pre.unique_sample;
+            tl_lossless_mode_debug_stats_.screen_prefilter_avg_run_x100_sum += pre.avg_run_x100;
+            if (!pre.likely_screen) {
+                tl_lossless_mode_debug_stats_.screen_rejected_pre_gate++;
+                tl_lossless_mode_debug_stats_.screen_rejected_prefilter_texture++;
+                return tile_data;
+            }
+
             auto screen_tile = encode_plane_lossless_screen_indexed_tile(data, width, height);
             
             if (screen_tile.empty() || screen_tile.size() < 14) {

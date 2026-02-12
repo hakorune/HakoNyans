@@ -982,6 +982,14 @@ MEDの効果（Photo/Natural）を維持しつつ、UI/Anime側の将来回帰�
      - `screen` 競合の内訳テレメトリを追加（small/build/palette/bits/compete ratio）
    - 目的:
      - Natural での「候補未評価」を減らし、タイル単位で非悪化フォールバックを保証
+27. [x] Phase 9u-4: screen-indexed 事前テクスチャ判定（無駄試行削減）✅ (2026-02-12)
+   - 実装:
+     - `analyze_screen_indexed_preflight()` を追加（`unique_sample` + `avg_run`）
+     - `screen-indexed` 生成前に prefilter 判定を実施
+     - `screen_rejected_prefilter_texture` など診断カウンタを追加
+     - `bench_bit_accounting` に prefilter 指標を表示
+   - 目的:
+     - Natural/Photoでの不要な `screen-indexed` 試行を減らし、探索コストを削減
 
 **Phase 9t 所見**:
 - `Palette` が 8bit値 (`[-128,127]`) 制約のため、YCoCg chroma 平面で palette rescue がほぼ適用不能。
