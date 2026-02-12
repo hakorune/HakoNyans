@@ -19,7 +19,7 @@ struct GlobalChainLzParams {
     int window_size = 65535;
     int chain_depth = 32;
     int min_dist_len3 = 128;
-    int bias_permille = 1000;
+    int bias_permille = 990;
 };
 
 inline int parse_lz_env_int(const char* key, int fallback, int min_v, int max_v) {
