@@ -1235,21 +1235,33 @@ static void test_profile_classifier_ui() {
 
 static void test_profile_classifier_anime() {
     TEST("test_profile_classifier_anime");
-    // Create a pattern with LOW copy hit rate but LOW gradient/bins
-    std::vector<int16_t> plane(64 * 64);
-    int colors[4] = {40, 42, 44, 46}; // Close colors -> low gradient
+    // Create a pattern with moderate copy hit rate (0.75) and 8 distinct color bins
+    const int W = 128, H = 128;
+    std::vector<int16_t> plane(W * H);
+    std::mt19937 rng(42);
     
-    // Use pixel coordinate hash to avoid periodicity
-    for (int y = 0; y < 64; y++) {
-        for (int x = 0; x < 64; x++) {
-            int h = (x * 374761393) ^ (y * 668265263);
-            h = (h ^ (h >> 13)) * 1274126177;
-            int c_idx = (h & 0x7FFFFFFF) % 4;
-            plane[y * 64 + x] = (int16_t)colors[c_idx];
+    // 8 colors spread across 8 bins (0, 16, 32, ... 112)
+    int colors[8];
+    for (int i = 0; i < 8; i++) colors[i] = i * 16;
+    
+    for (int by = 0; by < H/8; by++) {
+        for (int bx = 0; bx < W/8; bx++) {
+            int cur_x = bx * 8;
+            int cur_y = by * 8;
+            // Target 75% copy rate
+            bool do_copy = (rng() % 100 < 75);
+            if (do_copy && bx > 0) {
+                 for (int y=0; y<8; y++) for (int x=0; x<8; x++)
+                     plane[(cur_y+y)*W + (cur_x+x)] = plane[(cur_y+y)*W + (cur_x-8+x)];
+            } else {
+                 int c = colors[rng() % 8];
+                 for (int y=0; y<8; y++) for (int x=0; x<8; x++)
+                     plane[(cur_y+y)*W + (cur_x+x)] = (int16_t)c;
+            }
         }
     }
     
-    auto profile = hakonyans::GrayscaleEncoder::classify_lossless_profile(plane.data(), 64, 64);
+    auto profile = hakonyans::GrayscaleEncoder::classify_lossless_profile(plane.data(), W, H);
     if (profile != hakonyans::GrayscaleEncoder::LosslessProfile::ANIME) {
          FAIL("Expected ANIME profile"); 
          std::cout << "Got: " << (int)profile << std::endl;
@@ -1283,20 +1295,30 @@ static void test_profile_classifier_photo() {
 static void test_profile_anime_roundtrip() {
     TEST("test_profile_anime_roundtrip");
     // Construct the "Anime-like" image from classifier test
-    std::vector<uint8_t> pixels(64 * 64);
-    int colors[4] = {40, 42, 44, 46};
+    const int W = 128, H = 128;
+    std::vector<uint8_t> pixels(W * H);
+    int colors[8];
+    for (int i = 0; i < 8; i++) colors[i] = i * 16;
+    std::mt19937 rng(42);
     
-    for (int y = 0; y < 64; y++) {
-        for (int x = 0; x < 64; x++) {
-            int h = (x * 374761393) ^ (y * 668265263);
-            h = (h ^ (h >> 13)) * 1274126177;
-            int c_idx = (h & 0x7FFFFFFF) % 4;
-            pixels[y * 64 + x] = (uint8_t)colors[c_idx];
+    for (int by = 0; by < H/8; by++) {
+        for (int bx = 0; bx < W/8; bx++) {
+            int cur_x = bx * 8;
+            int cur_y = by * 8;
+            bool do_copy = (rng() % 100 < 75);
+            if (do_copy && bx > 0) {
+                 for (int y=0; y<8; y++) for (int x=0; x<8; x++)
+                     pixels[(cur_y+y)*W + (cur_x+x)] = pixels[(cur_y+y)*W + (cur_x-8+x)];
+            } else {
+                 int c = colors[rng() % 8];
+                 for (int y=0; y<8; y++) for (int x=0; x<8; x++)
+                     pixels[(cur_y+y)*W + (cur_x+x)] = (uint8_t)c;
+            }
         }
     }
     
     hakonyans::GrayscaleEncoder::reset_lossless_mode_debug_stats();
-    auto encoded = hakonyans::GrayscaleEncoder::encode_lossless(pixels.data(), 64, 64);
+    auto encoded = hakonyans::GrayscaleEncoder::encode_lossless(pixels.data(), W, H);
     auto stats = hakonyans::GrayscaleEncoder::get_lossless_mode_debug_stats();
     
     if (stats.profile_anime_tiles == 0) {
@@ -1306,20 +1328,92 @@ static void test_profile_anime_roundtrip() {
     
     // Decode and verify
     hakonyans::FileHeader hdr = hakonyans::FileHeader::read(encoded.data());
-    if (hdr.width != 64 || hdr.height != 64) FAIL("Dim mismatch");
+    if (hdr.width != W || hdr.height != H) {
+        FAIL("Dim mismatch");
+        return;
+    }
     
     auto decoded = hakonyans::GrayscaleDecoder::decode(encoded);
-    if (decoded.empty()) FAIL("Decode failed");
+    if (decoded.empty()) {
+        FAIL("Decode failed");
+        return;
+    }
     
     const uint8_t* decoded_ptr = decoded.data();
     
     for (size_t i = 0; i < pixels.size(); i++) {
         if (decoded_ptr[i] != pixels[i]) {
             FAIL("Pixel mismatch");
-            break;
+            return;
         }
     }
     PASS();
+}
+
+static void test_profile_classifier_anime_not_ui() {
+    TEST("test_profile_classifier_anime_not_ui (92% copy but high gradient)");
+    
+    // Pattern: 92% copy hit rate (UI-like), but mean_abs_diff=25 (Anime-like)
+    // New score-based classifier should prefer ANIME over UI in this case.
+    const int W = 128, H = 128;
+    std::vector<int16_t> plane(W * H);
+    std::mt19937 rng(1337);
+    
+    // 92% copy hit rate means 13/14 blocks should be exact copies.
+    for (int by = 0; by < H/8; by++) {
+        for (int bx = 0; bx < W/8; bx++) {
+            int cur_x = bx * 8;
+            int cur_y = by * 8;
+            bool do_copy = (rng() % 100 < 92);
+            if (do_copy && bx > 0) {
+                 // Copy from left block
+                 for (int y=0; y<8; y++) {
+                     for (int x=0; x<8; x++) {
+                         plane[(cur_y+y)*W + (cur_x+x)] = plane[(cur_y+y)*W + (cur_x-8+x)];
+                     }
+                 }
+            } else {
+                 // New block with mean_abs_diff ~ 25
+                 // Use a sawtooth pattern
+                 for (int y=0; y<8; y++) {
+                     for (int x=0; x<8; x++) {
+                         plane[(cur_y+y)*W + (cur_x+x)] = (int16_t)((x + y) * 12);
+                     }
+                 }
+            }
+        }
+    }
+    
+    auto profile = GrayscaleEncoder::classify_lossless_profile(plane.data(), W, H);
+    if (profile == GrayscaleEncoder::LosslessProfile::ANIME) {
+        PASS();
+    } else {
+        FAIL("Expected ANIME but got " + std::to_string((int)profile));
+    }
+}
+
+static void test_anime_palette_bias_path() {
+    TEST("test_anime_palette_bias_path");
+    
+    // 1. Create Anime image
+    const int W = 64, H = 64;
+    std::vector<uint8_t> pixels(W * H);
+    // 4 colors (Palette 4), transitions ~ 40
+    for (int y=0; y<H; y++) {
+        for (int x=0; x<W; x++) {
+            pixels[y*W+x] = ((x/4 + y/4) % 4) * 50;
+        }
+    }
+    
+    GrayscaleEncoder::reset_lossless_mode_debug_stats();
+    auto hkn = GrayscaleEncoder::encode_lossless(pixels.data(), W, H);
+    auto stats = GrayscaleEncoder::get_lossless_mode_debug_stats();
+    
+    if (stats.anime_palette_bonus_applied > 0) {
+        PASS();
+    } else {
+        FAIL("anime_palette_bonus_applied is 0");
+    }
 }
 
 int main() {
@@ -1358,7 +1452,9 @@ int main() {
     test_profile_classifier_ui();
     test_profile_classifier_anime();
     test_profile_classifier_photo();
+    test_profile_classifier_anime_not_ui();
     test_profile_anime_roundtrip();
+    test_anime_palette_bias_path();
 
     std::cout << "\n=== Results: " << tests_passed << "/" << tests_run << " passed ===" << std::endl;
     return (tests_passed == tests_run) ? 0 : 1;

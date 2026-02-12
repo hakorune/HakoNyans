@@ -181,6 +181,13 @@ public:
         uint64_t profile_anime_tiles;
         uint64_t profile_photo_tiles;
 
+        // Phase 9s-6: Classifier diagnostics
+        uint64_t class_eval_count;
+        uint64_t class_copy_hit_x1000_sum;
+        uint64_t class_mean_abs_diff_x1000_sum;
+        uint64_t class_active_bins_sum;
+        uint64_t anime_palette_bonus_applied;
+
         LosslessModeDebugStats() { reset(); }
 
         void reset() {
@@ -306,7 +313,13 @@ public:
             profile_ui_tiles = 0;
             profile_anime_tiles = 0;
             profile_photo_tiles = 0;
+            class_eval_count = 0;
+            class_copy_hit_x1000_sum = 0;
+            class_mean_abs_diff_x1000_sum = 0;
+            class_active_bins_sum = 0;
+            anime_palette_bonus_applied = 0;
         }
+
     };
 
     static void reset_lossless_mode_debug_stats() {
@@ -417,11 +430,37 @@ public:
         int active_bins = 0;
         for(int k=0; k<16; k++) if(hist[k] > 0) active_bins++;
 
-        if (copy_hit_rate >= 0.80) return LosslessProfile::UI;
-        
-        if (mean_abs_diff <= 24.0 && active_bins <= 12) return LosslessProfile::ANIME;
-        
-        return LosslessProfile::PHOTO;
+        // Phase 9s-6: Telemetry
+        tl_lossless_mode_debug_stats_.class_eval_count++;
+        tl_lossless_mode_debug_stats_.class_copy_hit_x1000_sum += (uint64_t)(copy_hit_rate * 1000.0);
+        tl_lossless_mode_debug_stats_.class_mean_abs_diff_x1000_sum += (uint64_t)(mean_abs_diff * 1000.0);
+        tl_lossless_mode_debug_stats_.class_active_bins_sum += (uint64_t)active_bins;
+
+        // Flat anime scenes (large painted areas with very low local gradients)
+        // are easily mistaken as UI by coarse histogram-only rules.
+        if (copy_hit_rate >= 0.10 && active_bins <= 6 && mean_abs_diff <= 1.2) {
+            return LosslessProfile::ANIME;
+        }
+
+        int ui_score = 0;
+        int anime_score = 0;
+
+        // UI signals
+        if (copy_hit_rate >= 0.90) ui_score += 3;
+        if (active_bins <= 10)     ui_score += 2;
+        if (mean_abs_diff <= 12)   ui_score += 1;
+
+        // Anime signals
+        if (copy_hit_rate >= 0.60 && copy_hit_rate < 0.95) anime_score += 2;
+        if (active_bins >= 8 && active_bins <= 24)         anime_score += 2;
+        if (mean_abs_diff <= 28)                           anime_score += 2;
+
+        // Decision
+        LosslessProfile result = LosslessProfile::PHOTO;
+        if (ui_score >= anime_score + 2) result = LosslessProfile::UI;
+        else if (anime_score >= 3)       result = LosslessProfile::ANIME;
+
+        return result;
     }
 
     static uint32_t extract_tile_cfl_size(const std::vector<uint8_t>& tile_data, bool use_band_group_cdf) {
@@ -1309,7 +1348,7 @@ public:
         
         // Profile-based bias
         if (profile == LosslessProfile::PHOTO) bits2 += 8; // +4 bits
-        else if (profile == LosslessProfile::ANIME) bits2 += 4; // +2 bits
+        else if (profile == LosslessProfile::ANIME) bits2 += 6; // +3 bits
         // UI: +0 bits
 
         return bits2;
@@ -1610,7 +1649,7 @@ public:
             mode_params.palette_transition_limit = 58;
             mode_params.palette_variance_limit = 2621440;
         } else if (profile == LosslessProfile::ANIME) {
-            mode_params.palette_max_colors = 12;
+            mode_params.palette_max_colors = 8; // Fixed from 12 to match Palette struct size
             mode_params.palette_transition_limit = 62;
             mode_params.palette_variance_limit = 4194304;
         }
@@ -1759,6 +1798,11 @@ public:
                 palette_bits2 = estimate_palette_bits(
                     palette_candidate, transitions, profile
                 );
+                // Phase 9s-6: Anime-specific palette bias
+                if (profile == LosslessProfile::ANIME && palette_candidate.size >= 2 && transitions <= 60) {
+                    palette_bits2 -= 24;
+                    tl_lossless_mode_debug_stats_.anime_palette_bonus_applied++;
+                }
             }
 
             if (profile == LosslessProfile::PHOTO) {
@@ -1963,7 +2007,7 @@ public:
                 best_size = lz_wrapped; best_mode = 2;
             }
 
-            // Mode 3: Row Predictor (Phase 9p) - Only for Photo-like
+            // Mode 3: Row Predictor (Phase 9p) - For Photo and Anime
             std::vector<uint8_t> pred_stream;
             std::vector<uint8_t> resid_stream;
             std::vector<uint8_t> mode3_preds; // for telemetry

@@ -595,6 +595,22 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
         std::cout << "  profile_anime_tiles    " << s.profile_anime_tiles << "\n";
         std::cout << "  profile_photo_tiles    " << s.profile_photo_tiles << "\n";
 
+        uint64_t class_evals = s.class_eval_count;
+        if (class_evals == 0) {
+            class_evals = s.profile_ui_tiles + s.profile_anime_tiles + s.profile_photo_tiles;
+        }
+        if (class_evals > 0) {
+            std::cout << "\n  Classifier diagnostics\n";
+            std::cout << "    classifier_evals       " << class_evals << "\n";
+            std::cout << "    avg_copy_hit_rate      " << std::fixed << std::setprecision(3)
+                      << (double)s.class_copy_hit_x1000_sum / (double)(class_evals * 1000.0) << "\n";
+            std::cout << "    avg_mean_abs_diff      " << std::fixed << std::setprecision(1)
+                      << (double)s.class_mean_abs_diff_x1000_sum / (double)(class_evals * 1000.0) << "\n";
+            std::cout << "    avg_active_bins        " << std::fixed << std::setprecision(1)
+                      << (double)s.class_active_bins_sum / (double)class_evals << "\n";
+            std::cout << "    anime_palette_bonus    " << s.anime_palette_bonus_applied << "\n";
+        }
+
         if (s.palette_reorder_trials > 0) {
             std::cout << "\n  Palette Reorder diagnostics\n";
             std::cout << "  reorder_trials         " << s.palette_reorder_trials << "\n";
