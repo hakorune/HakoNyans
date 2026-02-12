@@ -673,6 +673,69 @@ public:
         uint32_t pad_h = ((height + 7) / 8) * 8;
         int nx = pad_w / 8, ny = pad_h / 8, nb = nx * ny;
 
+        if (ts >= 18 &&
+            file_version >= FileHeader::VERSION_NATURAL_ROW_ROUTE &&
+            td[0] == FileHeader::WRAPPER_MAGIC_NATURAL_ROW) {
+            auto read_u32 = [](const uint8_t* p) -> uint32_t {
+                return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+                       ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+            };
+
+            uint8_t mode = td[1];
+            if (mode != 0) return std::vector<int16_t>(width * height, 0);
+
+            uint32_t pixel_count = read_u32(td + 2);
+            uint32_t pred_count = read_u32(td + 6);
+            uint32_t resid_raw_count = read_u32(td + 10);
+            uint32_t resid_payload_size = read_u32(td + 14);
+            uint32_t expected_pixels = pad_w * pad_h;
+            uint32_t expected_resid_raw = expected_pixels * 2;
+
+            if (pixel_count != expected_pixels || pred_count != pad_h || resid_raw_count != expected_resid_raw) {
+                return std::vector<int16_t>(width * height, 0);
+            }
+
+            size_t pred_off = 18;
+            size_t resid_off = pred_off + pred_count;
+            if (resid_off > ts || resid_payload_size > ts - resid_off) {
+                return std::vector<int16_t>(width * height, 0);
+            }
+
+            const uint8_t* pred_ptr = td + pred_off;
+            const uint8_t* resid_ptr = td + resid_off;
+
+            auto lz_payload = decode_byte_stream_shared_lz(resid_ptr, resid_payload_size, 0);
+            if (lz_payload.empty()) return std::vector<int16_t>(width * height, 0);
+
+            auto resid_bytes = TileLZ::decompress(lz_payload.data(), lz_payload.size(), resid_raw_count);
+            if (resid_bytes.size() != resid_raw_count) return std::vector<int16_t>(width * height, 0);
+
+            std::vector<int16_t> padded(expected_pixels, 0);
+            size_t rb = 0;
+            for (uint32_t y = 0; y < pad_h; y++) {
+                uint8_t pid = pred_ptr[y];
+                for (uint32_t x = 0; x < pad_w; x++) {
+                    int16_t left = (x > 0) ? padded[(size_t)y * pad_w + (x - 1)] : 0;
+                    int16_t up = (y > 0) ? padded[(size_t)(y - 1) * pad_w + x] : 0;
+                    int16_t pred = 0;
+                    if (pid == 0) pred = left;
+                    else if (pid == 1) pred = up;
+                    else pred = (int16_t)(((int)left + (int)up) / 2);
+
+                    uint16_t zz = (uint16_t)resid_bytes[rb] | ((uint16_t)resid_bytes[rb + 1] << 8);
+                    rb += 2;
+                    int16_t resid = zigzag_decode_val(zz);
+                    padded[(size_t)y * pad_w + x] = (int16_t)(pred + resid);
+                }
+            }
+
+            std::vector<int16_t> result(width * height, 0);
+            for (uint32_t y = 0; y < height; y++) {
+                std::memcpy(&result[y * width], &padded[y * pad_w], width * sizeof(int16_t));
+            }
+            return result;
+        }
+
         if (ts >= 14 &&
             file_version >= FileHeader::VERSION_SCREEN_INDEXED_TILE &&
             td[0] == FileHeader::WRAPPER_MAGIC_SCREEN_INDEXED) {

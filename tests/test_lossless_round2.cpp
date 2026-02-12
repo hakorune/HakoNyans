@@ -1527,6 +1527,40 @@ static void test_filter_lo_mode5_fallback_logic() {
     PASS();
 }
 
+static void test_natural_row_route_roundtrip() {
+    TEST("test_natural_row_route_roundtrip");
+
+    const int W = 640, H = 512;
+    std::vector<uint8_t> pixels(W * H);
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            // Natural-like high-entropy texture to avoid screen-index prefilter.
+            uint32_t h = (uint32_t)x * 73856093u;
+            h ^= (uint32_t)y * 19349663u;
+            h ^= (uint32_t)(x + y) * 83492791u;
+            h ^= (h >> 13);
+            h *= 1274126177u;
+            h ^= (h >> 16);
+            pixels[y * W + x] = (uint8_t)((h + (uint32_t)(x * 3 + y * 5)) & 0xFFu);
+        }
+    }
+
+    GrayscaleEncoder::reset_lossless_mode_debug_stats();
+    auto hkn = GrayscaleEncoder::encode_lossless(pixels.data(), W, H);
+    auto dec = GrayscaleDecoder::decode(hkn);
+    if (dec != pixels) {
+        FAIL("natural route roundtrip mismatch");
+        return;
+    }
+
+    auto s = GrayscaleEncoder::get_lossless_mode_debug_stats();
+    if (s.natural_row_candidate_count == 0) {
+        FAIL("natural_row_candidate_count is 0");
+        return;
+    }
+    PASS();
+}
+
 int main() {
     std::cout << "=== Phase 8 Round 2: Lossless Codec Tests ===" << std::endl;
 
@@ -1569,6 +1603,7 @@ int main() {
     test_anime_palette_bias_path();
     test_filter_lo_mode5_selection_path();
     test_filter_lo_mode5_fallback_logic();
+    test_natural_row_route_roundtrip();
 
     std::cout << "\n=== Results: " << tests_passed << "/" << tests_run << " passed ===" << std::endl;
     return (tests_passed == tests_run) ? 0 : 1;

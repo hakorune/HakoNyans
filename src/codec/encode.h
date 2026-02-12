@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <unordered_map>
 
 namespace hakonyans {
 
@@ -1183,6 +1184,14 @@ public:
 
     using ScreenPreflightMetrics = lossless_screen::PreflightMetrics;
 
+    enum class ScreenBuildFailReason : uint8_t {
+        NONE = 0,
+        TOO_MANY_UNIQUE = 1,
+        EMPTY_HIST = 2,
+        INDEX_MISS = 3,
+        INTERNAL = 4
+    };
+
     static ScreenPreflightMetrics analyze_screen_indexed_preflight(
         const int16_t* plane, uint32_t width, uint32_t height
     ) {
@@ -1194,13 +1203,21 @@ public:
     // [palette:int16 * palette_count][payload]
     // mode=0: raw packed index bytes, mode=1: rANS(payload), mode=2: LZ(payload)
     static std::vector<uint8_t> encode_plane_lossless_screen_indexed_tile(
-        const int16_t* plane, uint32_t width, uint32_t height
+        const int16_t* plane, uint32_t width, uint32_t height,
+        ScreenBuildFailReason* fail_reason = nullptr
     ) {
-        if (!plane || width == 0 || height == 0) return {};
+        if (fail_reason) *fail_reason = ScreenBuildFailReason::NONE;
+        if (!plane || width == 0 || height == 0) {
+            if (fail_reason) *fail_reason = ScreenBuildFailReason::INTERNAL;
+            return {};
+        }
         uint32_t pad_w = ((width + 7) / 8) * 8;
         uint32_t pad_h = ((height + 7) / 8) * 8;
         const uint32_t pixel_count = pad_w * pad_h;
-        if (pixel_count == 0) return {};
+        if (pixel_count == 0) {
+            if (fail_reason) *fail_reason = ScreenBuildFailReason::INTERNAL;
+            return {};
+        }
 
         std::unordered_map<int16_t, uint32_t> freq;
         freq.reserve(128);
@@ -1210,17 +1227,26 @@ public:
                 uint32_t sx = std::min(x, width - 1);
                 int16_t v = plane[sy * width + sx];
                 freq[v]++;
-                if (freq.size() > 64) return {};
+                if (freq.size() > 64) {
+                    if (fail_reason) *fail_reason = ScreenBuildFailReason::TOO_MANY_UNIQUE;
+                    return {};
+                }
             }
         }
-        if (freq.empty()) return {};
+        if (freq.empty()) {
+            if (fail_reason) *fail_reason = ScreenBuildFailReason::EMPTY_HIST;
+            return {};
+        }
 
         std::vector<std::pair<int16_t, uint32_t>> freq_pairs(freq.begin(), freq.end());
         std::sort(freq_pairs.begin(), freq_pairs.end(), [](const auto& a, const auto& b) {
             if (a.second != b.second) return a.second > b.second;
             return a.first < b.first;
         });
-        if (freq_pairs.size() > 64) return {};
+        if (freq_pairs.size() > 64) {
+            if (fail_reason) *fail_reason = ScreenBuildFailReason::TOO_MANY_UNIQUE;
+            return {};
+        }
 
         std::vector<int16_t> palette_vals;
         palette_vals.reserve(freq_pairs.size());
@@ -1240,7 +1266,10 @@ public:
                 uint32_t sx = std::min(x, width - 1);
                 int16_t v = plane[sy * width + sx];
                 auto it = val_to_idx.find(v);
-                if (it == val_to_idx.end()) return {};
+                if (it == val_to_idx.end()) {
+                    if (fail_reason) *fail_reason = ScreenBuildFailReason::INDEX_MISS;
+                    return {};
+                }
                 indices.push_back(it->second);
             }
         }
@@ -1288,6 +1317,102 @@ public:
             out.push_back((uint8_t)((uv >> 8) & 0xFF));
         }
         out.insert(out.end(), payload.begin(), payload.end());
+        if (fail_reason) *fail_reason = ScreenBuildFailReason::NONE;
+        return out;
+    }
+
+    // Natural/photo-oriented route:
+    // Per-row predictor selection (SUB/UP/AVG), residual(zigzag16) serialization,
+    // then LZ + shared-CDF rANS on the residual byte stream.
+    static std::vector<uint8_t> encode_plane_lossless_natural_row_tile(
+        const int16_t* plane, uint32_t width, uint32_t height
+    ) {
+        if (!plane || width == 0 || height == 0) return {};
+        const uint32_t pad_w = ((width + 7) / 8) * 8;
+        const uint32_t pad_h = ((height + 7) / 8) * 8;
+        const uint32_t pixel_count = pad_w * pad_h;
+        if (pixel_count == 0) return {};
+
+        std::vector<int16_t> padded(pixel_count, 0);
+        for (uint32_t y = 0; y < pad_h; y++) {
+            uint32_t sy = std::min(y, height - 1);
+            for (uint32_t x = 0; x < pad_w; x++) {
+                uint32_t sx = std::min(x, width - 1);
+                padded[(size_t)y * pad_w + x] = plane[(size_t)sy * width + sx];
+            }
+        }
+
+        std::vector<uint8_t> row_pred_ids(pad_h, 0);
+        std::vector<uint8_t> residual_bytes;
+        residual_bytes.reserve((size_t)pixel_count * 2);
+
+        std::vector<int16_t> recon(pixel_count, 0);
+        for (uint32_t y = 0; y < pad_h; y++) {
+            int best_p = 0;
+            uint64_t best_cost = std::numeric_limits<uint64_t>::max();
+
+            for (int p = 0; p < 3; p++) {
+                uint64_t cost = 0;
+                for (uint32_t x = 0; x < pad_w; x++) {
+                    int16_t left = (x > 0) ? recon[(size_t)y * pad_w + (x - 1)] : 0;
+                    int16_t up = (y > 0) ? recon[(size_t)(y - 1) * pad_w + x] : 0;
+                    int16_t pred = 0;
+                    if (p == 0) pred = left;                // SUB
+                    else if (p == 1) pred = up;            // UP
+                    else pred = (int16_t)(((int)left + (int)up) / 2); // AVG
+                    int16_t cur = padded[(size_t)y * pad_w + x];
+                    cost += (uint64_t)std::abs((int)cur - (int)pred);
+                }
+                if (cost < best_cost) {
+                    best_cost = cost;
+                    best_p = p;
+                }
+            }
+            row_pred_ids[y] = (uint8_t)best_p;
+
+            for (uint32_t x = 0; x < pad_w; x++) {
+                int16_t left = (x > 0) ? recon[(size_t)y * pad_w + (x - 1)] : 0;
+                int16_t up = (y > 0) ? recon[(size_t)(y - 1) * pad_w + x] : 0;
+                int16_t pred = 0;
+                if (best_p == 0) pred = left;
+                else if (best_p == 1) pred = up;
+                else pred = (int16_t)(((int)left + (int)up) / 2);
+
+                int16_t cur = padded[(size_t)y * pad_w + x];
+                int16_t resid = (int16_t)(cur - pred);
+                recon[(size_t)y * pad_w + x] = (int16_t)(pred + resid);
+
+                uint16_t zz = zigzag_encode_val(resid);
+                residual_bytes.push_back((uint8_t)(zz & 0xFF));
+                residual_bytes.push_back((uint8_t)((zz >> 8) & 0xFF));
+            }
+        }
+
+        auto resid_lz = TileLZ::compress(residual_bytes);
+        if (resid_lz.empty()) return {};
+        auto resid_lz_rans = encode_byte_stream_shared_lz(resid_lz);
+        if (resid_lz_rans.empty()) return {};
+
+        // [magic][mode=0][pixel_count:4][pred_count:4][resid_raw_count:4][resid_payload_size:4][pred_ids][payload]
+        std::vector<uint8_t> out;
+        out.reserve(18 + row_pred_ids.size() + resid_lz_rans.size());
+        out.push_back(FileHeader::WRAPPER_MAGIC_NATURAL_ROW);
+        out.push_back(0);
+        uint32_t pred_count = pad_h;
+        uint32_t resid_raw_count = (uint32_t)residual_bytes.size();
+        uint32_t resid_payload_size = (uint32_t)resid_lz_rans.size();
+        auto push_u32 = [&](uint32_t v) {
+            out.push_back((uint8_t)(v & 0xFF));
+            out.push_back((uint8_t)((v >> 8) & 0xFF));
+            out.push_back((uint8_t)((v >> 16) & 0xFF));
+            out.push_back((uint8_t)((v >> 24) & 0xFF));
+        };
+        push_u32(pixel_count);
+        push_u32(pred_count);
+        push_u32(resid_raw_count);
+        push_u32(resid_payload_size);
+        out.insert(out.end(), row_pred_ids.begin(), row_pred_ids.end());
+        out.insert(out.end(), resid_lz_rans.begin(), resid_lz_rans.end());
         return out;
     }
 
@@ -2437,101 +2562,150 @@ public:
         if (!cpy_data.empty()) tile_data.insert(tile_data.end(), cpy_data.begin(), cpy_data.end());
         if (!tile4_data.empty()) tile_data.insert(tile_data.end(), tile4_data.begin(), tile4_data.end());
 
+        std::vector<uint8_t> best_tile = tile_data;
+        enum class ExtraRoute : uint8_t { LEGACY = 0, SCREEN = 1, NATURAL = 2 };
+        ExtraRoute chosen_route = ExtraRoute::LEGACY;
+        const size_t legacy_size = tile_data.size();
+
         // Phase 9u-3: Screen-indexed selection by direct competition.
+        size_t selected_screen_size = 0;
+        bool screen_prefilter_valid = false;
+        bool screen_prefilter_likely_screen = false;
         tl_lossless_mode_debug_stats_.screen_candidate_count++;
 
-        // Pre-gate: tiny tiles are unlikely to recover screen wrapper overhead.
         if (width * height < 4096) {
             tl_lossless_mode_debug_stats_.screen_rejected_pre_gate++;
             tl_lossless_mode_debug_stats_.screen_rejected_small_tile++;
         } else {
-            // Low-cost texture preflight to avoid wasted candidate generation on Natural/Photo tiles.
             const auto pre = analyze_screen_indexed_preflight(data, width, height);
+            screen_prefilter_valid = true;
+            screen_prefilter_likely_screen = pre.likely_screen;
             tl_lossless_mode_debug_stats_.screen_prefilter_eval_count++;
             tl_lossless_mode_debug_stats_.screen_prefilter_unique_sum += pre.unique_sample;
             tl_lossless_mode_debug_stats_.screen_prefilter_avg_run_x100_sum += pre.avg_run_x100;
+
             if (!pre.likely_screen) {
                 tl_lossless_mode_debug_stats_.screen_rejected_pre_gate++;
                 tl_lossless_mode_debug_stats_.screen_rejected_prefilter_texture++;
-                return tile_data;
-            }
-
-            auto screen_tile = encode_plane_lossless_screen_indexed_tile(data, width, height);
-            
-            if (screen_tile.empty() || screen_tile.size() < 14) {
-                 tl_lossless_mode_debug_stats_.screen_rejected_pre_gate++;
-                 tl_lossless_mode_debug_stats_.screen_rejected_build_fail++;
             } else {
-                 // Parse header to check properties
-                 uint8_t screen_mode = screen_tile[1];
-                 uint16_t palette_count = (uint16_t)screen_tile[4] | ((uint16_t)screen_tile[5] << 8);
-                 uint32_t packed_size = (uint32_t)screen_tile[10] | ((uint32_t)screen_tile[11] << 8) |
-                                        ((uint32_t)screen_tile[12] << 16) | ((uint32_t)screen_tile[13] << 24);
+                ScreenBuildFailReason fail_reason = ScreenBuildFailReason::NONE;
+                auto screen_tile = encode_plane_lossless_screen_indexed_tile(data, width, height, &fail_reason);
 
-                 tl_lossless_mode_debug_stats_.screen_palette_count_sum += palette_count;
-                 
-                 int bits_per_index = 0;
-                 if (palette_count <= 2) bits_per_index = 1;
-                 else if (palette_count <= 4) bits_per_index = 2;
-                 else if (palette_count <= 16) bits_per_index = 4;
-                 else if (palette_count <= 64) bits_per_index = 6;
-                 else bits_per_index = 8;
-                 
-                 tl_lossless_mode_debug_stats_.screen_bits_per_index_sum += bits_per_index;
+                if (screen_tile.empty() || screen_tile.size() < 14) {
+                    tl_lossless_mode_debug_stats_.screen_rejected_pre_gate++;
+                    tl_lossless_mode_debug_stats_.screen_rejected_build_fail++;
+                    if (fail_reason == ScreenBuildFailReason::TOO_MANY_UNIQUE) {
+                        tl_lossless_mode_debug_stats_.screen_build_fail_too_many_unique++;
+                    } else if (fail_reason == ScreenBuildFailReason::EMPTY_HIST) {
+                        tl_lossless_mode_debug_stats_.screen_build_fail_empty_hist++;
+                    } else if (fail_reason == ScreenBuildFailReason::INDEX_MISS) {
+                        tl_lossless_mode_debug_stats_.screen_build_fail_index_miss++;
+                    } else {
+                        tl_lossless_mode_debug_stats_.screen_build_fail_other++;
+                    }
+                } else {
+                    uint8_t screen_mode = screen_tile[1];
+                    uint16_t palette_count = (uint16_t)screen_tile[4] | ((uint16_t)screen_tile[5] << 8);
+                    uint32_t packed_size = (uint32_t)screen_tile[10] | ((uint32_t)screen_tile[11] << 8) |
+                                           ((uint32_t)screen_tile[12] << 16) | ((uint32_t)screen_tile[13] << 24);
 
-                 // Pre-gate strict checks for safety.
-                 bool reject_strict = false;
-                 if (palette_count > 64) {
-                     reject_strict = true;
-                     tl_lossless_mode_debug_stats_.screen_rejected_palette_limit++;
-                 }
-                 if (bits_per_index > 6) {
-                     reject_strict = true;
-                     tl_lossless_mode_debug_stats_.screen_rejected_bits_limit++;
-                 }
+                    tl_lossless_mode_debug_stats_.screen_palette_count_sum += palette_count;
 
-                 if (reject_strict) {
-                     tl_lossless_mode_debug_stats_.screen_rejected_pre_gate++;
-                 } else {
-                      size_t legacy_size = tile_data.size();
-                      size_t screen_size = screen_tile.size();
-                      tl_lossless_mode_debug_stats_.screen_compete_legacy_bytes_sum += legacy_size;
-                      tl_lossless_mode_debug_stats_.screen_compete_screen_bytes_sum += screen_size;
-                      
-                      // Cost-gate: Category hint only for telemetry.
-                      bool is_ui_like = (palette_count <= 24 && bits_per_index <= 5);
-                      
-                      if (is_ui_like) tl_lossless_mode_debug_stats_.screen_ui_like_count++;
-                      else tl_lossless_mode_debug_stats_.screen_anime_like_count++;
-                      
-                      // Profile-aware gate:
-                      // UI: require >=0.5% gain
-                      // ANIME: require >=1.0% gain
-                      // PHOTO/NATURAL-like: no worse than legacy
-                      int gate_permille = 1000;
-                      if (profile == LosslessProfile::UI) gate_permille = 995;
-                      else if (profile == LosslessProfile::ANIME) gate_permille = 990;
+                    int bits_per_index = 0;
+                    if (palette_count <= 2) bits_per_index = 1;
+                    else if (palette_count <= 4) bits_per_index = 2;
+                    else if (palette_count <= 16) bits_per_index = 4;
+                    else if (palette_count <= 64) bits_per_index = 6;
+                    else bits_per_index = 8;
+                    tl_lossless_mode_debug_stats_.screen_bits_per_index_sum += bits_per_index;
 
-                      bool adopt = false;
-                      if (screen_size * 1000ull <= legacy_size * (uint64_t)gate_permille) adopt = true;
-                      
-                      if (adopt) {
-                          tl_lossless_mode_debug_stats_.screen_selected_count++;
-                          if (legacy_size > screen_size)
-                              tl_lossless_mode_debug_stats_.screen_gain_bytes_sum += (legacy_size - screen_size);
-                          return screen_tile;
-                      } else {
-                          tl_lossless_mode_debug_stats_.screen_rejected_cost_gate++;
-                          if (screen_size > legacy_size)
-                              tl_lossless_mode_debug_stats_.screen_loss_bytes_sum += (screen_size - legacy_size);
-                          if (screen_mode == 0 && packed_size > 2048) {
-                              tl_lossless_mode_debug_stats_.screen_mode0_reject_count++;
-                          }
-                      }
-                 }
+                    bool reject_strict = false;
+                    if (palette_count > 64) {
+                        reject_strict = true;
+                        tl_lossless_mode_debug_stats_.screen_rejected_palette_limit++;
+                    }
+                    if (bits_per_index > 6) {
+                        reject_strict = true;
+                        tl_lossless_mode_debug_stats_.screen_rejected_bits_limit++;
+                    }
+
+                    if (reject_strict) {
+                        tl_lossless_mode_debug_stats_.screen_rejected_pre_gate++;
+                    } else {
+                        const size_t screen_size = screen_tile.size();
+                        tl_lossless_mode_debug_stats_.screen_compete_legacy_bytes_sum += legacy_size;
+                        tl_lossless_mode_debug_stats_.screen_compete_screen_bytes_sum += screen_size;
+
+                        bool is_ui_like = (palette_count <= 24 && bits_per_index <= 5);
+                        if (is_ui_like) tl_lossless_mode_debug_stats_.screen_ui_like_count++;
+                        else tl_lossless_mode_debug_stats_.screen_anime_like_count++;
+
+                        int gate_permille = 1000;
+                        if (profile == LosslessProfile::UI) gate_permille = 995;
+                        else if (profile == LosslessProfile::ANIME) gate_permille = 990;
+
+                        bool adopt = (screen_size * 1000ull <= legacy_size * (uint64_t)gate_permille);
+                        if (adopt) {
+                            selected_screen_size = screen_size;
+                            if (screen_size < best_tile.size()) {
+                                best_tile = std::move(screen_tile);
+                                chosen_route = ExtraRoute::SCREEN;
+                            }
+                        } else {
+                            tl_lossless_mode_debug_stats_.screen_rejected_cost_gate++;
+                            if (screen_size > legacy_size) {
+                                tl_lossless_mode_debug_stats_.screen_loss_bytes_sum += (screen_size - legacy_size);
+                            }
+                            if (screen_mode == 0 && packed_size > 2048) {
+                                tl_lossless_mode_debug_stats_.screen_mode0_reject_count++;
+                            }
+                        }
+                    }
+                }
             }
         }
-        return tile_data;
+
+        // Phase 9v (Natural route): row residual + LZ+rANS(shared CDF)
+        size_t natural_size = 0;
+        const bool large_image = ((uint64_t)width * (uint64_t)height >= 262144ull);
+        const bool allow_natural_route =
+            (profile == LosslessProfile::PHOTO) ||
+            (screen_prefilter_valid && !screen_prefilter_likely_screen);
+
+        if (large_image && allow_natural_route) {
+            tl_lossless_mode_debug_stats_.natural_row_candidate_count++;
+            auto natural_tile = encode_plane_lossless_natural_row_tile(data, width, height);
+            if (natural_tile.empty()) {
+                tl_lossless_mode_debug_stats_.natural_row_build_fail_count++;
+            } else {
+                natural_size = natural_tile.size();
+                // PHOTO path: non-worse gate (<= legacy)
+                if (natural_size <= legacy_size) {
+                    if (natural_size < best_tile.size()) {
+                        best_tile = std::move(natural_tile);
+                        chosen_route = ExtraRoute::NATURAL;
+                    }
+                } else {
+                    tl_lossless_mode_debug_stats_.natural_row_rejected_cost_gate++;
+                    tl_lossless_mode_debug_stats_.natural_row_loss_bytes_sum += (natural_size - legacy_size);
+                }
+            }
+        }
+
+        // Finalize route telemetry against the actually chosen payload.
+        if (chosen_route == ExtraRoute::NATURAL) {
+            tl_lossless_mode_debug_stats_.natural_row_selected_count++;
+            if (legacy_size > natural_size) {
+                tl_lossless_mode_debug_stats_.natural_row_gain_bytes_sum += (legacy_size - natural_size);
+            }
+        } else if (chosen_route == ExtraRoute::SCREEN) {
+            tl_lossless_mode_debug_stats_.screen_selected_count++;
+            if (legacy_size > selected_screen_size) {
+                tl_lossless_mode_debug_stats_.screen_gain_bytes_sum += (legacy_size - selected_screen_size);
+            }
+        }
+
+        return best_tile;
     }
 
 

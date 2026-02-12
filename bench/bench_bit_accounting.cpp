@@ -34,6 +34,7 @@ struct Accounting {
     size_t copy = 0;
     size_t tile4 = 0;
     size_t screen_index = 0;
+    size_t natural_row = 0;
     size_t unknown = 0;
 };
 
@@ -107,6 +108,28 @@ static void add_lossy_tile(Accounting& a, const uint8_t* tile_data, size_t tile_
 }
 
 static void add_lossless_tile(Accounting& a, const uint8_t* tile_data, size_t tile_size) {
+    if (tile_size >= 18 && tile_data[0] == FileHeader::WRAPPER_MAGIC_NATURAL_ROW) {
+        auto read_u32 = [](const uint8_t* p) -> uint32_t {
+            return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+                   ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+        };
+        uint32_t pred_count = read_u32(tile_data + 6);
+        uint32_t resid_payload_size = read_u32(tile_data + 14);
+        size_t header_bytes = 18;
+        if (header_bytes + pred_count > tile_size) {
+            a.unknown += tile_size;
+            return;
+        }
+        a.tile_header += header_bytes;
+        a.filter_ids += pred_count; // row predictor ids
+        size_t payload_bytes = tile_size - header_bytes - pred_count;
+        if (payload_bytes > 0) a.natural_row += payload_bytes;
+        if (payload_bytes > resid_payload_size) {
+            a.unknown += (payload_bytes - resid_payload_size);
+        }
+        return;
+    }
+
     if (tile_size >= 14 && tile_data[0] == FileHeader::WRAPPER_MAGIC_SCREEN_INDEXED) {
         auto read_u16 = [](const uint8_t* p) -> uint16_t {
             return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
@@ -233,6 +256,7 @@ static void print_accounting(const std::string& title, const Accounting& a, bool
     print_row("copy", a.copy, a.total_file);
     print_row("tile4", a.tile4, a.total_file);
     print_row("screen_index", a.screen_index, a.total_file);
+    print_row("natural_row", a.natural_row, a.total_file);
     print_row("unknown", a.unknown, a.total_file);
     std::cout << "----------------------------------------------\n";
     print_row("TOTAL", a.total_file, a.total_file);
@@ -647,6 +671,12 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
                 std::cout << "    pre_small_tile       " << s.screen_rejected_small_tile << "\n";
                 std::cout << "    pre_texture_gate     " << s.screen_rejected_prefilter_texture << "\n";
                 std::cout << "    pre_build_fail       " << s.screen_rejected_build_fail << "\n";
+                if (s.screen_rejected_build_fail > 0) {
+                    std::cout << "      fail_too_many_unique " << s.screen_build_fail_too_many_unique << "\n";
+                    std::cout << "      fail_empty_hist      " << s.screen_build_fail_empty_hist << "\n";
+                    std::cout << "      fail_index_miss      " << s.screen_build_fail_index_miss << "\n";
+                    std::cout << "      fail_other           " << s.screen_build_fail_other << "\n";
+                }
                 std::cout << "    pre_palette_limit    " << s.screen_rejected_palette_limit << "\n";
                 std::cout << "    pre_bits_limit       " << s.screen_rejected_bits_limit << "\n";
             }
@@ -688,6 +718,20 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
             }
             if (s.screen_rejected_cost_gate > 0) {
                  print_gain("total_avoided_bloat", s.screen_loss_bytes_sum);
+            }
+        }
+
+        if (s.natural_row_candidate_count > 0) {
+            std::cout << "\n  Natural-row route diagnostics\n";
+            std::cout << "  natural_candidates     " << s.natural_row_candidate_count << "\n";
+            std::cout << "  natural_selected       " << s.natural_row_selected_count << "\n";
+            std::cout << "  natural_rej_cost       " << s.natural_row_rejected_cost_gate << "\n";
+            std::cout << "  natural_build_fail     " << s.natural_row_build_fail_count << "\n";
+            if (s.natural_row_gain_bytes_sum > 0) {
+                std::cout << "  natural_gain_bytes     " << s.natural_row_gain_bytes_sum << "\n";
+            }
+            if (s.natural_row_loss_bytes_sum > 0) {
+                std::cout << "  natural_loss_bytes     " << s.natural_row_loss_bytes_sum << "\n";
             }
         }
 

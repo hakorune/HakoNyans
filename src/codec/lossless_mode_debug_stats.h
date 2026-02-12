@@ -161,6 +161,10 @@ struct LosslessModeDebugStats {
     uint64_t screen_rejected_small_tile;
     uint64_t screen_rejected_prefilter_texture;
     uint64_t screen_rejected_build_fail;
+    uint64_t screen_build_fail_too_many_unique;
+    uint64_t screen_build_fail_empty_hist;
+    uint64_t screen_build_fail_index_miss;
+    uint64_t screen_build_fail_other;
     uint64_t screen_rejected_palette_limit;
     uint64_t screen_rejected_bits_limit;
     uint64_t screen_mode0_reject_count;
@@ -175,6 +179,14 @@ struct LosslessModeDebugStats {
     uint64_t screen_prefilter_eval_count;
     uint64_t screen_prefilter_unique_sum;
     uint64_t screen_prefilter_avg_run_x100_sum;
+
+    // Natural-specific row residual route telemetry.
+    uint64_t natural_row_candidate_count;
+    uint64_t natural_row_selected_count;
+    uint64_t natural_row_rejected_cost_gate;
+    uint64_t natural_row_build_fail_count;
+    uint64_t natural_row_gain_bytes_sum;
+    uint64_t natural_row_loss_bytes_sum;
 
     uint64_t palette_reorder_trials;
     uint64_t palette_reorder_adopted;
@@ -195,4 +207,3 @@ struct LosslessModeDebugStats {
 };
 
 } // namespace hakonyans
-
