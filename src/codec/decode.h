@@ -22,6 +22,7 @@
 #include "lossless_filter.h"
 #include "band_groups.h"
 #include "lz_tile.h"
+#include "shared_cdf.h"
 
 namespace hakonyans {
 
@@ -827,6 +828,21 @@ public:
                 } else if (lo_mode == 2) {
                     // LZ decompress
                     lo_bytes = TileLZ::decompress(payload, payload_size, raw_count);
+                } else if (lo_mode == 5) {
+                    // LZ payload encoded with rANS.
+                    // v0x0010: adaptive CDF packed in payload
+                    // v0x0011+: shared/static CDF (no per-tile CDF payload)
+                    std::vector<uint8_t> lz_payload;
+                    if (file_version >= FileHeader::VERSION_FILTER_LO_LZ_RANS_SHARED_CDF) {
+                        lz_payload = decode_byte_stream_shared_lz(payload, payload_size, 0);
+                    } else {
+                        lz_payload = decode_byte_stream(payload, payload_size, 0);
+                    }
+                    if (!lz_payload.empty()) {
+                        lo_bytes = TileLZ::decompress(lz_payload.data(), lz_payload.size(), raw_count);
+                    } else {
+                        lo_bytes.assign(raw_count, 0);
+                    }
                 } else if (lo_mode == 3 && payload_size >= 4) {
                     // Phase 9p: Row Predictor
                     // [pred_sz:4][preds][resids]
@@ -1272,6 +1288,42 @@ public:
             result.push_back((uint8_t)dec.decode_symbol(cdf));
         }
         return result;
+    }
+
+    // Shared/static-CDF variant for Mode5 payload.
+    // Format: [4B count][4B rans_size][rans_data]
+    static std::vector<uint8_t> decode_byte_stream_shared_lz(
+        const uint8_t* data, size_t size, size_t expected_count
+    ) {
+        if (size < 8) return std::vector<uint8_t>(expected_count, 0);
+
+        uint32_t count = 0;
+        uint32_t rans_size = 0;
+        std::memcpy(&count, data, 4);
+        std::memcpy(&rans_size, data + 4, 4);
+
+        if ((size_t)rans_size > size - 8) {
+            return std::vector<uint8_t>(expected_count, 0);
+        }
+
+        const CDFTable& cdf = get_mode5_shared_lz_cdf();
+        FlatInterleavedDecoder dec(std::span<const uint8_t>(data + 8, rans_size));
+
+        std::vector<uint8_t> result;
+        result.reserve(count);
+        for (uint32_t i = 0; i < count; i++) {
+            result.push_back((uint8_t)dec.decode_symbol(cdf));
+        }
+        if (expected_count > 0 && result.size() != expected_count) {
+            result.resize(expected_count, 0);
+        }
+        return result;
+    }
+
+private:
+    static const CDFTable& get_mode5_shared_lz_cdf() {
+        static const CDFTable cdf = CDFBuilder().build_from_freq(mode5_shared_lz_freq());
+        return cdf;
     }
 };
 

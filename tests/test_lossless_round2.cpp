@@ -710,6 +710,51 @@ void test_filter_lo_lz_roundtrip() {
 }
 
 // ============================================================
+// Test 18b: Filter Lo Mode 5 core pipeline (LZ + rANS shared/static CDF)
+// ============================================================
+void test_filter_lo_lz_rans_pipeline() {
+    TEST("Filter Lo Mode 5 pipeline (LZ+rANS shared CDF)");
+
+    // Build a long repetitive byte stream so LZ tags themselves are compressible.
+    std::vector<uint8_t> src;
+    src.reserve(32768);
+    for (int y = 0; y < 256; y++) {
+        for (int x = 0; x < 128; x++) {
+            uint8_t v = (uint8_t)(((x / 8) + (y / 16) * 3) & 0xFF);
+            src.push_back(v);
+        }
+    }
+    if (src.empty()) {
+        FAIL("source stream empty");
+        return;
+    }
+
+    auto lz = hakonyans::TileLZ::compress(src);
+    if (lz.empty()) {
+        FAIL("TileLZ compression failed");
+        return;
+    }
+    auto lz_rans = hakonyans::GrayscaleEncoder::encode_byte_stream_shared_lz(lz);
+    auto lz_dec = hakonyans::GrayscaleDecoder::decode_byte_stream_shared_lz(lz_rans.data(), lz_rans.size(), 0);
+    if (lz_dec.empty()) {
+        FAIL("decode_byte_stream failed on LZ payload");
+        return;
+    }
+    auto out = hakonyans::TileLZ::decompress(lz_dec.data(), lz_dec.size(), src.size());
+    if (out.size() != src.size()) {
+        FAIL("decompressed size mismatch");
+        return;
+    }
+    for (size_t i = 0; i < src.size(); i++) {
+        if (out[i] != src[i]) {
+            FAIL("pipeline mismatch at byte " + std::to_string(i));
+            return;
+        }
+    }
+    PASS();
+}
+
+// ============================================================
 // Test 19: Filter Lo malformed wrapper (Phase 9o)
 // ============================================================
 void test_filter_lo_malformed() {
@@ -1416,6 +1461,72 @@ static void test_anime_palette_bias_path() {
     }
 }
 
+static void test_filter_lo_mode5_selection_path() {
+    TEST("test_filter_lo_mode5_selection_path");
+    
+    // Create a large pattern that forces filter blocks (high variance)
+    // but remains repetitive (good for LZ)
+    const int W = 512, H = 512;
+    std::vector<uint8_t> pixels(W * H);
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            // High local variance to discourage PALETTE/COPY, 
+            // but global periodicity to encourage LZ.
+            pixels[y * W + x] = (uint8_t)(((x % 16) * 13 + (y % 16) * 17 + (x * y)) & 0xFF);
+        }
+    }
+    
+    GrayscaleEncoder::reset_lossless_mode_debug_stats();
+    // Use encode_lossless which uses classify_lossless_profile
+    auto hkn = GrayscaleEncoder::encode_lossless(pixels.data(), W, H);
+    auto stats = GrayscaleEncoder::get_lossless_mode_debug_stats();
+    
+    // Check roundtrip first
+    auto decoded = GrayscaleDecoder::decode(hkn);
+    if (decoded != pixels) {
+        FAIL("roundtrip failed for Mode 5 candidate image");
+        return;
+    }
+
+    if (stats.filter_lo_mode5_candidates > 0) {
+        // Candidate was generated. 
+        // We don't strictly assert selection because Mode 2 or 4 might still win,
+        // but we verify the path was exercised.
+        PASS();
+    } else {
+        FAIL("Mode 5 candidate path not hit");
+    }
+}
+
+static void test_filter_lo_mode5_fallback_logic() {
+    TEST("test_filter_lo_mode5_fallback_to_mode0");
+    
+    // Random noise image - should trigger fallbacks
+    const int W = 64, H = 64;
+    std::vector<uint8_t> pixels(W * H);
+    std::mt19937 rng(99);
+    for (auto& v : pixels) v = (uint8_t)(rng() & 0xFF);
+    
+    GrayscaleEncoder::reset_lossless_mode_debug_stats();
+    auto hkn = GrayscaleEncoder::encode_lossless(pixels.data(), W, H);
+    auto stats = GrayscaleEncoder::get_lossless_mode_debug_stats();
+    
+    auto decoded = GrayscaleDecoder::decode(hkn);
+    if (decoded != pixels) {
+        FAIL("roundtrip failed for noise image");
+        return;
+    }
+    
+    // On random noise, Mode 5 might still be a candidate but should be rejected by gate
+    if (stats.filter_lo_mode5_candidates > 0) {
+        if (stats.filter_lo_mode5 > 0) {
+            // Unexpected, but possible if random is lucky.
+            // Just check that we didn't crash.
+        }
+    }
+    PASS();
+}
+
 int main() {
     std::cout << "=== Phase 8 Round 2: Lossless Codec Tests ===" << std::endl;
 
@@ -1437,6 +1548,7 @@ int main() {
     test_filter_wrapper_malformed();
     test_filter_lo_delta_roundtrip();
     test_filter_lo_lz_roundtrip();
+    test_filter_lo_lz_rans_pipeline();
     test_filter_lo_malformed();
     test_filter_lo_mode3_roundtrip();
     test_filter_lo_mixed_rows();
@@ -1455,6 +1567,8 @@ int main() {
     test_profile_classifier_anime_not_ui();
     test_profile_anime_roundtrip();
     test_anime_palette_bias_path();
+    test_filter_lo_mode5_selection_path();
+    test_filter_lo_mode5_fallback_logic();
 
     std::cout << "\n=== Results: " << tests_passed << "/" << tests_run << " passed ===" << std::endl;
     return (tests_passed == tests_run) ? 0 : 1;

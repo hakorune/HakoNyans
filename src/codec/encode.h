@@ -14,6 +14,7 @@
 #include "lossless_filter.h"
 #include "band_groups.h"
 #include "lz_tile.h"
+#include "shared_cdf.h"
 #include <vector>
 #include <cstring>
 #include <stdexcept>
@@ -176,8 +177,22 @@ public:
         uint64_t filter_lo_mode3_pred_hist[4]; // 0:NONE, 1:SUB, 2:UP, 3:AVG
         uint64_t filter_lo_mode4;
         uint64_t filter_lo_mode4_saved_bytes_sum;
+        uint64_t filter_lo_mode5;
+        uint64_t filter_lo_mode5_saved_bytes_sum;
         uint64_t filter_lo_ctx_nonempty_tiles;
         uint64_t filter_lo_ctx_bytes_sum[6];
+
+        // Phase 9u-tune: filter_lo mode selection diagnostics
+        uint64_t filter_lo_mode2_reject_gate;
+        uint64_t filter_lo_mode4_reject_gate;
+        uint64_t filter_lo_mode5_candidates;
+        uint64_t filter_lo_mode5_reject_gate;
+        uint64_t filter_lo_mode5_reject_best;
+        uint64_t filter_lo_mode2_candidate_bytes_sum;
+        uint64_t filter_lo_mode4_candidate_bytes_sum;
+        uint64_t filter_lo_mode5_candidate_bytes_sum;
+        uint64_t filter_lo_mode5_wrapped_bytes_sum;
+        uint64_t filter_lo_mode5_legacy_bytes_sum;
 
         // Phase 9s-3: Screen-indexed gating telemetry
         uint64_t screen_candidate_count;
@@ -332,10 +347,22 @@ public:
             std::memset(filter_lo_mode3_pred_hist, 0, sizeof(filter_lo_mode3_pred_hist));
             filter_lo_mode4 = 0;
             filter_lo_mode4_saved_bytes_sum = 0;
+            filter_lo_mode5 = 0;
+            filter_lo_mode5_saved_bytes_sum = 0;
             filter_lo_ctx_nonempty_tiles = 0;
             std::memset(filter_lo_ctx_bytes_sum, 0, sizeof(filter_lo_ctx_bytes_sum));
             filter_lo_raw_bytes_sum = 0;
             filter_lo_compressed_bytes_sum = 0;
+            filter_lo_mode2_reject_gate = 0;
+            filter_lo_mode4_reject_gate = 0;
+            filter_lo_mode5_candidates = 0;
+            filter_lo_mode5_reject_gate = 0;
+            filter_lo_mode5_reject_best = 0;
+            filter_lo_mode2_candidate_bytes_sum = 0;
+            filter_lo_mode4_candidate_bytes_sum = 0;
+            filter_lo_mode5_candidate_bytes_sum = 0;
+            filter_lo_mode5_wrapped_bytes_sum = 0;
+            filter_lo_mode5_legacy_bytes_sum = 0;
             screen_candidate_count = 0;
             screen_selected_count = 0;
             screen_rejected_pre_gate = 0;
@@ -2130,35 +2157,82 @@ public:
                 lo_bytes[i] = (uint8_t)(zz & 0xFF);
                 hi_bytes[i] = (uint8_t)((zz >> 8) & 0xFF);
             }
-            // --- Phase 9o: filter_lo wrapper (legacy / delta+rANS / LZ) ---
+            // --- filter_lo wrapper (legacy / delta+rANS / LZ / LZ+rANS / predictors) ---
             auto lo_legacy = encode_byte_stream(lo_bytes);
             tl_lossless_mode_debug_stats_.filter_lo_raw_bytes_sum += lo_bytes.size();
 
             size_t legacy_size = lo_legacy.size();
-            size_t threshold = (size_t)(legacy_size * 0.99); // 1% improvement required
+            
+            // Phase 9u-tune: Expose tuning knobs
+            constexpr int kFilterLoModeWrapperGainPermilleDefault = 990;
+            constexpr int kFilterLoMode5GainPermille = 995;
+            constexpr int kFilterLoMode5MinRawBytes = 2048; // Gated for larger payloads
+            constexpr int kFilterLoMode5MinLZBytes = 1024;  // Gated to pay for rANS table cost
 
-            // Mode 1: delta transform + rANS
+            // Candidate 1: Mode 1 (delta transform + rANS)
             std::vector<uint8_t> delta_bytes(lo_bytes.size());
             delta_bytes[0] = lo_bytes[0];
             for (size_t i = 1; i < lo_bytes.size(); i++) {
                 delta_bytes[i] = (uint8_t)(lo_bytes[i] - lo_bytes[i - 1]); // mod 256
             }
             auto delta_rans = encode_byte_stream(delta_bytes);
-            size_t delta_wrapped = 6 + delta_rans.size(); // [magic][mode][raw_count:4B][data]
+            size_t delta_wrapped = 6 + delta_rans.size();
 
-            // Mode 2: LZ compress
+            // Candidate 2: Mode 2 (LZ compress)
             auto lo_lz = TileLZ::compress(lo_bytes);
             size_t lz_wrapped = 6 + lo_lz.size();
+            
+            // Candidate 3: Mode 5 (LZ output + rANS with shared/static CDF)
+            std::vector<uint8_t> lo_lz_rans;
+            size_t lz_rans_wrapped = std::numeric_limits<size_t>::max();
+            if (lo_bytes.size() >= kFilterLoMode5MinRawBytes && lo_lz.size() >= kFilterLoMode5MinLZBytes) {
+                tl_lossless_mode_debug_stats_.filter_lo_mode5_candidates++;
+                lo_lz_rans = encode_byte_stream_shared_lz(lo_lz);
+                lz_rans_wrapped = 6 + lo_lz_rans.size();
+                tl_lossless_mode_debug_stats_.filter_lo_mode5_candidate_bytes_sum += lo_lz.size();
+                tl_lossless_mode_debug_stats_.filter_lo_mode5_wrapped_bytes_sum += lz_rans_wrapped;
+                tl_lossless_mode_debug_stats_.filter_lo_mode5_legacy_bytes_sum += legacy_size;
+            }
 
-            // Select best mode
+            // Select best mode with per-mode gating
             int best_mode = 0;
             size_t best_size = legacy_size;
 
-            if (delta_wrapped < best_size && delta_wrapped < threshold) {
-                best_size = delta_wrapped; best_mode = 1;
+            // Gate Mode 1
+            if (delta_wrapped * 1000 <= legacy_size * kFilterLoModeWrapperGainPermilleDefault) {
+                if (delta_wrapped < best_size) {
+                    best_size = delta_wrapped;
+                    best_mode = 1;
+                }
             }
-            if (lz_wrapped < best_size && lz_wrapped < threshold) {
-                best_size = lz_wrapped; best_mode = 2;
+
+            // Gate Mode 2
+            if (lz_wrapped * 1000 <= legacy_size * kFilterLoModeWrapperGainPermilleDefault) {
+                tl_lossless_mode_debug_stats_.filter_lo_mode2_candidate_bytes_sum += lz_wrapped;
+                if (lz_wrapped < best_size) {
+                    best_size = lz_wrapped;
+                    best_mode = 2;
+                }
+            } else {
+                tl_lossless_mode_debug_stats_.filter_lo_mode2_reject_gate++;
+            }
+
+            // Gate Mode 5
+            if (lz_rans_wrapped != std::numeric_limits<size_t>::max()) {
+                // Rule: Must be better than legacy AND at least 1% better than LZ-only (Mode 2)
+                bool better_than_legacy = (lz_rans_wrapped * 1000 <= legacy_size * kFilterLoMode5GainPermille);
+                bool better_than_lz = (lz_rans_wrapped * 100 <= lz_wrapped * 99); 
+
+                if (better_than_legacy && better_than_lz) {
+                    if (lz_rans_wrapped < best_size) {
+                        best_size = lz_rans_wrapped;
+                        best_mode = 5;
+                    } else {
+                        tl_lossless_mode_debug_stats_.filter_lo_mode5_reject_best++;
+                    }
+                } else {
+                    tl_lossless_mode_debug_stats_.filter_lo_mode5_reject_gate++;
+                }
             }
 
             // Mode 3: Row Predictor (Phase 9p) - For Photo and Anime
@@ -2253,7 +2327,7 @@ public:
                 // [magic][mode][raw_count:4][pred_sz:4][preds][resids]
                 size_t total_sz = 1 + 1 + 4 + 4 + preds_enc.size() + resids_enc.size();
 
-                if (total_sz < best_size && total_sz < threshold) {
+                if (total_sz < best_size && total_sz * 1000 <= legacy_size * kFilterLoModeWrapperGainPermilleDefault) {
                     best_size = total_sz;
                     best_mode = 3;
                     pred_stream = std::move(preds_enc);
@@ -2287,11 +2361,16 @@ public:
                     }
                     mode4_sz += ctx_streams[k].size();
                 }
-                if (nonempty_ctx >= 2 && mode4_sz < best_size && mode4_sz < threshold) {
-                    best_size = mode4_sz;
-                    best_mode = 4;
-                    mode4_streams = std::move(ctx_streams);
-                    mode4_ctx_raw_counts = std::move(ctx_raw_counts);
+                if (nonempty_ctx >= 2 && mode4_sz * 1000 <= legacy_size * kFilterLoModeWrapperGainPermilleDefault) {
+                    tl_lossless_mode_debug_stats_.filter_lo_mode4_candidate_bytes_sum += mode4_sz;
+                    if (mode4_sz < best_size) {
+                        best_size = mode4_sz;
+                        best_mode = 4;
+                        mode4_streams = std::move(ctx_streams);
+                        mode4_ctx_raw_counts = std::move(ctx_raw_counts);
+                    }
+                } else if (nonempty_ctx >= 2) {
+                    tl_lossless_mode_debug_stats_.filter_lo_mode4_reject_gate++;
                 }
             }
 
@@ -2374,9 +2453,16 @@ public:
                 if (best_mode == 1) {
                     lo_stream.insert(lo_stream.end(), delta_rans.begin(), delta_rans.end());
                     tl_lossless_mode_debug_stats_.filter_lo_mode1++;
-                } else {
+                } else if (best_mode == 2) {
                     lo_stream.insert(lo_stream.end(), lo_lz.begin(), lo_lz.end());
                     tl_lossless_mode_debug_stats_.filter_lo_mode2++;
+                } else {
+                    lo_stream.insert(lo_stream.end(), lo_lz_rans.begin(), lo_lz_rans.end());
+                    tl_lossless_mode_debug_stats_.filter_lo_mode5++;
+                    if (lo_legacy.size() > lo_stream.size()) {
+                        tl_lossless_mode_debug_stats_.filter_lo_mode5_saved_bytes_sum +=
+                            (uint64_t)(lo_legacy.size() - lo_stream.size());
+                    }
                 }
             }
             tl_lossless_mode_debug_stats_.filter_lo_compressed_bytes_sum += lo_stream.size();
@@ -2836,6 +2922,33 @@ public:
         output.resize(off + 4); std::memcpy(&output[off], &rans_size, 4);
         output.insert(output.end(), rans_bytes.begin(), rans_bytes.end());
         return output;
+    }
+
+    // Shared/static-CDF variant for Mode5 payload (TileLZ bytes).
+    // Format: [4B count][4B rans_size][rans_data]
+    static std::vector<uint8_t> encode_byte_stream_shared_lz(const std::vector<uint8_t>& bytes) {
+        const CDFTable& cdf = get_mode5_shared_lz_cdf();
+
+        FlatInterleavedEncoder encoder;
+        for (uint8_t b : bytes) {
+            encoder.encode_symbol(cdf, b);
+        }
+        auto rans_bytes = encoder.finish();
+
+        std::vector<uint8_t> output;
+        uint32_t count = (uint32_t)bytes.size();
+        uint32_t rans_size = (uint32_t)rans_bytes.size();
+        output.resize(8);
+        std::memcpy(output.data(), &count, 4);
+        std::memcpy(output.data() + 4, &rans_size, 4);
+        output.insert(output.end(), rans_bytes.begin(), rans_bytes.end());
+        return output;
+    }
+
+private:
+    static const CDFTable& get_mode5_shared_lz_cdf() {
+        static const CDFTable cdf = CDFBuilder().build_from_freq(mode5_shared_lz_freq());
+        return cdf;
     }
 };
 
