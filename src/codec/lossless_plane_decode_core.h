@@ -436,8 +436,12 @@ inline std::vector<int16_t> decode_plane_lossless(
         CopyParams(-12, 0), CopyParams(0, -12), CopyParams(-12, -4), CopyParams(-4, -12),
         CopyParams(-16, 0), CopyParams(0, -16), CopyParams(-16, -4), CopyParams(-4, -16)
     };
+    const int pad_w_i = (int)pad_w;
+    const int pad_h_i = (int)pad_h;
 
     size_t residual_idx = 0;
+    const size_t residual_size = filter_residuals.size();
+
     for (int by = 0; by < ny; by++) {
         const int block_row_base = by * nx;
         const uint32_t y_base = (uint32_t)(by * 8);
@@ -459,14 +463,22 @@ inline std::vector<int16_t> decode_plane_lossless(
                     const int cidx = block_copy_idx[(size_t)block_idx];
                     if (cidx < 0 || cidx >= (int)copy_params.size()) continue;
                     const auto& cp = copy_params[(size_t)cidx];
-                    for (uint32_t px = 0; px < 8; px++) {
-                        const uint32_t x = x_base + px;
-                        int src_x = (int)x + cp.dx;
-                        int src_y = (int)y + cp.dy;
-                        src_x = std::clamp(src_x, 0, (int)pad_w - 1);
-                        src_y = std::clamp(src_y, 0, (int)pad_h - 1);
-                        padded[row_base + (size_t)x] =
-                            padded[(size_t)src_y * (size_t)pad_w + (size_t)src_x];
+                    const int src_y = (int)y + cp.dy;
+                    const int src_x0 = (int)x_base + cp.dx;
+                    if (src_y >= 0 && src_y < pad_h_i && src_x0 >= 0 && src_x0 + 7 < pad_w_i) {
+                        int16_t* dst = &padded[row_base + (size_t)x_base];
+                        int16_t* src = &padded[(size_t)src_y * (size_t)pad_w + (size_t)src_x0];
+                        std::memcpy(dst, src, 8 * sizeof(int16_t));
+                    } else {
+                        for (uint32_t px = 0; px < 8; px++) {
+                            const uint32_t x = x_base + px;
+                            int src_x = (int)x + cp.dx;
+                            int src_y2 = (int)y + cp.dy;
+                            src_x = std::clamp(src_x, 0, pad_w_i - 1);
+                            src_y2 = std::clamp(src_y2, 0, pad_h_i - 1);
+                            padded[row_base + (size_t)x] =
+                                padded[(size_t)src_y2 * (size_t)pad_w + (size_t)src_x];
+                        }
                     }
                     continue;
                 }
@@ -475,17 +487,29 @@ inline std::vector<int16_t> decode_plane_lossless(
                     if (t4idx < 0 || t4idx >= (int)tile4_params.size()) continue;
                     const auto& t4 = tile4_params[(size_t)t4idx];
                     const int qy = (yoff >= 4) ? 1 : 0;
-                    for (uint32_t px = 0; px < 8; px++) {
-                        const uint32_t x = x_base + px;
-                        const int qx = (px >= 4) ? 1 : 0;
+                    for (int qx = 0; qx < 2; qx++) {
                         const int q = qy * 2 + qx;
                         const int cand_idx = t4.indices[q];
-                        int src_x = (int)x + kTileMatch4Candidates[cand_idx].dx;
-                        int src_y = (int)y + kTileMatch4Candidates[cand_idx].dy;
-                        src_x = std::clamp(src_x, 0, (int)pad_w - 1);
-                        src_y = std::clamp(src_y, 0, (int)pad_h - 1);
-                        padded[row_base + (size_t)x] =
-                            padded[(size_t)src_y * (size_t)pad_w + (size_t)src_x];
+                        const CopyParams& cand = kTileMatch4Candidates[cand_idx];
+                        const uint32_t seg_x_base = x_base + (uint32_t)(qx * 4);
+                        const int src_y = (int)y + cand.dy;
+                        const int src_x0 = (int)seg_x_base + cand.dx;
+
+                        if (src_y >= 0 && src_y < pad_h_i && src_x0 >= 0 && src_x0 + 3 < pad_w_i) {
+                            int16_t* dst = &padded[row_base + (size_t)seg_x_base];
+                            int16_t* src = &padded[(size_t)src_y * (size_t)pad_w + (size_t)src_x0];
+                            std::memcpy(dst, src, 4 * sizeof(int16_t));
+                        } else {
+                            for (uint32_t px = 0; px < 4; px++) {
+                                const uint32_t x = seg_x_base + px;
+                                int src_x = (int)x + cand.dx;
+                                int src_y2 = (int)y + cand.dy;
+                                src_x = std::clamp(src_x, 0, pad_w_i - 1);
+                                src_y2 = std::clamp(src_y2, 0, pad_h_i - 1);
+                                padded[row_base + (size_t)x] =
+                                    padded[(size_t)src_y2 * (size_t)pad_w + (size_t)src_x];
+                            }
+                        }
                     }
                     continue;
                 }
@@ -506,7 +530,7 @@ inline std::vector<int16_t> decode_plane_lossless(
                         case 5: pred = LosslessFilter::med_predictor(a, b, c); break;
                         default: pred = 0; break;
                     }
-                    if (residual_idx < filter_residuals.size()) {
+                    if (residual_idx < residual_size) {
                         padded[pos] = filter_residuals[residual_idx++] + pred;
                     }
                 }
