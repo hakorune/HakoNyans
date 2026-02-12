@@ -16,10 +16,11 @@ namespace detail {
 inline std::vector<uint8_t> compress_global_chain_lz(const std::vector<uint8_t>& src) {
     if (src.empty()) return {};
 
-    constexpr int HASH_BITS = 16;
-    constexpr int HASH_SIZE = 1 << HASH_BITS;
-    constexpr int WINDOW_SIZE = 65535;
-    constexpr int CHAIN_DEPTH = 16;
+    const int HASH_BITS = 16;
+    const int HASH_SIZE = 1 << HASH_BITS;
+    const int WINDOW_SIZE = 65535;
+    const int CHAIN_DEPTH = 32;
+    const int MIN_DIST_LEN3 = 128;
 
     const size_t src_size = src.size();
     std::vector<uint8_t> out;
@@ -69,7 +70,7 @@ inline std::vector<uint8_t> compress_global_chain_lz(const std::vector<uint8_t>&
                            src[ref_pos + (size_t)len] == src[pos + (size_t)len]) {
                         len++;
                     }
-                    const bool acceptable = (len >= 4) || (len == 3 && dist <= 64);
+                    const bool acceptable = (len >= 4) || (len == 3 && dist <= MIN_DIST_LEN3);
                     if (acceptable && (len > best_len || (len == best_len && dist < best_dist))) {
                         best_len = len;
                         best_dist = dist;
@@ -342,8 +343,10 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile(
     if (!mode1.empty() && mode1.size() < best.size()) {
         best = std::move(mode1);
     }
-    if (!mode2.empty() && mode2.size() < best.size()) {
-        best = std::move(mode2);
+    if (!mode2.empty()) {
+        if (mode2.size() <= best.size()) {
+            best = std::move(mode2);
+        }
     }
     return best;
 }
