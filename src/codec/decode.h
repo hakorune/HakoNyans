@@ -682,7 +682,7 @@ public:
             };
 
             uint8_t mode = td[1];
-            if (mode != 0) return std::vector<int16_t>(width * height, 0);
+            if (mode != 0 && mode != 1) return std::vector<int16_t>(width * height, 0);
 
             uint32_t pixel_count = read_u32(td + 2);
             uint32_t pred_count = read_u32(td + 6);
@@ -695,13 +695,43 @@ public:
                 return std::vector<int16_t>(width * height, 0);
             }
 
-            size_t pred_off = 18;
-            size_t resid_off = pred_off + pred_count;
-            if (resid_off > ts || resid_payload_size > ts - resid_off) {
-                return std::vector<int16_t>(width * height, 0);
+            std::vector<uint8_t> pred_ids;
+            pred_ids.resize(pred_count, 0);
+
+            size_t resid_off = 0;
+            if (mode == 0) {
+                size_t pred_off = 18;
+                resid_off = pred_off + pred_count;
+                if (resid_off > ts || resid_payload_size > ts - resid_off) {
+                    return std::vector<int16_t>(width * height, 0);
+                }
+                std::memcpy(pred_ids.data(), td + pred_off, pred_count);
+            } else {
+                if (ts < 27) return std::vector<int16_t>(width * height, 0);
+                uint8_t pred_mode = td[18];
+                uint32_t pred_raw_count = read_u32(td + 19);
+                uint32_t pred_payload_size = read_u32(td + 23);
+                if (pred_raw_count != pred_count) return std::vector<int16_t>(width * height, 0);
+                size_t pred_payload_off = 27;
+                if (pred_payload_off > ts || pred_payload_size > ts - pred_payload_off) {
+                    return std::vector<int16_t>(width * height, 0);
+                }
+                const uint8_t* pred_payload_ptr = td + pred_payload_off;
+                if (pred_mode == 0) {
+                    if (pred_payload_size < pred_count) return std::vector<int16_t>(width * height, 0);
+                    std::memcpy(pred_ids.data(), pred_payload_ptr, pred_count);
+                } else if (pred_mode == 1) {
+                    pred_ids = decode_byte_stream(pred_payload_ptr, pred_payload_size, pred_count);
+                    if (pred_ids.size() != pred_count) return std::vector<int16_t>(width * height, 0);
+                } else {
+                    return std::vector<int16_t>(width * height, 0);
+                }
+                resid_off = pred_payload_off + pred_payload_size;
+                if (resid_off > ts || resid_payload_size > ts - resid_off) {
+                    return std::vector<int16_t>(width * height, 0);
+                }
             }
 
-            const uint8_t* pred_ptr = td + pred_off;
             const uint8_t* resid_ptr = td + resid_off;
 
             auto lz_payload = decode_byte_stream_shared_lz(resid_ptr, resid_payload_size, 0);
@@ -713,14 +743,24 @@ public:
             std::vector<int16_t> padded(expected_pixels, 0);
             size_t rb = 0;
             for (uint32_t y = 0; y < pad_h; y++) {
-                uint8_t pid = pred_ptr[y];
+                uint8_t pid = pred_ids[y];
                 for (uint32_t x = 0; x < pad_w; x++) {
                     int16_t left = (x > 0) ? padded[(size_t)y * pad_w + (x - 1)] : 0;
                     int16_t up = (y > 0) ? padded[(size_t)(y - 1) * pad_w + x] : 0;
+                    int16_t ul = (x > 0 && y > 0) ? padded[(size_t)(y - 1) * pad_w + (x - 1)] : 0;
                     int16_t pred = 0;
-                    if (pid == 0) pred = left;
-                    else if (pid == 1) pred = up;
-                    else pred = (int16_t)(((int)left + (int)up) / 2);
+                    if (mode == 0) {
+                        if (pid == 0) pred = left;
+                        else if (pid == 1) pred = up;
+                        else pred = (int16_t)(((int)left + (int)up) / 2);
+                    } else {
+                        if (pid == 0) pred = left;
+                        else if (pid == 1) pred = up;
+                        else if (pid == 2) pred = (int16_t)(((int)left + (int)up) / 2);
+                        else if (pid == 3) pred = LosslessFilter::paeth_predictor(left, up, ul);
+                        else if (pid == 4) pred = LosslessFilter::med_predictor(left, up, ul);
+                        else pred = 0;
+                    }
 
                     uint16_t zz = (uint16_t)resid_bytes[rb] | ((uint16_t)resid_bytes[rb + 1] << 8);
                     rb += 2;

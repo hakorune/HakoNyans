@@ -99,7 +99,8 @@ inline PreflightMetrics analyze_preflight(const int16_t* plane, uint32_t width, 
     if (m.unique_sample <= 48) m.likely_screen = true;
     else if (m.unique_sample <= 96 && m.avg_run_x100 >= 280) m.likely_screen = true;
     else m.likely_screen = false;
-    if (m.mean_abs_diff_x100 >= 2200) m.likely_screen = false;
+    // Keep low-color UI content as screen-like even when edges are sharp.
+    if (m.mean_abs_diff_x100 >= 2200 && m.unique_sample > 96) m.likely_screen = false;
     return m;
 }
 

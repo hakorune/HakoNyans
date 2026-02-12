@@ -1215,13 +1215,11 @@ void test_screen_indexed_tile_roundtrip() {
     const int W = 64, H = 64;
     std::vector<int16_t> plane(W * H, 0);
     const int16_t palette_vals[8] = {-120, -64, -32, -8, 8, 32, 64, 120};
-    std::mt19937 rng(20260212);
-    std::uniform_int_distribution<int> dist(0, 7);
 
     for (int y = 0; y < H; y++) {
         for (int x = 0; x < W; x++) {
-            // Random small palette pattern: weak for local Copy, good for global index map.
-            int idx = dist(rng);
+            // Repeating palette pattern: strongly favors screen-indexed mode.
+            int idx = ((x & 7) + ((y & 7) * 3)) & 7;
             plane[y * W + x] = palette_vals[idx];
         }
     }

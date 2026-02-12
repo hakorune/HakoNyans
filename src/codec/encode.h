@@ -1123,6 +1123,9 @@ public:
             [](int16_t v) { return zigzag_encode_val(v); },
             [](const std::vector<uint8_t>& bytes) {
                 return GrayscaleEncoder::encode_byte_stream_shared_lz(bytes);
+            },
+            [](const std::vector<uint8_t>& bytes) {
+                return GrayscaleEncoder::encode_byte_stream(bytes);
             }
         );
     }
