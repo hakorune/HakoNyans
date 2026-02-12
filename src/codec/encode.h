@@ -28,6 +28,8 @@
 #include "lossless_tile_packer.h"
 #include "lossless_filter_rows.h"
 #include "lossless_route_competition.h"
+#include "lossless_stream_diagnostics.h"
+#include "lossy_tile_packer.h"
 // New modular components
 #include "cfl_codec.h"
 #include "token_stream_codec.h"
@@ -480,55 +482,33 @@ public:
                 target_pindex_meta_ratio_percent, kBandPindexMinStreamBytes
             );
             pindex_data = serialize_band_pindex_blob(pindex_low, pindex_mid, pindex_high);
-            // TileHeader v3 (lossy): 10 fields (40 bytes)
-            uint32_t sz[10] = {
-                (uint32_t)dc_stream.size(), 
-                (uint32_t)ac_low_stream.size(), 
-                (uint32_t)ac_mid_stream.size(),
-                (uint32_t)ac_high_stream.size(),
-                (uint32_t)pindex_data.size(), 
-                (uint32_t)q_deltas.size(), 
-                (uint32_t)cfl_data.size(),
-                (uint32_t)bt_data.size(),
-                (uint32_t)pal_data.size(), 
-                (uint32_t)cpy_data.size()
-            };
-            tile_data.resize(40); std::memcpy(&tile_data[0], sz, 40);
-            tile_data.insert(tile_data.end(), dc_stream.begin(), dc_stream.end());
-            tile_data.insert(tile_data.end(), ac_low_stream.begin(), ac_low_stream.end());
-            tile_data.insert(tile_data.end(), ac_mid_stream.begin(), ac_mid_stream.end());
-            tile_data.insert(tile_data.end(), ac_high_stream.begin(), ac_high_stream.end());
-            if (sz[4]>0) tile_data.insert(tile_data.end(), pindex_data.begin(), pindex_data.end());
-            if (sz[5]>0) { const uint8_t* p = reinterpret_cast<const uint8_t*>(q_deltas.data()); tile_data.insert(tile_data.end(), p, p + sz[5]); }
-            if (sz[6]>0) { tile_data.insert(tile_data.end(), cfl_data.begin(), cfl_data.end()); }
-            if (sz[7]>0) tile_data.insert(tile_data.end(), bt_data.begin(), bt_data.end());
-            if (sz[8]>0) tile_data.insert(tile_data.end(), pal_data.begin(), pal_data.end());
-            if (sz[9]>0) tile_data.insert(tile_data.end(), cpy_data.begin(), cpy_data.end());
+            tile_data = lossy_tile_packer::pack_band_group_tile(
+                dc_stream,
+                ac_low_stream,
+                ac_mid_stream,
+                ac_high_stream,
+                pindex_data,
+                q_deltas,
+                cfl_data,
+                bt_data,
+                pal_data,
+                cpy_data
+            );
         } else {
             auto ac_stream = encode_tokens(
                 ac_tokens, build_cdf(ac_tokens), pi ? &pindex_data : nullptr,
                 target_pindex_meta_ratio_percent
             );
-            // TileHeader v2 (legacy): 8 fields (32 bytes)
-            uint32_t sz[8] = {
-                (uint32_t)dc_stream.size(),
-                (uint32_t)ac_stream.size(),
-                (uint32_t)pindex_data.size(),
-                (uint32_t)q_deltas.size(),
-                (uint32_t)cfl_data.size(),
-                (uint32_t)bt_data.size(),
-                (uint32_t)pal_data.size(),
-                (uint32_t)cpy_data.size()
-            };
-            tile_data.resize(32); std::memcpy(&tile_data[0], sz, 32);
-            tile_data.insert(tile_data.end(), dc_stream.begin(), dc_stream.end());
-            tile_data.insert(tile_data.end(), ac_stream.begin(), ac_stream.end());
-            if (sz[2] > 0) tile_data.insert(tile_data.end(), pindex_data.begin(), pindex_data.end());
-            if (sz[3] > 0) { const uint8_t* p = reinterpret_cast<const uint8_t*>(q_deltas.data()); tile_data.insert(tile_data.end(), p, p + sz[3]); }
-            if (sz[4] > 0) { tile_data.insert(tile_data.end(), cfl_data.begin(), cfl_data.end()); }
-            if (sz[5] > 0) tile_data.insert(tile_data.end(), bt_data.begin(), bt_data.end());
-            if (sz[6] > 0) tile_data.insert(tile_data.end(), pal_data.begin(), pal_data.end());
-            if (sz[7] > 0) tile_data.insert(tile_data.end(), cpy_data.begin(), cpy_data.end());
+            tile_data = lossy_tile_packer::pack_legacy_tile(
+                dc_stream,
+                ac_stream,
+                pindex_data,
+                q_deltas,
+                cfl_data,
+                bt_data,
+                pal_data,
+                cpy_data
+            );
         }
 
         return tile_data;
@@ -1280,85 +1260,17 @@ public:
         size_t tile4_raw_size = tile4_results.size() * 2;
 
         // Stream-level diagnostics for lossless mode decision tuning.
-        {
-            auto& s = tl_lossless_mode_debug_stats_;
-            s.block_types_bytes_sum += bt_data.size();
-            s.palette_stream_bytes_sum += pal_data.size();
-            s.tile4_stream_bytes_sum += tile4_data.size();
-
-            for (uint8_t v : bt_data) {
-                int run = ((v >> 2) & 0x3F) + 1;
-                uint8_t type = (v & 0x03);
-                s.block_type_runs_sum++;
-                if (run <= 2) s.block_type_short_runs++;
-                if (run >= 16) s.block_type_long_runs++;
-                switch (type) {
-                    case 0: s.block_type_runs_dct++; break;
-                    case 1: s.block_type_runs_palette++; break;
-                    case 2: s.block_type_runs_copy++; break;
-                    case 3: s.block_type_runs_tile4++; break;
-                    default: break;
-                }
-            }
-
-            s.copy_stream_bytes_sum += cpy_data.size();
-            s.copy_ops_total += copy_ops.size();
-            for (const auto& cp : copy_ops) {
-                if (CopyCodec::small_vector_index(cp) >= 0) s.copy_ops_small++;
-                else s.copy_ops_raw++;
-            }
-            if (!copy_ops.empty()) {
-                if (copy_wrapper_mode == 1) s.copy_wrap_mode1++;
-                else if (copy_wrapper_mode == 2) s.copy_wrap_mode2++;
-                else s.copy_wrap_mode0++;
-            }
-
-            if (!copy_ops.empty() && !cpy_raw.empty()) {
-                s.copy_stream_count++;
-                uint8_t mode = cpy_raw[0];
-                uint64_t payload_bits = 0;
-                if (mode == 0) {
-                    s.copy_stream_mode0++;
-                    payload_bits = (uint64_t)copy_ops.size() * 32ull;
-                } else if (mode == 1) {
-                    s.copy_stream_mode1++;
-                    payload_bits = (uint64_t)copy_ops.size() * 2ull;
-                } else if (mode == 2) {
-                    s.copy_stream_mode2++;
-                    if (cpy_raw.size() >= 2) {
-                        uint8_t used_mask = cpy_raw[1];
-                        int used_count = CopyCodec::popcount4(used_mask);
-                        int bits_dyn = CopyCodec::small_vector_bits(used_count);
-                        if (bits_dyn == 0) s.copy_mode2_zero_bit_streams++;
-                        s.copy_mode2_dynamic_bits_sum += (uint64_t)bits_dyn;
-                        payload_bits = (uint64_t)copy_ops.size() * (uint64_t)std::max(0, bits_dyn);
-                    }
-                } else if (mode == 3) {
-                    s.copy_stream_mode3++;
-                    if (cpy_raw.size() >= 2) {
-                        size_t num_tokens = cpy_raw.size() - 2; // header is 2 bytes
-                        s.copy_mode3_run_tokens_sum += num_tokens;
-                        // Parse tokens to count runs and long runs
-                        for (size_t ti = 2; ti < cpy_raw.size(); ti++) {
-                            int run = (cpy_raw[ti] & 0x3F) + 1;
-                            s.copy_mode3_runs_sum += (uint64_t)run;
-                            if (run >= 16) s.copy_mode3_long_runs++;
-                        }
-                    }
-                    payload_bits = (uint64_t)(cpy_raw.size() - 2) * 8ull; // tokens are payload
-                }
-                uint64_t stream_bits = (uint64_t)cpy_data.size() * 8ull;
-                s.copy_stream_payload_bits_sum += payload_bits;
-                s.copy_stream_overhead_bits_sum += (stream_bits > payload_bits) ? (stream_bits - payload_bits) : 0ull;
-            }
-
-            s.tile4_stream_raw_bytes_sum += tile4_raw_size;
-            if (tile4_raw_size > 0) {
-                if (tile4_mode == 1) s.tile4_stream_mode1++;
-                else if (tile4_mode == 2) s.tile4_stream_mode2++;
-                else s.tile4_stream_mode0++;
-            }
-        }
+        lossless_stream_diagnostics::accumulate(
+            tl_lossless_mode_debug_stats_,
+            bt_data,
+            pal_data,
+            tile4_data,
+            tile4_raw_size,
+            copy_ops,
+            cpy_raw,
+            cpy_data,
+            copy_wrapper_mode
+        );
 
         // --- Step 5: Compress filter_ids (Phase 9n) ---
         std::vector<uint8_t> filter_ids_packed = lossless_stream_wrappers::wrap_filter_ids_stream(
