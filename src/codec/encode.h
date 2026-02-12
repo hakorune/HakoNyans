@@ -17,6 +17,9 @@
 #include "shared_cdf.h"
 #include "lossless_mode_debug_stats.h"
 #include "lossless_screen_helpers.h"
+#include "lossless_mode_select.h"
+#include "lossless_screen_route.h"
+#include "lossless_natural_route.h"
 #include <vector>
 #include <cstring>
 #include <stdexcept>
@@ -1056,364 +1059,65 @@ public:
         return output;
     }
 
-    // ------------------------------------------------------------------------
-    // Lossless mode bit estimators (coarse heuristics for mode decision only)
-    // Units: 1 unit = 0.5 bits (scaled by 2)
-    // ------------------------------------------------------------------------
     static int estimate_copy_bits(const CopyParams& cp, int tile_width, LosslessProfile profile) {
-        (void)tile_width;
-        int bits2 = 4;  // block_type (2 bits * 2)
-        int small_idx = CopyCodec::small_vector_index(cp);
-        if (small_idx >= 0) {
-            bits2 += 4;  // small-vector code (2 bits * 2)
-            bits2 += 4;  // amortized stream/mode overhead (2 bits * 2)
-        } else {
-            bits2 += 64; // raw dx/dy payload fallback (32 bits * 2)
-        }
-        
-        // Profile-based bias
-        if (profile == LosslessProfile::PHOTO) bits2 += 8; // +4 bits
-        else if (profile == LosslessProfile::ANIME) bits2 += 6; // +3 bits
-        // UI: +0 bits
-
-        return bits2;
+        return lossless_mode_select::estimate_copy_bits(cp, tile_width, static_cast<int>(profile));
     }
 
     static int estimate_palette_index_bits_per_pixel(int palette_size) {
-        if (palette_size <= 1) return 0;
-        if (palette_size <= 2) return 1;
-        if (palette_size <= 4) return 2;
-        return 3;
+        return lossless_mode_select::estimate_palette_index_bits_per_pixel(palette_size);
     }
 
     static int estimate_palette_bits(const Palette& p, int transitions, LosslessProfile profile) {
-        if (p.size == 0) return std::numeric_limits<int>::max();
-        int bits2 = 4;   // block_type (2 bits * 2)
-        bits2 += 16;     // per-block palette header (8 bits * 2)
-        int wide_colors = 0;
-        for (int i = 0; i < p.size; i++) {
-            if (p.colors[i] < -128 || p.colors[i] > 127) wide_colors++;
-        }
-        bits2 += ((int)p.size - wide_colors) * 16; // 8 bits * 2
-        bits2 += wide_colors * 32;                 // 16 bits * 2
-
-        if (p.size <= 1) return bits2;
-        if (p.size == 2) {
-            // 2-color blocks are mask-based in PaletteCodec.
-            // Lower transitions usually compress better via dictionary reuse.
-            bits2 += (transitions <= 24) ? 48 : 128; // (24/64 bits * 2)
-            if (profile != LosslessProfile::PHOTO && transitions <= 16) bits2 -= 16; // screen bias
-            return bits2;
-        }
-
-        int bits_per_index = estimate_palette_index_bits_per_pixel((int)p.size);
-        bits2 += 64 * bits_per_index * 2;
-        if (profile != LosslessProfile::PHOTO) {
-            // UI/Anime often have repeated local index patterns that the palette stream dictionary
-            // and wrappers compress better than this coarse estimate suggests.
-            if (transitions <= 16) bits2 -= 96;
-            else if (transitions <= 24) bits2 -= 64;
-            else if (transitions <= 32) bits2 -= 32;
-        } else {
-            // Keep photo mode conservative for >2-color palettes.
-            bits2 += ((int)p.size - wide_colors) * 16;
-            bits2 += wide_colors * 32;
-        }
-        return bits2;
+        return lossless_mode_select::estimate_palette_bits(p, transitions, static_cast<int>(profile));
     }
 
     static int estimate_filter_symbol_bits2(int abs_residual, LosslessProfile profile) {
-        if (abs_residual == 0) return (profile == LosslessProfile::PHOTO) ? 1 : 2;  // 0.5 bits (photo) / 1.0 bits (default)
-        if (abs_residual <= 1) return 4;  // 2 bits * 2
-        if (abs_residual <= 3) return 6;  // 3 bits * 2
-        if (abs_residual <= 7) return 8;  // 4 bits * 2
-        if (abs_residual <= 15) return 10; // 5 bits * 2
-        if (abs_residual <= 31) return 12; // 6 bits * 2
-        if (abs_residual <= 63) return 14; // 7 bits * 2
-        if (abs_residual <= 127) return 16; // 8 bits * 2
-        return 20; // 10 bits * 2
+        return lossless_mode_select::estimate_filter_symbol_bits2(abs_residual, static_cast<int>(profile));
     }
 
     static int lossless_filter_candidates(LosslessProfile profile) {
-        // Keep MED only for photo-like profile to avoid UI/anime regressions.
-        return (profile == LosslessProfile::PHOTO) ? LosslessFilter::FILTER_COUNT : LosslessFilter::FILTER_MED;
+        return lossless_mode_select::lossless_filter_candidates(static_cast<int>(profile));
     }
 
     static int estimate_filter_bits(
         const int16_t* padded, uint32_t pad_w, uint32_t pad_h, int cur_x, int cur_y, LosslessProfile profile
     ) {
-        (void)pad_h;
-        int best_bits2 = std::numeric_limits<int>::max();
-        const int filter_count = lossless_filter_candidates(profile);
-        for (int f = 0; f < filter_count; f++) {
-            int bits2 = 4; // block_type (2 bits * 2)
-            bits2 += 6;    // effective filter_id overhead (3 bits * 2)
-            for (int y = 0; y < 8; y++) {
-                for (int x = 0; x < 8; x++) {
-                    int px = cur_x + x;
-                    int py = cur_y + y;
-                    int16_t orig = padded[py * (int)pad_w + px];
-                    int16_t a = (px > 0) ? padded[py * (int)pad_w + (px - 1)] : 0;
-                    int16_t b = (py > 0) ? padded[(py - 1) * (int)pad_w + px] : 0;
-                    int16_t c = (px > 0 && py > 0) ? padded[(py - 1) * (int)pad_w + (px - 1)] : 0;
-                    int16_t pred = 0;
-                    switch (f) {
-                        case 0: pred = 0; break;
-                        case 1: pred = a; break;
-                        case 2: pred = b; break;
-                        case 3: pred = (int16_t)(((int)a + (int)b) / 2); break;
-                        case 4: pred = LosslessFilter::paeth_predictor(a, b, c); break;
-                        case 5: pred = LosslessFilter::med_predictor(a, b, c); break;
-                    }
-                    int abs_r = std::abs((int)orig - (int)pred);
-                    bits2 += estimate_filter_symbol_bits2(abs_r, profile);
-                }
-            }
-            best_bits2 = std::min(best_bits2, bits2);
-        }
-        return best_bits2;
+        return lossless_mode_select::estimate_filter_bits(
+            padded, pad_w, pad_h, cur_x, cur_y, static_cast<int>(profile)
+        );
     }
 
-    static int bits_for_symbol_count(int count) {
-        return lossless_screen::bits_for_symbol_count(count);
-    }
-
-    static std::vector<uint8_t> pack_index_bits(const std::vector<uint8_t>& indices, int bits) {
-        return lossless_screen::pack_index_bits(indices, bits);
-    }
-
-    using ScreenPreflightMetrics = lossless_screen::PreflightMetrics;
-
-    enum class ScreenBuildFailReason : uint8_t {
-        NONE = 0,
-        TOO_MANY_UNIQUE = 1,
-        EMPTY_HIST = 2,
-        INDEX_MISS = 3,
-        INTERNAL = 4
-    };
+    using ScreenPreflightMetrics = lossless_screen_route::ScreenPreflightMetrics;
+    using ScreenBuildFailReason = lossless_screen_route::ScreenBuildFailReason;
 
     static ScreenPreflightMetrics analyze_screen_indexed_preflight(
         const int16_t* plane, uint32_t width, uint32_t height
     ) {
-        return lossless_screen::analyze_preflight(plane, width, height);
+        return lossless_screen_route::analyze_screen_indexed_preflight(plane, width, height);
     }
 
-    // Screen-profile v1 candidate:
-    // [0xAD][mode:u8][bits:u8][reserved:u8][palette_count:u16][pixel_count:u32][raw_packed_size:u32]
-    // [palette:int16 * palette_count][payload]
-    // mode=0: raw packed index bytes, mode=1: rANS(payload), mode=2: LZ(payload)
     static std::vector<uint8_t> encode_plane_lossless_screen_indexed_tile(
         const int16_t* plane, uint32_t width, uint32_t height,
         ScreenBuildFailReason* fail_reason = nullptr
     ) {
-        if (fail_reason) *fail_reason = ScreenBuildFailReason::NONE;
-        if (!plane || width == 0 || height == 0) {
-            if (fail_reason) *fail_reason = ScreenBuildFailReason::INTERNAL;
-            return {};
-        }
-        uint32_t pad_w = ((width + 7) / 8) * 8;
-        uint32_t pad_h = ((height + 7) / 8) * 8;
-        const uint32_t pixel_count = pad_w * pad_h;
-        if (pixel_count == 0) {
-            if (fail_reason) *fail_reason = ScreenBuildFailReason::INTERNAL;
-            return {};
-        }
-
-        std::unordered_map<int16_t, uint32_t> freq;
-        freq.reserve(128);
-        for (uint32_t y = 0; y < pad_h; y++) {
-            uint32_t sy = std::min(y, height - 1);
-            for (uint32_t x = 0; x < pad_w; x++) {
-                uint32_t sx = std::min(x, width - 1);
-                int16_t v = plane[sy * width + sx];
-                freq[v]++;
-                if (freq.size() > 64) {
-                    if (fail_reason) *fail_reason = ScreenBuildFailReason::TOO_MANY_UNIQUE;
-                    return {};
-                }
+        return lossless_screen_route::encode_plane_lossless_screen_indexed_tile(
+            plane, width, height, fail_reason,
+            [](const std::vector<uint8_t>& bytes) {
+                return GrayscaleEncoder::encode_byte_stream(bytes);
             }
-        }
-        if (freq.empty()) {
-            if (fail_reason) *fail_reason = ScreenBuildFailReason::EMPTY_HIST;
-            return {};
-        }
-
-        std::vector<std::pair<int16_t, uint32_t>> freq_pairs(freq.begin(), freq.end());
-        std::sort(freq_pairs.begin(), freq_pairs.end(), [](const auto& a, const auto& b) {
-            if (a.second != b.second) return a.second > b.second;
-            return a.first < b.first;
-        });
-        if (freq_pairs.size() > 64) {
-            if (fail_reason) *fail_reason = ScreenBuildFailReason::TOO_MANY_UNIQUE;
-            return {};
-        }
-
-        std::vector<int16_t> palette_vals;
-        palette_vals.reserve(freq_pairs.size());
-        std::unordered_map<int16_t, uint8_t> val_to_idx;
-        val_to_idx.reserve(freq_pairs.size() * 2);
-        for (size_t i = 0; i < freq_pairs.size(); i++) {
-            palette_vals.push_back(freq_pairs[i].first);
-            val_to_idx[freq_pairs[i].first] = (uint8_t)i;
-        }
-
-        const int bits_per_index = bits_for_symbol_count((int)palette_vals.size());
-        std::vector<uint8_t> indices;
-        indices.reserve(pixel_count);
-        for (uint32_t y = 0; y < pad_h; y++) {
-            uint32_t sy = std::min(y, height - 1);
-            for (uint32_t x = 0; x < pad_w; x++) {
-                uint32_t sx = std::min(x, width - 1);
-                int16_t v = plane[sy * width + sx];
-                auto it = val_to_idx.find(v);
-                if (it == val_to_idx.end()) {
-                    if (fail_reason) *fail_reason = ScreenBuildFailReason::INDEX_MISS;
-                    return {};
-                }
-                indices.push_back(it->second);
-            }
-        }
-
-        auto packed = pack_index_bits(indices, bits_per_index);
-        std::vector<uint8_t> payload = packed;
-        uint8_t mode = 0;
-
-        if (!packed.empty()) {
-            auto packed_rans = encode_byte_stream(packed);
-            if (!packed_rans.empty() && packed_rans.size() < payload.size()) {
-                payload = std::move(packed_rans);
-                mode = 1;
-            }
-
-            auto packed_lz = TileLZ::compress(packed);
-            if (!packed_lz.empty() && packed_lz.size() < payload.size()) {
-                payload = std::move(packed_lz);
-                mode = 2;
-            }
-        }
-
-        std::vector<uint8_t> out;
-        out.reserve(14 + palette_vals.size() * 2 + payload.size());
-        out.push_back(FileHeader::WRAPPER_MAGIC_SCREEN_INDEXED);
-        out.push_back(mode);
-        out.push_back((uint8_t)bits_per_index);
-        out.push_back(0);
-        uint16_t pcount = (uint16_t)palette_vals.size();
-        out.push_back((uint8_t)(pcount & 0xFF));
-        out.push_back((uint8_t)((pcount >> 8) & 0xFF));
-        out.push_back((uint8_t)(pixel_count & 0xFF));
-        out.push_back((uint8_t)((pixel_count >> 8) & 0xFF));
-        out.push_back((uint8_t)((pixel_count >> 16) & 0xFF));
-        out.push_back((uint8_t)((pixel_count >> 24) & 0xFF));
-        uint32_t raw_packed_size = (uint32_t)packed.size();
-        out.push_back((uint8_t)(raw_packed_size & 0xFF));
-        out.push_back((uint8_t)((raw_packed_size >> 8) & 0xFF));
-        out.push_back((uint8_t)((raw_packed_size >> 16) & 0xFF));
-        out.push_back((uint8_t)((raw_packed_size >> 24) & 0xFF));
-
-        for (int16_t v : palette_vals) {
-            uint16_t uv = (uint16_t)v;
-            out.push_back((uint8_t)(uv & 0xFF));
-            out.push_back((uint8_t)((uv >> 8) & 0xFF));
-        }
-        out.insert(out.end(), payload.begin(), payload.end());
-        if (fail_reason) *fail_reason = ScreenBuildFailReason::NONE;
-        return out;
+        );
     }
 
-    // Natural/photo-oriented route:
-    // Per-row predictor selection (SUB/UP/AVG), residual(zigzag16) serialization,
-    // then LZ + shared-CDF rANS on the residual byte stream.
     static std::vector<uint8_t> encode_plane_lossless_natural_row_tile(
         const int16_t* plane, uint32_t width, uint32_t height
     ) {
-        if (!plane || width == 0 || height == 0) return {};
-        const uint32_t pad_w = ((width + 7) / 8) * 8;
-        const uint32_t pad_h = ((height + 7) / 8) * 8;
-        const uint32_t pixel_count = pad_w * pad_h;
-        if (pixel_count == 0) return {};
-
-        std::vector<int16_t> padded(pixel_count, 0);
-        for (uint32_t y = 0; y < pad_h; y++) {
-            uint32_t sy = std::min(y, height - 1);
-            for (uint32_t x = 0; x < pad_w; x++) {
-                uint32_t sx = std::min(x, width - 1);
-                padded[(size_t)y * pad_w + x] = plane[(size_t)sy * width + sx];
+        return lossless_natural_route::encode_plane_lossless_natural_row_tile(
+            plane, width, height,
+            [](int16_t v) { return zigzag_encode_val(v); },
+            [](const std::vector<uint8_t>& bytes) {
+                return GrayscaleEncoder::encode_byte_stream_shared_lz(bytes);
             }
-        }
-
-        std::vector<uint8_t> row_pred_ids(pad_h, 0);
-        std::vector<uint8_t> residual_bytes;
-        residual_bytes.reserve((size_t)pixel_count * 2);
-
-        std::vector<int16_t> recon(pixel_count, 0);
-        for (uint32_t y = 0; y < pad_h; y++) {
-            int best_p = 0;
-            uint64_t best_cost = std::numeric_limits<uint64_t>::max();
-
-            for (int p = 0; p < 3; p++) {
-                uint64_t cost = 0;
-                for (uint32_t x = 0; x < pad_w; x++) {
-                    int16_t left = (x > 0) ? recon[(size_t)y * pad_w + (x - 1)] : 0;
-                    int16_t up = (y > 0) ? recon[(size_t)(y - 1) * pad_w + x] : 0;
-                    int16_t pred = 0;
-                    if (p == 0) pred = left;                // SUB
-                    else if (p == 1) pred = up;            // UP
-                    else pred = (int16_t)(((int)left + (int)up) / 2); // AVG
-                    int16_t cur = padded[(size_t)y * pad_w + x];
-                    cost += (uint64_t)std::abs((int)cur - (int)pred);
-                }
-                if (cost < best_cost) {
-                    best_cost = cost;
-                    best_p = p;
-                }
-            }
-            row_pred_ids[y] = (uint8_t)best_p;
-
-            for (uint32_t x = 0; x < pad_w; x++) {
-                int16_t left = (x > 0) ? recon[(size_t)y * pad_w + (x - 1)] : 0;
-                int16_t up = (y > 0) ? recon[(size_t)(y - 1) * pad_w + x] : 0;
-                int16_t pred = 0;
-                if (best_p == 0) pred = left;
-                else if (best_p == 1) pred = up;
-                else pred = (int16_t)(((int)left + (int)up) / 2);
-
-                int16_t cur = padded[(size_t)y * pad_w + x];
-                int16_t resid = (int16_t)(cur - pred);
-                recon[(size_t)y * pad_w + x] = (int16_t)(pred + resid);
-
-                uint16_t zz = zigzag_encode_val(resid);
-                residual_bytes.push_back((uint8_t)(zz & 0xFF));
-                residual_bytes.push_back((uint8_t)((zz >> 8) & 0xFF));
-            }
-        }
-
-        auto resid_lz = TileLZ::compress(residual_bytes);
-        if (resid_lz.empty()) return {};
-        auto resid_lz_rans = encode_byte_stream_shared_lz(resid_lz);
-        if (resid_lz_rans.empty()) return {};
-
-        // [magic][mode=0][pixel_count:4][pred_count:4][resid_raw_count:4][resid_payload_size:4][pred_ids][payload]
-        std::vector<uint8_t> out;
-        out.reserve(18 + row_pred_ids.size() + resid_lz_rans.size());
-        out.push_back(FileHeader::WRAPPER_MAGIC_NATURAL_ROW);
-        out.push_back(0);
-        uint32_t pred_count = pad_h;
-        uint32_t resid_raw_count = (uint32_t)residual_bytes.size();
-        uint32_t resid_payload_size = (uint32_t)resid_lz_rans.size();
-        auto push_u32 = [&](uint32_t v) {
-            out.push_back((uint8_t)(v & 0xFF));
-            out.push_back((uint8_t)((v >> 8) & 0xFF));
-            out.push_back((uint8_t)((v >> 16) & 0xFF));
-            out.push_back((uint8_t)((v >> 24) & 0xFF));
-        };
-        push_u32(pixel_count);
-        push_u32(pred_count);
-        push_u32(resid_raw_count);
-        push_u32(resid_payload_size);
-        out.insert(out.end(), row_pred_ids.begin(), row_pred_ids.end());
-        out.insert(out.end(), resid_lz_rans.begin(), resid_lz_rans.end());
-        return out;
+        );
     }
 
     /**
