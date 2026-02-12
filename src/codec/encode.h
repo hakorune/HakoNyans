@@ -24,6 +24,12 @@
 #include "lossless_palette_diagnostics.h"
 #include "lossless_block_types_codec.h"
 #include "lossless_filter_lo_codec.h"
+// New modular components
+#include "cfl_codec.h"
+#include "token_stream_codec.h"
+#include "lossy_image_helpers.h"
+#include "lossless_tile4_codec.h"
+#include "byte_stream_encoder.h"
 #include <vector>
 #include <cstring>
 #include <stdexcept>
@@ -76,81 +82,21 @@ public:
         return LosslessProfile::PHOTO;
     }
 
+    // Delegations to cfl_codec module
     static uint32_t extract_tile_cfl_size(const std::vector<uint8_t>& tile_data, bool use_band_group_cdf) {
-        if (use_band_group_cdf) {
-            if (tile_data.size() < 40) return 0;
-            uint32_t sz[10];
-            std::memcpy(sz, tile_data.data(), 40);
-            return sz[6];
-        }
-        if (tile_data.size() < 32) return 0;
-        uint32_t sz[8];
-        std::memcpy(sz, tile_data.data(), 32);
-        return sz[4];
+        return cfl_codec::extract_tile_cfl_size(tile_data, use_band_group_cdf);
     }
 
     static std::vector<uint8_t> serialize_cfl_legacy(const std::vector<CfLParams>& cfl_params) {
-        std::vector<uint8_t> out;
-        if (cfl_params.empty()) return out;
-        out.reserve(cfl_params.size() * 2);
-        for (const auto& p : cfl_params) {
-            int a_q6 = (int)std::lround(std::clamp(p.alpha_cb * 64.0f, -128.0f, 127.0f));
-            int b_center = (int)std::lround(std::clamp(p.beta_cb, 0.0f, 255.0f));
-            // Legacy predictor: pred = a*y + b_legacy
-            // Current centered model: pred = a*(y-128) + b_center
-            int b_legacy = std::clamp(b_center - 2 * a_q6, 0, 255);
-            out.push_back(static_cast<uint8_t>(static_cast<int8_t>(a_q6)));
-            out.push_back(static_cast<uint8_t>(b_legacy));
-        }
-        return out;
+        return cfl_codec::serialize_cfl_legacy(cfl_params);
     }
 
     static std::vector<uint8_t> serialize_cfl_adaptive(const std::vector<CfLParams>& cfl_params) {
-        std::vector<uint8_t> out;
-        if (cfl_params.empty()) return out;
-
-        const int nb = (int)cfl_params.size();
-        int applied_count = 0;
-        for (const auto& p : cfl_params) {
-            if (p.alpha_cr > 0.5f) applied_count++;
-        }
-        if (applied_count == 0) return out;
-
-        const size_t mask_bytes = ((size_t)nb + 7) / 8;
-        out.resize(mask_bytes, 0);
-        out.reserve(mask_bytes + (size_t)applied_count * 2);
-        for (int i = 0; i < nb; i++) {
-            if (cfl_params[i].alpha_cr > 0.5f) {
-                out[(size_t)i / 8] |= (uint8_t)(1u << (i % 8));
-                int a_q6 = (int)std::lround(std::clamp(cfl_params[i].alpha_cb * 64.0f, -128.0f, 127.0f));
-                int b = (int)std::lround(std::clamp(cfl_params[i].beta_cb, 0.0f, 255.0f));
-                out.push_back(static_cast<uint8_t>(static_cast<int8_t>(a_q6)));
-                out.push_back(static_cast<uint8_t>(b));
-            }
-        }
-        return out;
+        return cfl_codec::serialize_cfl_adaptive(cfl_params);
     }
 
     static std::vector<uint8_t> build_cfl_payload(const std::vector<CfLParams>& cfl_params) {
-        if (cfl_params.empty()) return {};
-        bool any_applied = false;
-        for (const auto& p : cfl_params) {
-            if (p.alpha_cr > 0.5f) {
-                any_applied = true;
-                break;
-            }
-        }
-        if (!any_applied) return {};
-
-        auto adaptive = serialize_cfl_adaptive(cfl_params);
-        const size_t legacy_size = cfl_params.size() * 2;
-        // If sizes collide, keep legacy to avoid decode-side ambiguity.
-        if (!adaptive.empty() && adaptive.size() != legacy_size) {
-            return adaptive;
-        }
-
-        // Safe fallback for ambiguous sizes.
-        return serialize_cfl_legacy(cfl_params);
+        return cfl_codec::build_cfl_payload(cfl_params);
     }
 
     static std::vector<uint8_t> encode(const uint8_t* pixels, uint32_t width, uint32_t height, uint8_t quality = 75) {
@@ -583,23 +529,19 @@ public:
         return tile_data;
     }
 
-    static CDFTable build_cdf(const std::vector<Token>& t) { std::vector<uint32_t> f(76, 1); for (const auto& x : t) { int sym = static_cast<int>(x.type); if (sym < 76) f[sym]++; } return CDFBuilder().build_from_freq(f); }
+    // Delegations to token_stream_codec module
+    static CDFTable build_cdf(const std::vector<Token>& t) {
+        return token_stream_codec::build_cdf(t);
+    }
+
     static int calculate_pindex_interval(
         size_t token_count,
         size_t encoded_token_stream_bytes,
         int target_meta_ratio_percent = 2
     ) {
-        if (token_count == 0 || encoded_token_stream_bytes == 0) return 4096;
-        target_meta_ratio_percent = std::clamp(target_meta_ratio_percent, 1, 10);
-        double target_meta_bytes = (double)encoded_token_stream_bytes * (double)target_meta_ratio_percent / 100.0;
-        // P-Index serialization: 12-byte header + 40 bytes/checkpoint.
-        double target_checkpoints = (target_meta_bytes - 12.0) / 40.0;
-        if (target_checkpoints < 1.0) target_checkpoints = 1.0;
-        double raw_interval = (double)token_count / target_checkpoints;
-        int interval = (int)std::llround(raw_interval);
-        interval = std::clamp(interval, 64, 4096);
-        interval = ((interval + 7) / 8) * 8;  // PIndexBuilder expects 8-aligned token interval.
-        return std::clamp(interval, 64, 4096);
+        return token_stream_codec::calculate_pindex_interval(
+            token_count, encoded_token_stream_bytes, target_meta_ratio_percent
+        );
     }
 
     static std::vector<uint8_t> serialize_band_pindex_blob(
@@ -607,19 +549,7 @@ public:
         const std::vector<uint8_t>& mid,
         const std::vector<uint8_t>& high
     ) {
-        if (low.empty() && mid.empty() && high.empty()) return {};
-        std::vector<uint8_t> out;
-        out.resize(12);
-        uint32_t low_sz = (uint32_t)low.size();
-        uint32_t mid_sz = (uint32_t)mid.size();
-        uint32_t high_sz = (uint32_t)high.size();
-        std::memcpy(&out[0], &low_sz, 4);
-        std::memcpy(&out[4], &mid_sz, 4);
-        std::memcpy(&out[8], &high_sz, 4);
-        out.insert(out.end(), low.begin(), low.end());
-        out.insert(out.end(), mid.begin(), mid.end());
-        out.insert(out.end(), high.begin(), high.end());
-        return out;
+        return token_stream_codec::serialize_band_pindex_blob(low, mid, high);
     }
 
     static std::vector<uint8_t> encode_tokens(
@@ -629,36 +559,18 @@ public:
         int target_pindex_meta_ratio_percent = 2,
         size_t min_pindex_stream_bytes = 0
     ) {
-        std::vector<uint8_t> output; int alpha = c.alphabet_size; std::vector<uint8_t> cdf_data(alpha * 4);
-        for (int i = 0; i < alpha; i++) { uint32_t f = c.freq[i]; std::memcpy(&cdf_data[i * 4], &f, 4); }
-        uint32_t cdf_size = cdf_data.size(); output.resize(4); std::memcpy(output.data(), &cdf_size, 4); output.insert(output.end(), cdf_data.begin(), cdf_data.end());
-        uint32_t token_count = t.size(); size_t count_offset = output.size(); output.resize(count_offset + 4); std::memcpy(&output[count_offset], &token_count, 4);
-        FlatInterleavedEncoder encoder; for (const auto& tok : t) encoder.encode_symbol(c, static_cast<uint8_t>(tok.type)); auto rb = encoder.finish();
-        uint32_t rans_size = rb.size(); size_t rs_offset = output.size(); output.resize(rs_offset + 4); std::memcpy(&output[rs_offset], &rans_size, 4); output.insert(output.end(), rb.begin(), rb.end());
-        std::vector<uint8_t> raw_data; uint32_t raw_count = 0;
-        for (const auto& tok : t) if (tok.raw_bits_count > 0) { raw_data.push_back(tok.raw_bits_count); raw_data.push_back(tok.raw_bits & 0xFF); raw_data.push_back((tok.raw_bits >> 8) & 0xFF); raw_count++; }
-        size_t rc_offset = output.size(); output.resize(rc_offset + 4); std::memcpy(&output[rc_offset], &raw_count, 4); output.insert(output.end(), raw_data.begin(), raw_data.end());
-        if (out_pi) {
-            if (t.empty() || output.size() < min_pindex_stream_bytes) {
-                out_pi->clear();
-            } else {
-                int interval = calculate_pindex_interval(
-                    t.size(), output.size(), target_pindex_meta_ratio_percent
-                );
-                auto pindex = PIndexBuilder::build(rb, c, t.size(), (uint32_t)interval);
-                *out_pi = PIndexCodec::serialize(pindex);
-            }
-        }
-        return output;
+        return token_stream_codec::encode_tokens(
+            t, c, out_pi, target_pindex_meta_ratio_percent, min_pindex_stream_bytes
+        );
     }
 
+    // Delegations to lossy_image_helpers module
     static std::vector<uint8_t> pad_image(const uint8_t* pixels, uint32_t width, uint32_t height, uint32_t pad_w, uint32_t pad_h) {
-        std::vector<uint8_t> padded(pad_w * pad_h);
-        for (uint32_t y = 0; y < pad_h; y++) for (uint32_t x = 0; x < pad_w; x++) padded[y * pad_w + x] = pixels[std::min(y, height - 1) * width + std::min(x, width - 1)];
-        return padded;
+        return lossy_image_helpers::pad_image(pixels, width, height, pad_w, pad_h);
     }
+
     static void extract_block(const uint8_t* pixels, uint32_t stride, uint32_t height, int bx, int by, int16_t block[64]) {
-        for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) block[y * 8 + x] = static_cast<int16_t>(pixels[(by * 8 + y) * stride + (bx * 8 + x)]) - 128;
+        lossy_image_helpers::extract_block(pixels, stride, height, bx, by, block);
     }
 
 public:
@@ -909,9 +821,8 @@ public:
             CopyParams(-12, 0), CopyParams(0, -12), CopyParams(-12, -4), CopyParams(-4, -12),
             CopyParams(-16, 0), CopyParams(0, -16), CopyParams(-16, -4), CopyParams(-4, -16)
         };
-        struct Tile4Result {
-            uint8_t indices[4];
-        };
+        // Use Tile4Result from lossless_tile4_codec module
+        using Tile4Result = lossless_tile4_codec::Tile4Result;
         std::vector<Tile4Result> tile4_results;
         
         struct LosslessModeParams {
@@ -1522,46 +1433,20 @@ public:
                     (uint64_t)(cpy_raw.size() - cpy_data.size());
             }
         }
-        std::vector<uint8_t> tile4_raw;
-        for (const auto& res : tile4_results) {
-            tile4_raw.push_back((uint8_t)((res.indices[1] << 4) | (res.indices[0] & 0x0F)));
-            tile4_raw.push_back((uint8_t)((res.indices[3] << 4) | (res.indices[2] & 0x0F)));
-        }
-        std::vector<uint8_t> tile4_data = tile4_raw;
-        int tile4_mode = 0; // 0=raw, 1=rANS, 2=LZ
-        if (!tile4_raw.empty()) {
-            auto tile4_rans = encode_byte_stream(tile4_raw);
-            if (!tile4_rans.empty()) {
-                std::vector<uint8_t> wrapped;
-                wrapped.reserve(1 + 1 + 4 + tile4_rans.size());
-                wrapped.push_back(FileHeader::WRAPPER_MAGIC_TILE4);
-                wrapped.push_back(1);
-                uint32_t raw_count = (uint32_t)tile4_raw.size();
-                wrapped.resize(wrapped.size() + 4);
-                std::memcpy(wrapped.data() + 2, &raw_count, 4);
-                wrapped.insert(wrapped.end(), tile4_rans.begin(), tile4_rans.end());
-                if (wrapped.size() < tile4_data.size()) {
-                    tile4_data = std::move(wrapped);
-                    tile4_mode = 1;
-                }
+        // Encode Tile4 stream using module function
+        std::vector<uint8_t> tile4_data = lossless_tile4_codec::encode_tile4_stream(
+            tile4_results,
+            [](const std::vector<uint8_t>& bytes) -> std::vector<uint8_t> {
+                return byte_stream_encoder::encode_byte_stream(bytes);
             }
-
-            auto tile4_lz = TileLZ::compress(tile4_raw);
-            if (!tile4_lz.empty()) {
-                std::vector<uint8_t> wrapped;
-                wrapped.reserve(1 + 1 + 4 + tile4_lz.size());
-                wrapped.push_back(FileHeader::WRAPPER_MAGIC_TILE4);
-                wrapped.push_back(2);
-                uint32_t raw_count = (uint32_t)tile4_raw.size();
-                wrapped.resize(wrapped.size() + 4);
-                std::memcpy(wrapped.data() + 2, &raw_count, 4);
-                wrapped.insert(wrapped.end(), tile4_lz.begin(), tile4_lz.end());
-                if (wrapped.size() < tile4_data.size()) {
-                    tile4_data = std::move(wrapped);
-                    tile4_mode = 2;
-                }
-            }
+        );
+        // Determine tile4_mode from wrapper magic
+        int tile4_mode = 0;
+        if (!tile4_data.empty() && tile4_data[0] == FileHeader::WRAPPER_MAGIC_TILE4) {
+            tile4_mode = (int)tile4_data[1]; // mode is second byte
         }
+        // Compute raw tile4 size for diagnostics (reverse of serialization)
+        size_t tile4_raw_size = tile4_results.size() * 2;
 
         // Stream-level diagnostics for lossless mode decision tuning.
         {
@@ -1636,8 +1521,8 @@ public:
                 s.copy_stream_overhead_bits_sum += (stream_bits > payload_bits) ? (stream_bits - payload_bits) : 0ull;
             }
 
-            s.tile4_stream_raw_bytes_sum += tile4_raw.size();
-            if (!tile4_raw.empty()) {
+            s.tile4_stream_raw_bytes_sum += tile4_raw_size;
+            if (tile4_raw_size > 0) {
                 if (tile4_mode == 1) s.tile4_stream_mode1++;
                 else if (tile4_mode == 2) s.tile4_stream_mode2++;
                 else s.tile4_stream_mode0++;
@@ -1874,68 +1759,17 @@ public:
      * Format: [4B cdf_size][cdf_data][4B count][4B rans_size][rans_data]
      */
     static std::vector<uint8_t> encode_byte_stream(const std::vector<uint8_t>& bytes) {
-        // Build frequency table (alphabet = 256)
-        std::vector<uint32_t> freq(256, 1);  // Laplace smoothing
-        for (uint8_t b : bytes) freq[b]++;
-
-        CDFTable cdf = CDFBuilder().build_from_freq(freq);
-
-        // Serialize CDF
-        std::vector<uint8_t> cdf_data(256 * 4);
-        for (int i = 0; i < 256; i++) {
-            uint32_t f = cdf.freq[i];
-            std::memcpy(&cdf_data[i * 4], &f, 4);
-        }
-
-        // Encode symbols
-        FlatInterleavedEncoder encoder;
-        for (uint8_t b : bytes) {
-            encoder.encode_symbol(cdf, b);
-        }
-        auto rans_bytes = encoder.finish();
-
-        // Pack: cdf_size + cdf + count + rans_size + rans
-        std::vector<uint8_t> output;
-        uint32_t cdf_size = (uint32_t)cdf_data.size();
-        uint32_t count = (uint32_t)bytes.size();
-        uint32_t rans_size = (uint32_t)rans_bytes.size();
-
-        output.resize(4); std::memcpy(output.data(), &cdf_size, 4);
-        output.insert(output.end(), cdf_data.begin(), cdf_data.end());
-        size_t off = output.size();
-        output.resize(off + 4); std::memcpy(&output[off], &count, 4);
-        off = output.size();
-        output.resize(off + 4); std::memcpy(&output[off], &rans_size, 4);
-        output.insert(output.end(), rans_bytes.begin(), rans_bytes.end());
-        return output;
+        return byte_stream_encoder::encode_byte_stream(bytes);
     }
 
     // Shared/static-CDF variant for Mode5 payload (TileLZ bytes).
     // Format: [4B count][4B rans_size][rans_data]
     static std::vector<uint8_t> encode_byte_stream_shared_lz(const std::vector<uint8_t>& bytes) {
-        const CDFTable& cdf = get_mode5_shared_lz_cdf();
-
-        FlatInterleavedEncoder encoder;
-        for (uint8_t b : bytes) {
-            encoder.encode_symbol(cdf, b);
-        }
-        auto rans_bytes = encoder.finish();
-
-        std::vector<uint8_t> output;
-        uint32_t count = (uint32_t)bytes.size();
-        uint32_t rans_size = (uint32_t)rans_bytes.size();
-        output.resize(8);
-        std::memcpy(output.data(), &count, 4);
-        std::memcpy(output.data() + 4, &rans_size, 4);
-        output.insert(output.end(), rans_bytes.begin(), rans_bytes.end());
-        return output;
+        return byte_stream_encoder::encode_byte_stream_shared_lz(bytes);
     }
 
 private:
-    static const CDFTable& get_mode5_shared_lz_cdf() {
-        static const CDFTable cdf = CDFBuilder().build_from_freq(mode5_shared_lz_freq());
-        return cdf;
-    }
+    // Note: get_mode5_shared_lz_cdf is now in byte_stream_encoder module
 };
 
 } // namespace hakonyans
