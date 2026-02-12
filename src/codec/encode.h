@@ -26,6 +26,8 @@
 #include "lossless_filter_lo_codec.h"
 #include "lossless_stream_wrappers.h"
 #include "lossless_tile_packer.h"
+#include "lossless_filter_rows.h"
+#include "lossless_route_competition.h"
 // New modular components
 #include "cfl_codec.h"
 #include "token_stream_codec.h"
@@ -1177,87 +1179,20 @@ public:
             }
             // Filter mode keeps default DCT tag.
         }
-
         // --- Step 2: Custom filtering (block-type aware, full image context) ---
-        // For each row: select best filter (considering Filter-block pixels only),
-        // compute residuals for Filter-block pixels only.
-        // Prediction context uses original pixel values — Palette/Copy pixels
-        // serve as perfect anchors for prediction.
-        std::vector<uint8_t> filter_ids(pad_h);
+        std::vector<uint8_t> filter_ids;
         std::vector<int16_t> filter_residuals;
-
-        for (uint32_t y = 0; y < pad_h; y++) {
-            int by_row = y / 8;
-
-            // Check if this row has any filter blocks
-            bool has_filter = false;
-            for (int bx = 0; bx < nx; bx++) {
-                if (block_types[by_row * nx + bx] == FileHeader::BlockType::DCT) {
-                    has_filter = true;
-                    break;
-                }
-            }
-            if (!has_filter) {
-                filter_ids[y] = 0;
-                continue;
-            }
-
-
-            // Try all filters, pick one minimizing sum(|residual|) for filter-block pixels
-            int best_f = 0;
-            int64_t best_sum = INT64_MAX;
-            const int filter_count = lossless_filter_candidates(profile);
-            for (int f = 0; f < filter_count; f++) {
-                int64_t sum = 0;
-                for (uint32_t x = 0; x < pad_w; x++) {
-                    int bx_col = x / 8;
-                    if (block_types[by_row * nx + bx_col] != FileHeader::BlockType::DCT) continue;
-                    int16_t orig = padded[y * pad_w + x];
-                    int16_t a = (x > 0) ? padded[y * pad_w + x - 1] : 0;
-                    int16_t b = (y > 0) ? padded[(y - 1) * pad_w + x] : 0;
-                    int16_t c = (x > 0 && y > 0) ? padded[(y - 1) * pad_w + x - 1] : 0;
-                    int16_t pred;
-                    switch (f) {
-                        case 0: pred = 0; break;
-                        case 1: pred = a; break;
-                        case 2: pred = b; break;
-                        case 3: pred = (int16_t)(((int)a + (int)b) / 2); break;
-                        case 4: pred = LosslessFilter::paeth_predictor(a, b, c); break;
-                        case 5: pred = LosslessFilter::med_predictor(a, b, c); break;
-                        default: pred = 0; break;
-                    }
-                    sum += std::abs((int)(orig - pred));
-                }
-                if (sum < best_sum) { best_sum = sum; best_f = f; }
-            }
-            filter_ids[y] = (uint8_t)best_f;
-            tl_lossless_mode_debug_stats_.filter_rows_with_pixels++;
-            if (best_f >= 0 && best_f < 6) {
-                tl_lossless_mode_debug_stats_.filter_row_id_hist[best_f]++;
-            }
-            if (best_f == 5) tl_lossless_mode_debug_stats_.filter_med_selected++;
-
-            // Emit residuals for filter-block pixels only
-            for (uint32_t x = 0; x < pad_w; x++) {
-                int bx_col = x / 8;
-                if (block_types[by_row * nx + bx_col] != FileHeader::BlockType::DCT) continue;
-                int16_t orig = padded[y * pad_w + x];
-                int16_t a = (x > 0) ? padded[y * pad_w + x - 1] : 0;
-                int16_t b = (y > 0) ? padded[(y - 1) * pad_w + x] : 0;
-                int16_t c = (x > 0 && y > 0) ? padded[(y - 1) * pad_w + x - 1] : 0;
-                int16_t pred;
-                switch (best_f) {
-                    case 0: pred = 0; break;
-                    case 1: pred = a; break;
-                    case 2: pred = b; break;
-                    case 3: pred = (int16_t)(((int)a + (int)b) / 2); break;
-                    case 4: pred = LosslessFilter::paeth_predictor(a, b, c); break;
-                    case 5: pred = LosslessFilter::med_predictor(a, b, c); break;
-                    default: pred = 0; break;
-                }
-                filter_residuals.push_back(orig - pred);
-            }
-        }
+        lossless_filter_rows::build_filter_rows_and_residuals(
+            padded,
+            pad_w,
+            pad_h,
+            nx,
+            block_types,
+            static_cast<int>(profile),
+            &tl_lossless_mode_debug_stats_,
+            filter_ids,
+            filter_residuals
+        );
 
         // --- Step 3: ZigZag + rANS encode filter residuals (data-adaptive CDF) ---
         std::vector<uint8_t> lo_stream, hi_stream;
@@ -1448,166 +1383,26 @@ public:
             cpy_data,
             tile4_data
         );
-
-        std::vector<uint8_t> best_tile = tile_data;
-        enum class ExtraRoute : uint8_t { LEGACY = 0, SCREEN = 1, NATURAL = 2 };
-        ExtraRoute chosen_route = ExtraRoute::LEGACY;
-        const size_t legacy_size = tile_data.size();
-
-        // Phase 9u-3: Screen-indexed selection by direct competition.
-        size_t selected_screen_size = 0;
-        ScreenPreflightMetrics screen_prefilter_metrics{};
-        bool screen_prefilter_valid = false;
-        bool screen_prefilter_likely_screen = false;
-        tl_lossless_mode_debug_stats_.screen_candidate_count++;
-
-        if (width * height < 4096) {
-            tl_lossless_mode_debug_stats_.screen_rejected_pre_gate++;
-            tl_lossless_mode_debug_stats_.screen_rejected_small_tile++;
-        } else {
-            const auto pre = analyze_screen_indexed_preflight(data, width, height);
-            screen_prefilter_metrics = pre;
-            screen_prefilter_valid = true;
-            screen_prefilter_likely_screen = pre.likely_screen;
-            tl_lossless_mode_debug_stats_.screen_prefilter_eval_count++;
-            tl_lossless_mode_debug_stats_.screen_prefilter_unique_sum += pre.unique_sample;
-            tl_lossless_mode_debug_stats_.screen_prefilter_avg_run_x100_sum += pre.avg_run_x100;
-
-            if (!pre.likely_screen) {
-                tl_lossless_mode_debug_stats_.screen_rejected_pre_gate++;
-                tl_lossless_mode_debug_stats_.screen_rejected_prefilter_texture++;
-            } else {
-                ScreenBuildFailReason fail_reason = ScreenBuildFailReason::NONE;
-                auto screen_tile = encode_plane_lossless_screen_indexed_tile(data, width, height, &fail_reason);
-
-                if (screen_tile.empty() || screen_tile.size() < 14) {
-                    tl_lossless_mode_debug_stats_.screen_rejected_pre_gate++;
-                    tl_lossless_mode_debug_stats_.screen_rejected_build_fail++;
-                    if (fail_reason == ScreenBuildFailReason::TOO_MANY_UNIQUE) {
-                        tl_lossless_mode_debug_stats_.screen_build_fail_too_many_unique++;
-                    } else if (fail_reason == ScreenBuildFailReason::EMPTY_HIST) {
-                        tl_lossless_mode_debug_stats_.screen_build_fail_empty_hist++;
-                    } else if (fail_reason == ScreenBuildFailReason::INDEX_MISS) {
-                        tl_lossless_mode_debug_stats_.screen_build_fail_index_miss++;
-                    } else {
-                        tl_lossless_mode_debug_stats_.screen_build_fail_other++;
-                    }
-                } else {
-                    uint8_t screen_mode = screen_tile[1];
-                    uint16_t palette_count = (uint16_t)screen_tile[4] | ((uint16_t)screen_tile[5] << 8);
-                    uint32_t packed_size = (uint32_t)screen_tile[10] | ((uint32_t)screen_tile[11] << 8) |
-                                           ((uint32_t)screen_tile[12] << 16) | ((uint32_t)screen_tile[13] << 24);
-
-                    tl_lossless_mode_debug_stats_.screen_palette_count_sum += palette_count;
-
-                    int bits_per_index = 0;
-                    if (palette_count <= 2) bits_per_index = 1;
-                    else if (palette_count <= 4) bits_per_index = 2;
-                    else if (palette_count <= 16) bits_per_index = 4;
-                    else if (palette_count <= 64) bits_per_index = 6;
-                    else bits_per_index = 8;
-                    tl_lossless_mode_debug_stats_.screen_bits_per_index_sum += bits_per_index;
-
-                    bool reject_strict = false;
-                    if (palette_count > 64) {
-                        reject_strict = true;
-                        tl_lossless_mode_debug_stats_.screen_rejected_palette_limit++;
-                    }
-                    if (bits_per_index > 6) {
-                        reject_strict = true;
-                        tl_lossless_mode_debug_stats_.screen_rejected_bits_limit++;
-                    }
-
-                    if (reject_strict) {
-                        tl_lossless_mode_debug_stats_.screen_rejected_pre_gate++;
-                    } else {
-                        const size_t screen_size = screen_tile.size();
-                        tl_lossless_mode_debug_stats_.screen_compete_legacy_bytes_sum += legacy_size;
-                        tl_lossless_mode_debug_stats_.screen_compete_screen_bytes_sum += screen_size;
-
-                        bool is_ui_like = (palette_count <= 24 && bits_per_index <= 5);
-                        if (is_ui_like) tl_lossless_mode_debug_stats_.screen_ui_like_count++;
-                        else tl_lossless_mode_debug_stats_.screen_anime_like_count++;
-
-                        int gate_permille = 1000;
-                        if (profile == LosslessProfile::UI) gate_permille = 995;
-                        else if (profile == LosslessProfile::ANIME) gate_permille = 990;
-
-                        bool adopt = (screen_size * 1000ull <= legacy_size * (uint64_t)gate_permille);
-                        if (adopt) {
-                            selected_screen_size = screen_size;
-                            if (screen_size < best_tile.size()) {
-                                best_tile = std::move(screen_tile);
-                                chosen_route = ExtraRoute::SCREEN;
-                            }
-                        } else {
-                            tl_lossless_mode_debug_stats_.screen_rejected_cost_gate++;
-                            if (screen_size > legacy_size) {
-                                tl_lossless_mode_debug_stats_.screen_loss_bytes_sum += (screen_size - legacy_size);
-                            }
-                            if (screen_mode == 0 && packed_size > 2048) {
-                                tl_lossless_mode_debug_stats_.screen_mode0_reject_count++;
-                            }
-                        }
-                    }
-                }
+        return lossless_route_competition::choose_best_tile(
+            tile_data,
+            data,
+            width,
+            height,
+            static_cast<int>(profile),
+            &tl_lossless_mode_debug_stats_,
+            [](const int16_t* p, uint32_t w, uint32_t h) {
+                return GrayscaleEncoder::analyze_screen_indexed_preflight(p, w, h);
+            },
+            [](const int16_t* p, uint32_t w, uint32_t h, ScreenBuildFailReason* fail_reason) {
+                return GrayscaleEncoder::encode_plane_lossless_screen_indexed_tile(p, w, h, fail_reason);
+            },
+            [](const ScreenPreflightMetrics& m) {
+                return GrayscaleEncoder::is_natural_like(m);
+            },
+            [](const int16_t* p, uint32_t w, uint32_t h) {
+                return GrayscaleEncoder::encode_plane_lossless_natural_row_tile(p, w, h);
             }
-        }
-
-        // Phase 9v (Natural route): row residual + LZ+rANS(shared CDF)
-        size_t natural_size = 0;
-        const bool large_image = ((uint64_t)width * (uint64_t)height >= 262144ull);
-        bool natural_prefilter_ok = false;
-        if (screen_prefilter_valid) {
-            auto& ns = tl_lossless_mode_debug_stats_;
-            ns.natural_prefilter_eval_count++;
-            ns.natural_prefilter_unique_sum += screen_prefilter_metrics.unique_sample;
-            ns.natural_prefilter_avg_run_x100_sum += screen_prefilter_metrics.avg_run_x100;
-            ns.natural_prefilter_mad_x100_sum += screen_prefilter_metrics.mean_abs_diff_x100;
-            ns.natural_prefilter_entropy_x100_sum += screen_prefilter_metrics.run_entropy_hint_x100;
-            natural_prefilter_ok = is_natural_like(screen_prefilter_metrics);
-            if (natural_prefilter_ok) ns.natural_prefilter_pass_count++;
-            else ns.natural_prefilter_reject_count++;
-        }
-        const bool allow_natural_route =
-            (profile == LosslessProfile::PHOTO) ||
-            natural_prefilter_ok ||
-            (screen_prefilter_valid && !screen_prefilter_likely_screen);
-
-        if (large_image && allow_natural_route) {
-            tl_lossless_mode_debug_stats_.natural_row_candidate_count++;
-            auto natural_tile = encode_plane_lossless_natural_row_tile(data, width, height);
-            if (natural_tile.empty()) {
-                tl_lossless_mode_debug_stats_.natural_row_build_fail_count++;
-            } else {
-                natural_size = natural_tile.size();
-                // PHOTO path: non-worse gate (<= legacy)
-                if (natural_size <= legacy_size) {
-                    if (natural_size < best_tile.size()) {
-                        best_tile = std::move(natural_tile);
-                        chosen_route = ExtraRoute::NATURAL;
-                    }
-                } else {
-                    tl_lossless_mode_debug_stats_.natural_row_rejected_cost_gate++;
-                    tl_lossless_mode_debug_stats_.natural_row_loss_bytes_sum += (natural_size - legacy_size);
-                }
-            }
-        }
-
-        // Finalize route telemetry against the actually chosen payload.
-        if (chosen_route == ExtraRoute::NATURAL) {
-            tl_lossless_mode_debug_stats_.natural_row_selected_count++;
-            if (legacy_size > natural_size) {
-                tl_lossless_mode_debug_stats_.natural_row_gain_bytes_sum += (legacy_size - natural_size);
-            }
-        } else if (chosen_route == ExtraRoute::SCREEN) {
-            tl_lossless_mode_debug_stats_.screen_selected_count++;
-            if (legacy_size > selected_screen_size) {
-                tl_lossless_mode_debug_stats_.screen_gain_bytes_sum += (legacy_size - selected_screen_size);
-            }
-        }
-
-        return best_tile;
+        );
     }
 
 
