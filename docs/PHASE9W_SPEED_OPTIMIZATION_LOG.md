@@ -63,3 +63,41 @@ Phase 9w speed work, in a format suitable for later paper write-up.
 - `bench_results/phase9w_speed_stage_profile_after_thread_tokens.csv`
 - `bench_results/phase9w_speed_stage_profile_after_thread_tokens_rerun.csv`
 
+## 2026-02-13: TileLZ Decode Fast-Path Trial (Not Promoted)
+
+### Objective
+- Validate ChatGPT-proposed "TileLZ decode fast-path first" idea with minimal surface area.
+- Keep format and compression behavior unchanged.
+
+### Trial Scope
+- Prototype branch changes (later reverted) in:
+  - `src/codec/lz_tile.h`
+  - direct decode path rewrite with memcpy/memset-oriented match expansion
+- Added permanent safety coverage in:
+  - `tests/test_lossless_round2.cpp`
+    - random-size TileLZ roundtrip matrix
+    - overlap cases (`dist=1`, `dist=2`)
+    - malformed stream failure check
+
+### Validation
+- Build and tests were green in trial:
+  - `cmake --build . -j`
+  - `ctest --output-on-failure`
+  - `17/17 PASS`
+
+### Result Summary
+- Previous promoted stage:
+  - `bench_results/phase9w_speed_stage_profile_after_thread_tokens_rerun.csv`
+- Trial rerun:
+  - `bench_results/phase9w_speed_stage_profile_after_tilelz_decode_fast_rerun.csv`
+
+| Metric | Previous promoted | TileLZ trial | Delta |
+|---|---:|---:|---:|
+| median Enc(ms) | 148.649 | 149.935 | +1.286 |
+| median Dec(ms) | 17.958 | 17.942 | -0.016 |
+| median PNG/HKN | 0.2610 | 0.2610 | 0.0000 |
+| total HKN bytes | 2,977,544 | 2,977,544 | 0 |
+
+### Decision
+- **Not promoted** (kept out of mainline): decode gain was negligible while encode median regressed.
+- Kept only the additional TileLZ test coverage for future low-level iterations.

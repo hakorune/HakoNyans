@@ -755,6 +755,103 @@ void test_filter_lo_lz_rans_pipeline() {
 }
 
 // ============================================================
+// Test 18c: TileLZ core roundtrip/decode edge cases
+// ============================================================
+void test_tile_lz_core_roundtrip() {
+    TEST("TileLZ core roundtrip/decode edge cases");
+
+    std::mt19937 rng(20260212);
+    const std::vector<size_t> sizes = {
+        0, 1, 2, 3, 4, 7, 15, 31, 63, 64, 127, 255, 256, 1024, 4096, 8192
+    };
+
+    for (size_t sz : sizes) {
+        for (int kind = 0; kind < 5; kind++) {
+            std::vector<uint8_t> src(sz, 0);
+            if (kind == 0) {
+                for (size_t i = 0; i < sz; i++) src[i] = (uint8_t)(rng() & 0xFF);
+            } else if (kind == 1) {
+                std::fill(src.begin(), src.end(), (uint8_t)0xAA);
+            } else if (kind == 2) {
+                for (size_t i = 0; i < sz; i++) src[i] = (uint8_t)(i & 0xFF);
+            } else if (kind == 3) {
+                for (size_t i = 0; i < sz; i++) src[i] = (uint8_t)(((i % 17) * 13) & 0xFF);
+            } else {
+                for (size_t i = 0; i < sz; i++) src[i] = (uint8_t)((i % 2 == 0) ? 0x11 : 0xEE);
+            }
+
+            auto lz = TileLZ::compress(src);
+            if (sz > 0 && lz.empty()) {
+                FAIL("compress produced empty stream for non-empty input");
+                return;
+            }
+
+            std::vector<uint8_t> out;
+            const uint8_t* p = lz.empty() ? nullptr : lz.data();
+            if (!TileLZ::decompress_to(p, lz.size(), out, src.size())) {
+                FAIL("decompress_to failed at size=" + std::to_string(sz) + ", kind=" + std::to_string(kind));
+                return;
+            }
+            if (out != src) {
+                FAIL("decompress_to mismatch at size=" + std::to_string(sz) + ", kind=" + std::to_string(kind));
+                return;
+            }
+
+            auto out2 = TileLZ::decompress(p, lz.size(), src.size());
+            if (out2 != src) {
+                FAIL("decompress mismatch at size=" + std::to_string(sz) + ", kind=" + std::to_string(kind));
+                return;
+            }
+        }
+    }
+
+    // Overlap copy (dist=1): "A" + match(7,1) => "AAAAAAAA"
+    {
+        const uint8_t stream[] = {0, 1, (uint8_t)'A', 1, 7, 1, 0};
+        std::vector<uint8_t> out;
+        if (!TileLZ::decompress_to(stream, sizeof(stream), out, 8)) {
+            FAIL("overlap dist=1 decode failed");
+            return;
+        }
+        for (uint8_t v : out) {
+            if (v != (uint8_t)'A') {
+                FAIL("overlap dist=1 decode mismatch");
+                return;
+            }
+        }
+    }
+
+    // Overlap copy (dist=2): "AB" + match(6,2) => "ABABABAB"
+    {
+        const uint8_t stream[] = {0, 2, (uint8_t)'A', (uint8_t)'B', 1, 6, 2, 0};
+        std::vector<uint8_t> out;
+        if (!TileLZ::decompress_to(stream, sizeof(stream), out, 8)) {
+            FAIL("overlap dist=2 decode failed");
+            return;
+        }
+        const uint8_t expect[] = {'A', 'B', 'A', 'B', 'A', 'B', 'A', 'B'};
+        for (size_t i = 0; i < 8; i++) {
+            if (out[i] != expect[i]) {
+                FAIL("overlap dist=2 decode mismatch");
+                return;
+            }
+        }
+    }
+
+    // Malformed stream (dist > history) must fail safely.
+    {
+        const uint8_t bad[] = {1, 4, 5, 0};
+        std::vector<uint8_t> out;
+        if (TileLZ::decompress_to(bad, sizeof(bad), out, 4)) {
+            FAIL("malformed stream unexpectedly succeeded");
+            return;
+        }
+    }
+
+    PASS();
+}
+
+// ============================================================
 // Test 19: Filter Lo malformed wrapper (Phase 9o)
 // ============================================================
 void test_filter_lo_malformed() {
@@ -1585,6 +1682,7 @@ int main() {
     test_filter_lo_delta_roundtrip();
     test_filter_lo_lz_roundtrip();
     test_filter_lo_lz_rans_pipeline();
+    test_tile_lz_core_roundtrip();
     test_filter_lo_malformed();
     test_filter_lo_mode3_roundtrip();
     test_filter_lo_mixed_rows();
