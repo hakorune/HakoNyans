@@ -565,30 +565,42 @@ int main(int argc, char** argv) {
         const double med_dec_lo = median_value(v_dec_lo);
         const double med_dec_hi = median_value(v_dec_hi);
         const double med_dec_recon = median_value(v_dec_recon);
+        const double med_enc_cpu_sum = med_enc_rgb + med_enc_cls + med_enc_plane + med_enc_pack;
+        const double med_dec_cpu_sum = med_dec_hdr + med_dec_plane + med_dec_ycocg;
 
         std::cout << "\n=== HKN Stage Breakdown (median over fixed 6) ===\n";
-        std::cout << "Encode total(ms): " << std::fixed << std::setprecision(3) << med_hkn_enc << "\n";
-        std::cout << "  rgb_to_ycocg:      " << med_enc_rgb << "\n";
-        std::cout << "  profile_classify:  " << med_enc_cls << "\n";
-        std::cout << "  planes_total:      " << med_enc_plane << "\n";
+        std::cout << "Encode wall(ms):    " << std::fixed << std::setprecision(3) << med_hkn_enc << "\n";
+        std::cout << "Encode cpu_sum(ms): " << med_enc_cpu_sum;
+        if (med_hkn_enc > 0.0) {
+            std::cout << " (cpu/wall=" << std::setprecision(3) << (med_enc_cpu_sum / med_hkn_enc) << ")";
+        }
+        std::cout << "\n";
+        std::cout << "  rgb_to_ycocg:      " << med_enc_rgb << " [cpu]\n";
+        std::cout << "  profile_classify:  " << med_enc_cls << " [cpu]\n";
+        std::cout << "  planes_total:      " << med_enc_plane << " [cpu]\n";
         std::cout << "  plane_block_class: " << med_enc_blk << "\n";
         std::cout << "  plane_filter_rows: " << med_enc_rows << "\n";
         std::cout << "  plane_lo_stream:   " << med_enc_lo << "\n";
         std::cout << "  plane_hi_stream:   " << med_enc_hi << "\n";
         std::cout << "  plane_stream_wrap: " << med_enc_wrap << "\n";
         std::cout << "  plane_route_comp:  " << med_enc_route << "\n";
-        std::cout << "  container_pack:    " << med_enc_pack << "\n";
-        std::cout << "Decode total(ms): " << med_hkn_dec << "\n";
-        std::cout << "  header_dir:        " << med_dec_hdr << "\n";
-        std::cout << "  planes_total:      " << med_dec_plane << "\n";
-        std::cout << "  ycocg_to_rgb:      " << med_dec_ycocg << "\n";
-        std::cout << "  plane_try_natural: " << med_dec_nat << "\n";
-        std::cout << "  plane_screen_wrap: " << med_dec_screen << "\n";
-        std::cout << "  plane_block_types: " << med_dec_bt << "\n";
-        std::cout << "  plane_filter_ids:  " << med_dec_fid << "\n";
-        std::cout << "  plane_filter_lo:   " << med_dec_lo << "\n";
-        std::cout << "  plane_filter_hi:   " << med_dec_hi << "\n";
-        std::cout << "  plane_reconstruct: " << med_dec_recon << "\n";
+        std::cout << "  container_pack:    " << med_enc_pack << " [cpu]\n";
+        std::cout << "Decode wall(ms):    " << med_hkn_dec << "\n";
+        std::cout << "Decode cpu_sum(ms): " << med_dec_cpu_sum;
+        if (med_hkn_dec > 0.0) {
+            std::cout << " (cpu/wall=" << std::setprecision(3) << (med_dec_cpu_sum / med_hkn_dec) << ")";
+        }
+        std::cout << "\n";
+        std::cout << "  header_dir:        " << med_dec_hdr << " [cpu]\n";
+        std::cout << "  planes_total:      " << med_dec_plane << " [cpu]\n";
+        std::cout << "  ycocg_to_rgb:      " << med_dec_ycocg << " [cpu]\n";
+        std::cout << "  plane_try_natural: " << med_dec_nat << " [cpu]\n";
+        std::cout << "  plane_screen_wrap: " << med_dec_screen << " [cpu]\n";
+        std::cout << "  plane_block_types: " << med_dec_bt << " [cpu]\n";
+        std::cout << "  plane_filter_ids:  " << med_dec_fid << " [cpu]\n";
+        std::cout << "  plane_filter_lo:   " << med_dec_lo << " [cpu]\n";
+        std::cout << "  plane_filter_hi:   " << med_dec_hi << " [cpu]\n";
+        std::cout << "  plane_reconstruct: " << med_dec_recon << " [cpu]\n";
         std::cout << "CSV saved: " << args.out_csv << "\n";
 
         if (!args.baseline_csv.empty()) {

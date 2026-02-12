@@ -5,7 +5,9 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <future>
 #include <limits>
+#include <thread>
 #include <vector>
 
 namespace hakonyans::lossless_filter_lo_codec {
@@ -27,10 +29,26 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
 ) {
     if (lo_bytes.empty()) return {};
 
-    auto lo_legacy = encode_byte_stream(lo_bytes);
-    if (stats) stats->filter_lo_raw_bytes_sum += lo_bytes.size();
+    const unsigned int hw_threads = std::max(1u, std::thread::hardware_concurrency());
+    const bool allow_parallel_base = (hw_threads >= 4 && lo_bytes.size() >= 4096);
 
-    size_t legacy_size = lo_legacy.size();
+    std::vector<uint8_t> lo_legacy;
+    std::vector<uint8_t> lo_lz;
+    std::future<std::vector<uint8_t>> fut_legacy;
+    std::future<std::vector<uint8_t>> fut_lz;
+
+    if (allow_parallel_base) {
+        fut_legacy = std::async(std::launch::async, [&]() {
+            return encode_byte_stream(lo_bytes);
+        });
+        fut_lz = std::async(std::launch::async, [&]() {
+            return compress_lz(lo_bytes);
+        });
+    } else {
+        lo_legacy = encode_byte_stream(lo_bytes);
+    }
+
+    if (stats) stats->filter_lo_raw_bytes_sum += lo_bytes.size();
 
     constexpr int kFilterLoModeWrapperGainPermilleDefault = 990;
     constexpr int kFilterLoMode5GainPermille = 995;
@@ -45,7 +63,14 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
     auto delta_rans = encode_byte_stream(delta_bytes);
     size_t delta_wrapped = 6 + delta_rans.size();
 
-    auto lo_lz = compress_lz(lo_bytes);
+    if (allow_parallel_base) {
+        lo_legacy = fut_legacy.get();
+        lo_lz = fut_lz.get();
+    } else {
+        lo_lz = compress_lz(lo_bytes);
+    }
+
+    size_t legacy_size = lo_legacy.size();
     size_t lz_wrapped = 6 + lo_lz.size();
 
     std::vector<uint8_t> lo_lz_rans;
@@ -207,13 +232,34 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
         int nonempty_ctx = 0;
         std::vector<std::vector<uint8_t>> ctx_streams(6);
         std::vector<uint32_t> ctx_raw_counts(6, 0);
-        for (int k = 0; k < 6; k++) {
-            ctx_raw_counts[k] = (uint32_t)lo_ctx[k].size();
-            if (!lo_ctx[k].empty()) nonempty_ctx++;
-            if (!lo_ctx[k].empty()) {
-                ctx_streams[k] = encode_byte_stream(lo_ctx[k]);
+        const bool allow_parallel_ctx = (hw_threads >= 6 && lo_bytes.size() >= 8192);
+        if (allow_parallel_ctx) {
+            std::vector<std::future<std::vector<uint8_t>>> futs(6);
+            std::vector<bool> launched(6, false);
+            for (int k = 0; k < 6; k++) {
+                ctx_raw_counts[k] = (uint32_t)lo_ctx[k].size();
+                if (lo_ctx[k].empty()) continue;
+                nonempty_ctx++;
+                launched[k] = true;
+                futs[k] = std::async(std::launch::async, [&, k]() {
+                    return encode_byte_stream(lo_ctx[k]);
+                });
             }
-            mode4_sz += ctx_streams[k].size();
+            for (int k = 0; k < 6; k++) {
+                if (launched[k]) {
+                    ctx_streams[k] = futs[k].get();
+                }
+                mode4_sz += ctx_streams[k].size();
+            }
+        } else {
+            for (int k = 0; k < 6; k++) {
+                ctx_raw_counts[k] = (uint32_t)lo_ctx[k].size();
+                if (!lo_ctx[k].empty()) nonempty_ctx++;
+                if (!lo_ctx[k].empty()) {
+                    ctx_streams[k] = encode_byte_stream(lo_ctx[k]);
+                }
+                mode4_sz += ctx_streams[k].size();
+            }
         }
 
         if (nonempty_ctx >= 2 && mode4_sz * 1000 <= legacy_size * kFilterLoModeWrapperGainPermilleDefault) {

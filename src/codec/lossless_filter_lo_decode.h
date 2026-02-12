@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <future>
+#include <thread>
 #include <vector>
 
 namespace hakonyans::lossless_filter_lo_decode {
@@ -158,14 +160,40 @@ inline std::vector<uint8_t> decode_filter_lo_stream(
                 }
 
                 std::vector<std::vector<uint8_t>> ctx_decoded(6);
+                size_t ctx_offsets[6] = {0, 0, 0, 0, 0, 0};
                 off = 24;
                 for (int k = 0; k < 6; k++) {
-                    if (lens[k] > 0) {
-                        ctx_decoded[k] = decode_byte_stream(payload + off, lens[k], ctx_expected[k]);
-                    } else {
-                        ctx_decoded[k].clear();
-                    }
+                    ctx_offsets[k] = off;
                     off += lens[k];
+                }
+
+                const unsigned int hw_threads =
+                    std::max(1u, std::thread::hardware_concurrency());
+                const bool allow_parallel_ctx =
+                    (hw_threads >= 6 && raw_count >= 8192);
+                if (allow_parallel_ctx) {
+                    std::vector<std::future<std::vector<uint8_t>>> futs(6);
+                    std::vector<bool> launched(6, false);
+                    for (int k = 0; k < 6; k++) {
+                        if (lens[k] == 0) continue;
+                        launched[k] = true;
+                        futs[k] = std::async(std::launch::async, [&, k]() {
+                            return decode_byte_stream(
+                                payload + ctx_offsets[k], lens[k], ctx_expected[k]
+                            );
+                        });
+                    }
+                    for (int k = 0; k < 6; k++) {
+                        if (launched[k]) ctx_decoded[k] = futs[k].get();
+                    }
+                } else {
+                    for (int k = 0; k < 6; k++) {
+                        if (lens[k] > 0) {
+                            ctx_decoded[k] = decode_byte_stream(
+                                payload + ctx_offsets[k], lens[k], ctx_expected[k]
+                            );
+                        }
+                    }
                 }
 
                 std::vector<size_t> ctx_pos(6, 0);

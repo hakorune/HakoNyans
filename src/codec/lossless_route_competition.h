@@ -5,6 +5,8 @@
 #include "lossless_screen_route.h"
 #include <cstddef>
 #include <cstdint>
+#include <future>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -66,98 +68,138 @@ inline std::vector<uint8_t> choose_best_tile(
     const bool screen_like = screen_prefilter_valid && screen_prefilter_likely_screen;
     const bool natural_like = screen_prefilter_valid && natural_prefilter_ok;
     const bool skip_screen_for_natural = natural_like && profile_id == 2;
+    const bool allow_screen_route =
+        (width * height >= 4096) && screen_prefilter_likely_screen && !skip_screen_for_natural;
 
     if (width * height < 4096) {
         stats->screen_rejected_pre_gate++;
         stats->screen_rejected_small_tile++;
+    } else if (!allow_screen_route) {
+        stats->screen_rejected_pre_gate++;
+        stats->screen_rejected_prefilter_texture++;
+    }
+
+    size_t natural_size = 0;
+    const bool allow_natural_route = natural_like || (profile_id == 2 && !screen_like);
+    const bool try_natural_route = large_image && allow_natural_route;
+    const bool can_parallel_compete = allow_screen_route && try_natural_route &&
+                                      (std::max(1u, std::thread::hardware_concurrency()) >= 2);
+
+    struct ScreenCandidateResult {
+        bool attempted = false;
+        ScreenBuildFailReason fail_reason = ScreenBuildFailReason::NONE;
+        std::vector<uint8_t> tile;
+    };
+    struct NaturalCandidateResult {
+        bool attempted = false;
+        std::vector<uint8_t> tile;
+    };
+
+    auto run_screen_candidate = [&]() -> ScreenCandidateResult {
+        ScreenCandidateResult out;
+        out.attempted = allow_screen_route;
+        if (!out.attempted) return out;
+        out.tile = encode_screen_tile(data, width, height, &out.fail_reason);
+        return out;
+    };
+    auto run_natural_candidate = [&]() -> NaturalCandidateResult {
+        NaturalCandidateResult out;
+        out.attempted = try_natural_route;
+        if (!out.attempted) return out;
+        out.tile = encode_natural_tile(data, width, height);
+        return out;
+    };
+
+    ScreenCandidateResult screen_res;
+    NaturalCandidateResult natural_res;
+    if (can_parallel_compete) {
+        auto f_screen = std::async(std::launch::async, run_screen_candidate);
+        auto f_natural = std::async(std::launch::async, run_natural_candidate);
+        screen_res = f_screen.get();
+        natural_res = f_natural.get();
     } else {
-        if (!screen_prefilter_likely_screen || skip_screen_for_natural) {
+        screen_res = run_screen_candidate();
+        natural_res = run_natural_candidate();
+    }
+
+    if (screen_res.attempted) {
+        auto& screen_tile = screen_res.tile;
+        if (screen_tile.empty() || screen_tile.size() < 14) {
             stats->screen_rejected_pre_gate++;
-            stats->screen_rejected_prefilter_texture++;
-        } else {
-            ScreenBuildFailReason fail_reason = ScreenBuildFailReason::NONE;
-            auto screen_tile = encode_screen_tile(data, width, height, &fail_reason);
-
-            if (screen_tile.empty() || screen_tile.size() < 14) {
-                stats->screen_rejected_pre_gate++;
-                stats->screen_rejected_build_fail++;
-                if (fail_reason == ScreenBuildFailReason::TOO_MANY_UNIQUE) {
-                    stats->screen_build_fail_too_many_unique++;
-                } else if (fail_reason == ScreenBuildFailReason::EMPTY_HIST) {
-                    stats->screen_build_fail_empty_hist++;
-                } else if (fail_reason == ScreenBuildFailReason::INDEX_MISS) {
-                    stats->screen_build_fail_index_miss++;
-                } else {
-                    stats->screen_build_fail_other++;
-                }
+            stats->screen_rejected_build_fail++;
+            if (screen_res.fail_reason == ScreenBuildFailReason::TOO_MANY_UNIQUE) {
+                stats->screen_build_fail_too_many_unique++;
+            } else if (screen_res.fail_reason == ScreenBuildFailReason::EMPTY_HIST) {
+                stats->screen_build_fail_empty_hist++;
+            } else if (screen_res.fail_reason == ScreenBuildFailReason::INDEX_MISS) {
+                stats->screen_build_fail_index_miss++;
             } else {
-                uint8_t screen_mode = screen_tile[1];
-                uint16_t palette_count = (uint16_t)screen_tile[4] | ((uint16_t)screen_tile[5] << 8);
-                uint32_t packed_size = (uint32_t)screen_tile[10] | ((uint32_t)screen_tile[11] << 8) |
-                                       ((uint32_t)screen_tile[12] << 16) | ((uint32_t)screen_tile[13] << 24);
+                stats->screen_build_fail_other++;
+            }
+        } else {
+            uint8_t screen_mode = screen_tile[1];
+            uint16_t palette_count = (uint16_t)screen_tile[4] | ((uint16_t)screen_tile[5] << 8);
+            uint32_t packed_size = (uint32_t)screen_tile[10] | ((uint32_t)screen_tile[11] << 8) |
+                                   ((uint32_t)screen_tile[12] << 16) | ((uint32_t)screen_tile[13] << 24);
 
-                stats->screen_palette_count_sum += palette_count;
+            stats->screen_palette_count_sum += palette_count;
 
-                int bits_per_index = 0;
-                if (palette_count <= 2) bits_per_index = 1;
-                else if (palette_count <= 4) bits_per_index = 2;
-                else if (palette_count <= 16) bits_per_index = 4;
-                else if (palette_count <= 64) bits_per_index = 6;
-                else bits_per_index = 8;
-                stats->screen_bits_per_index_sum += bits_per_index;
+            int bits_per_index = 0;
+            if (palette_count <= 2) bits_per_index = 1;
+            else if (palette_count <= 4) bits_per_index = 2;
+            else if (palette_count <= 16) bits_per_index = 4;
+            else if (palette_count <= 64) bits_per_index = 6;
+            else bits_per_index = 8;
+            stats->screen_bits_per_index_sum += bits_per_index;
 
-                bool reject_strict = false;
-                if (palette_count > 64) {
-                    reject_strict = true;
-                    stats->screen_rejected_palette_limit++;
-                }
-                if (bits_per_index > 6) {
-                    reject_strict = true;
-                    stats->screen_rejected_bits_limit++;
-                }
+            bool reject_strict = false;
+            if (palette_count > 64) {
+                reject_strict = true;
+                stats->screen_rejected_palette_limit++;
+            }
+            if (bits_per_index > 6) {
+                reject_strict = true;
+                stats->screen_rejected_bits_limit++;
+            }
 
-                if (reject_strict) {
-                    stats->screen_rejected_pre_gate++;
+            if (reject_strict) {
+                stats->screen_rejected_pre_gate++;
+            } else {
+                const size_t screen_size = screen_tile.size();
+                stats->screen_compete_legacy_bytes_sum += legacy_size;
+                stats->screen_compete_screen_bytes_sum += screen_size;
+
+                bool is_ui_like = (palette_count <= 24 && bits_per_index <= 5);
+                if (is_ui_like) stats->screen_ui_like_count++;
+                else stats->screen_anime_like_count++;
+
+                int gate_permille = 1000;
+                if (profile_id == 0) gate_permille = 995;
+                else if (profile_id == 1) gate_permille = 990;
+
+                bool adopt = (screen_size * 1000ull <= legacy_size * (uint64_t)gate_permille);
+                if (adopt) {
+                    selected_screen_size = screen_size;
+                    if (screen_size < best_tile.size()) {
+                        best_tile = std::move(screen_tile);
+                        chosen_route = ExtraRoute::SCREEN;
+                    }
                 } else {
-                    const size_t screen_size = screen_tile.size();
-                    stats->screen_compete_legacy_bytes_sum += legacy_size;
-                    stats->screen_compete_screen_bytes_sum += screen_size;
-
-                    bool is_ui_like = (palette_count <= 24 && bits_per_index <= 5);
-                    if (is_ui_like) stats->screen_ui_like_count++;
-                    else stats->screen_anime_like_count++;
-
-                    int gate_permille = 1000;
-                    if (profile_id == 0) gate_permille = 995;
-                    else if (profile_id == 1) gate_permille = 990;
-
-                    bool adopt = (screen_size * 1000ull <= legacy_size * (uint64_t)gate_permille);
-                    if (adopt) {
-                        selected_screen_size = screen_size;
-                        if (screen_size < best_tile.size()) {
-                            best_tile = std::move(screen_tile);
-                            chosen_route = ExtraRoute::SCREEN;
-                        }
-                    } else {
-                        stats->screen_rejected_cost_gate++;
-                        if (screen_size > legacy_size) {
-                            stats->screen_loss_bytes_sum += (screen_size - legacy_size);
-                        }
-                        if (screen_mode == 0 && packed_size > 2048) {
-                            stats->screen_mode0_reject_count++;
-                        }
+                    stats->screen_rejected_cost_gate++;
+                    if (screen_size > legacy_size) {
+                        stats->screen_loss_bytes_sum += (screen_size - legacy_size);
+                    }
+                    if (screen_mode == 0 && packed_size > 2048) {
+                        stats->screen_mode0_reject_count++;
                     }
                 }
             }
         }
     }
 
-    size_t natural_size = 0;
-    const bool allow_natural_route = natural_like || (profile_id == 2 && !screen_like);
-
-    if (large_image && allow_natural_route) {
+    if (natural_res.attempted) {
         stats->natural_row_candidate_count++;
-        auto natural_tile = encode_natural_tile(data, width, height);
+        auto& natural_tile = natural_res.tile;
         if (natural_tile.empty()) {
             stats->natural_row_build_fail_count++;
         } else {
