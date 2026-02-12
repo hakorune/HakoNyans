@@ -924,11 +924,54 @@ MEDの効果（Photo/Natural）を維持しつつ、UI/Anime側の将来回帰�
      - Animeカテゴリ平均 `PNG_bytes / HKN_bytes <= 1.05`
      - Photoカテゴリは悪化禁止（中央値 `<= +1%`）
      - `ctest` 全PASS、`bench_decode` スループット -5%以内
-16. [ ] Photo decodeのホットパス計測（`perf` / 自前timer）と上位3ボトルネック確定
-17. [ ] Photo向け decode最適化（CfL gate強化 → IDCT+dequant AVX2 → token分岐削減）
-18. [ ] Lossy画質回帰チェック（Artoria/UI/自然画像の目視 + PSNR/SSIM）
-19. [ ] Paper用テーブル更新（`Dec(ms)`統一、サイズ・画質・速度を同一セットで再生成）
-20. [ ] 投稿判定レビュー（勝ち筋/弱点/今後課題を1ページに要約）
+16. [x] Phase 9t-1: Filter-block診断カウンタ追加（色数/遷移/分散/代替palette8可能性）✅ (2026-02-12)
+   - 実装スコープ:
+     - `LosslessModeDebugStats` に filter選択ブロック専用統計を追加
+     - `bench_bit_accounting` に `Filter block diagnostics` セクションを追加
+     - `anime_sunset` / `vscode` / `nature_01` で比較ログを保存
+   - 検証結果:
+     - `ctest` **17/17 PASS**
+     - `anime_sunset`: `palette8_better_than_filter=0/187 (0.00%)`
+     - `vscode`: `palette8_better_than_filter=0/1 (0.00%)`
+     - `nature_01`: `palette8_better_than_filter=0/19530 (0.00%)`
+17. [x] Phase 9t-2: Anime向け Palette rescue（filter候補ブロック限定）✅ (2026-02-12, 効果未達)
+   - 実装:
+     - UI/ANIME向けに `palette_rescue` バイアスを追加（`unique<=8`, `transitions<=32`, `variance_proxy>=30000`）
+     - 通常palette候補の遷移推定を「画素値遷移」→「index遷移」に修正
+   - 結果:
+     - `anime_sunset` / `vscode` / `nature_01` とも total bytes 変化なし
+     - 主因: chroma平面の `palette_range_ok` 制約（`[-128,127]`）で rescue対象がほぼ発生しない
+18. [x] Phase 9t-3: filter_lo mode4 gate再調整（Anime限定）✅ (2026-02-12, 効果未達)
+   - 実装:
+     - `filter_lo` mode3/4 探索を `PHOTO` 限定から `ANIME` へ拡張
+   - 結果:
+     - `anime_sunset` で `filter_lo_mode0/1/2/3/4 = 3/0/0/0/0`（mode切替なし）
+     - total bytes 変化なし
+19. [ ] Photo decodeのホットパス計測（`perf` / 自前timer）と上位3ボトルネック確定
+20. [ ] Photo向け decode最適化（CfL gate強化 → IDCT+dequant AVX2 → token分岐削減）
+21. [ ] Lossy画質回帰チェック（Artoria/UI/自然画像の目視 + PSNR/SSIM）
+22. [ ] Paper用テーブル更新（`Dec(ms)`統一、サイズ・画質・速度を同一セットで再生成）
+23. [ ] 投稿判定レビュー（勝ち筋/弱点/今後課題を1ページに要約）
+24. [x] Phase 9u-1: Palette値域拡張（signed 16-bit / stream v4=0x42）✅ (2026-02-12)
+   - 実装:
+     - `src/codec/palette.h`: `Palette.colors` を `int16_t[8]` 化し、stream v4 (`0x42`) を追加
+     - `src/codec/decode.h`: lossless palette 復元の `-128` 二重適用を解消、lossy palette 復元で `+128` を明示
+     - `src/codec/encode.h`: palette stream診断パーサを v4 対応、lossless判定から `palette_range_ok` 制約を撤廃
+     - `src/codec/headers.h`: `VERSION=0x000F`, `VERSION_PALETTE_WIDE` 追加
+   - 検証:
+     - `ctest` **17/17 PASS**
+     - `anime_sunset` lossless total: **14,035B -> 13,731B**（-2.17%）
+     - `vscode` lossless total: **4,881B**（維持）
+     - `nature_01` lossless total: **817,303B**（改善）
+
+**Phase 9t 所見**:
+- `Palette` が 8bit値 (`[-128,127]`) 制約のため、YCoCg chroma 平面で palette rescue がほぼ適用不能。
+- 9t-2/9t-3 は実装済みだが、`anime_sunset` の total改善には繋がらなかった。
+- 次に効くのは `palette` の値域拡張（9bit/符号付き）または chroma専用パスの追加。
+
+**Phase 9u 所見**:
+- 値域制約の撤廃で、chromaを含む palette 候補の探索が可能になった。
+- 改善幅は `anime_sunset` で小〜中（-2.17%）に留まるため、次は `screen-indexed gate` と `palette index map` 側の改善が必要。
 
 **受け入れ基準（DoD）**:
 - [ ] `ctest` 全PASS維持

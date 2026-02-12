@@ -302,6 +302,20 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
         print_win_rate("tile4_win_rate", s.tile4_selected, s.tile4_candidates);
         print_win_rate("copy_win_rate", s.copy_selected, s.copy_candidates);
         print_win_rate("palette_win_rate", s.palette_selected, s.palette_candidates);
+        if (s.palette_rescue_attempted > 0) {
+            double rescue_pct = 100.0 * (double)s.palette_rescue_adopted /
+                                (double)s.palette_rescue_attempted;
+            std::cout << "  palette_rescue_adopted " << s.palette_rescue_adopted
+                      << "/" << s.palette_rescue_attempted
+                      << " (" << std::fixed << std::setprecision(2) << rescue_pct << "%)\n";
+            if (s.palette_rescue_adopted > 0) {
+                double avg_gain = (double)s.palette_rescue_gain_bits_sum /
+                                  (double)s.palette_rescue_adopted;
+                std::cout << "  palette_rescue_avg_gain "
+                          << std::fixed << std::setprecision(2)
+                          << avg_gain << " bits/block\n";
+            }
+        }
 
         auto print_reject_row = [](const std::string& name, uint64_t val, uint64_t total) {
             double pct = (total > 0) ? (100.0 * (double)val / (double)total) : 0.0;
@@ -335,6 +349,55 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
         print_loss_bits("tile4_loss_bits_sum", s.est_tile4_loss_bits_sum, tile4_rejected);
         print_loss_bits("copy_loss_bits_sum", s.est_copy_loss_bits_sum, copy_rejected);
         print_loss_bits("palette_loss_bits_sum", s.est_palette_loss_bits_sum, palette_rejected);
+
+        if (s.filter_selected > 0) {
+            std::cout << "\n  Filter block diagnostics\n";
+            std::cout << "  filter_selected_blocks  " << s.filter_selected << "\n";
+            std::cout << "  filter_with_copy/pal    "
+                      << s.filter_blocks_with_copy_candidate << "/"
+                      << s.filter_blocks_with_palette_candidate << "\n";
+            std::cout << "  filter_unique<=2/4/8/>8 "
+                      << s.filter_blocks_unique_le2 << "/"
+                      << s.filter_blocks_unique_le4 << "/"
+                      << s.filter_blocks_unique_le8 << "/"
+                      << s.filter_blocks_unique_gt8 << "\n";
+            double avg_trans = (double)s.filter_blocks_transitions_sum / (double)s.filter_selected;
+            double avg_var_proxy = (double)s.filter_blocks_variance_proxy_sum / (double)s.filter_selected;
+            double avg_filter_bits = (double)s.filter_blocks_est_filter_bits_sum / (double)s.filter_selected;
+            std::cout << "  filter_avg_transitions  " << std::fixed << std::setprecision(2) << avg_trans << "\n";
+            std::cout << "  filter_avg_var_proxy    " << std::fixed << std::setprecision(2) << avg_var_proxy << "\n";
+            std::cout << "  filter_avg_est_bits     " << std::fixed << std::setprecision(2) << avg_filter_bits << " bits/block\n";
+
+            if (s.filter_diag_palette16_candidates > 0) {
+                double better_pct = 100.0 * (double)s.filter_diag_palette16_better /
+                                    (double)s.filter_diag_palette16_candidates;
+                double avg_pal_size = (double)s.filter_diag_palette16_size_sum /
+                                      (double)s.filter_diag_palette16_candidates;
+                double avg_pal_bits = (double)s.filter_diag_palette16_est_bits_sum /
+                                      (double)s.filter_diag_palette16_candidates;
+                std::cout << "  palette8_candidates     " << s.filter_diag_palette16_candidates
+                          << " (avg size " << std::fixed << std::setprecision(2) << avg_pal_size
+                          << ", avg " << avg_pal_bits << " bits/block)\n";
+                std::cout << "  palette8_better_than_filter " << s.filter_diag_palette16_better
+                          << " (" << std::fixed << std::setprecision(2) << better_pct << "%)\n";
+                if (s.filter_diag_palette16_better > 0) {
+                    double avg_gain = (double)s.filter_diag_palette16_gain_bits_sum /
+                                      (double)s.filter_diag_palette16_better;
+                    std::cout << "  palette8_avg_gain_bits  " << std::fixed << std::setprecision(2)
+                              << avg_gain << " bits/block\n";
+                }
+            }
+            if (s.filter_rows_with_pixels > 0) {
+                std::cout << "  filter_rows_with_pixels " << s.filter_rows_with_pixels << "\n";
+                std::cout << "  filter_row_hist(N/S/U/A/P/M) "
+                          << s.filter_row_id_hist[0] << "/"
+                          << s.filter_row_id_hist[1] << "/"
+                          << s.filter_row_id_hist[2] << "/"
+                          << s.filter_row_id_hist[3] << "/"
+                          << s.filter_row_id_hist[4] << "/"
+                          << s.filter_row_id_hist[5] << "\n";
+            }
+        }
 
         double bt_bpb = (s.total_blocks > 0)
             ? (8.0 * (double)s.block_types_bytes_sum / (double)s.total_blocks) : 0.0;

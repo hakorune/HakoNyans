@@ -49,6 +49,27 @@ public:
         uint64_t palette_selected;
         uint64_t filter_selected;
         uint64_t filter_med_selected;
+        uint64_t palette_rescue_attempted;
+        uint64_t palette_rescue_adopted;
+        uint64_t palette_rescue_gain_bits_sum;
+
+        // Phase 9t-1: filter-block diagnostics
+        uint64_t filter_blocks_with_copy_candidate;
+        uint64_t filter_blocks_with_palette_candidate;
+        uint64_t filter_blocks_unique_le2;
+        uint64_t filter_blocks_unique_le4;
+        uint64_t filter_blocks_unique_le8;
+        uint64_t filter_blocks_unique_gt8;
+        uint64_t filter_blocks_transitions_sum;
+        uint64_t filter_blocks_variance_proxy_sum;
+        uint64_t filter_blocks_est_filter_bits_sum;
+        uint64_t filter_diag_palette16_candidates;
+        uint64_t filter_diag_palette16_better;
+        uint64_t filter_diag_palette16_size_sum;
+        uint64_t filter_diag_palette16_est_bits_sum;
+        uint64_t filter_diag_palette16_gain_bits_sum;
+        uint64_t filter_rows_with_pixels;
+        uint64_t filter_row_id_hist[6];
 
         // Candidate existed but another mode won.
         uint64_t tile4_rejected_by_copy;
@@ -201,6 +222,25 @@ public:
             palette_selected = 0;
             filter_selected = 0;
             filter_med_selected = 0;
+            palette_rescue_attempted = 0;
+            palette_rescue_adopted = 0;
+            palette_rescue_gain_bits_sum = 0;
+            filter_blocks_with_copy_candidate = 0;
+            filter_blocks_with_palette_candidate = 0;
+            filter_blocks_unique_le2 = 0;
+            filter_blocks_unique_le4 = 0;
+            filter_blocks_unique_le8 = 0;
+            filter_blocks_unique_gt8 = 0;
+            filter_blocks_transitions_sum = 0;
+            filter_blocks_variance_proxy_sum = 0;
+            filter_blocks_est_filter_bits_sum = 0;
+            filter_diag_palette16_candidates = 0;
+            filter_diag_palette16_better = 0;
+            filter_diag_palette16_size_sum = 0;
+            filter_diag_palette16_est_bits_sum = 0;
+            filter_diag_palette16_gain_bits_sum = 0;
+            filter_rows_with_pixels = 0;
+            std::memset(filter_row_id_hist, 0, sizeof(filter_row_id_hist));
             tile4_rejected_by_copy = 0;
             tile4_rejected_by_palette = 0;
             tile4_rejected_by_filter = 0;
@@ -1149,6 +1189,7 @@ public:
         size_t pos = 0;
         bool is_v2 = false;
         bool is_v3 = false;
+        bool is_v4 = false;
         uint8_t flags = 0;
         auto bits_for_palette_size = [](int p_size) -> int {
             if (p_size <= 1) return 0;
@@ -1162,9 +1203,10 @@ public:
             return;
         };
 
-        if (pal_raw[0] == 0x40 || pal_raw[0] == 0x41) {
+        if (pal_raw[0] == 0x40 || pal_raw[0] == 0x41 || pal_raw[0] == 0x42) {
             is_v2 = true;
-            is_v3 = (pal_raw[0] == 0x41);
+            is_v3 = (pal_raw[0] == 0x41 || pal_raw[0] == 0x42);
+            is_v4 = (pal_raw[0] == 0x42);
             if (is_v3) s.palette_stream_v3_count++;
             else s.palette_stream_v2_count++;
             pos = 1;
@@ -1190,8 +1232,9 @@ public:
                     if (pos >= pal_raw.size()) return fail();
                     uint8_t psz = pal_raw[pos++];
                     if (psz == 0 || psz > 8) return fail();
-                    if (pos + psz > pal_raw.size()) return fail();
-                    pos += psz;
+                    size_t color_bytes = (size_t)psz * (is_v4 ? 2 : 1);
+                    if (pos + color_bytes > pal_raw.size()) return fail();
+                    pos += color_bytes;
                 }
             }
         }
@@ -1215,8 +1258,9 @@ public:
                     if (pos >= pal_raw.size()) return fail();
                     pos += 1;
                 } else {
-                    if (pos + (size_t)p_size > pal_raw.size()) return fail();
-                    pos += (size_t)p_size;
+                    size_t color_bytes = (size_t)p_size * (is_v4 ? 2 : 1);
+                    if (pos + color_bytes > pal_raw.size()) return fail();
+                    pos += color_bytes;
                 }
             }
 
@@ -1365,7 +1409,12 @@ public:
         if (p.size == 0) return std::numeric_limits<int>::max();
         int bits2 = 4;   // block_type (2 bits * 2)
         bits2 += 16;     // per-block palette header (8 bits * 2)
-        bits2 += (int)p.size * 16; // grayscale palette values (8 bits * 2)
+        int wide_colors = 0;
+        for (int i = 0; i < p.size; i++) {
+            if (p.colors[i] < -128 || p.colors[i] > 127) wide_colors++;
+        }
+        bits2 += ((int)p.size - wide_colors) * 16; // 8 bits * 2
+        bits2 += wide_colors * 32;                 // 16 bits * 2
 
         if (p.size <= 1) return bits2;
         if (p.size == 2) {
@@ -1386,7 +1435,8 @@ public:
             else if (transitions <= 32) bits2 -= 32;
         } else {
             // Keep photo mode conservative for >2-color palettes.
-            bits2 += (int)p.size * 16;
+            bits2 += ((int)p.size - wide_colors) * 16;
+            bits2 += wide_colors * 32;
         }
         return bits2;
     }
@@ -1665,7 +1715,7 @@ public:
             int16_t block[64];
             int64_t sum = 0, sum_sq = 0;
             int transitions = 0;
-            bool palette_range_ok = true;
+            int palette_transitions = 0;
             int unique_cnt = 0;
 
             for (int y = 0; y < 8; y++) {
@@ -1675,7 +1725,6 @@ public:
                     block[idx] = v;
                     sum += v;
                     sum_sq += (int64_t)v * (int64_t)v;
-                    if (v < -128 || v > 127) palette_range_ok = false;
                     if (idx > 0 && block[idx - 1] != v) transitions++;
                 }
             }
@@ -1725,7 +1774,8 @@ public:
             bool palette_found = false;
             Palette palette_candidate;
             std::vector<uint8_t> palette_index_candidate;
-            if (palette_range_ok && unique_cnt <= mode_params.palette_max_colors) {
+            palette_transitions = transitions;
+            if (unique_cnt <= mode_params.palette_max_colors) {
                 palette_candidate = PaletteExtractor::extract(block, mode_params.palette_max_colors);
                 if (palette_candidate.size > 0 && palette_candidate.size <= mode_params.palette_max_colors) {
                     bool transition_ok = (transitions <= mode_params.palette_transition_limit) || (palette_candidate.size <= 1);
@@ -1733,6 +1783,12 @@ public:
                     if (transition_ok && variance_ok) {
                         palette_found = true;
                         palette_index_candidate = PaletteExtractor::map_indices(block, palette_candidate);
+                        palette_transitions = 0;
+                        for (int k = 1; k < 64; k++) {
+                            if (palette_index_candidate[(size_t)k] != palette_index_candidate[(size_t)k - 1]) {
+                                palette_transitions++;
+                            }
+                        }
                     }
                 }
             }
@@ -1788,20 +1844,66 @@ public:
             int filter_bits2 = estimate_filter_bits(
                 padded.data(), pad_w, pad_h, cur_x, cur_y, profile
             );
+            auto& mode_stats = tl_lossless_mode_debug_stats_;
             if (tile4_found) {
                 tile4_bits2 = 36; // 2 bit mode + 4x4 bit indices = 18 bits (36 units)
             }
             if (copy_found) {
                 copy_bits2 = estimate_copy_bits(copy_candidate, (int)pad_w, profile);
             }
+
+            // Phase 9t-2: Palette rescue for UI/ANIME.
+            // If strict palette gates reject a block but a palette still beats filter
+            // by a clear margin, re-enable palette candidate for this block.
+            if (!palette_found && profile != LosslessProfile::PHOTO && unique_cnt <= 8) {
+                Palette rescue_palette = PaletteExtractor::extract(block, 8);
+                if (rescue_palette.size > 0 && rescue_palette.size <= 8) {
+                    mode_stats.palette_rescue_attempted++;
+                    auto rescue_indices = PaletteExtractor::map_indices(block, rescue_palette);
+                    int rescue_transitions = 0;
+                    for (int k = 1; k < 64; k++) {
+                        if (rescue_indices[(size_t)k] != rescue_indices[(size_t)k - 1]) {
+                            rescue_transitions++;
+                        }
+                    }
+                    int rescue_bits2 = estimate_palette_bits(rescue_palette, rescue_transitions, profile);
+                    if (profile == LosslessProfile::ANIME &&
+                        rescue_palette.size >= 2 && rescue_transitions <= 60) {
+                        rescue_bits2 -= 24;
+                    }
+                    if (rescue_bits2 + 8 < filter_bits2) {
+                        palette_found = true;
+                        palette_candidate = rescue_palette;
+                        palette_index_candidate = std::move(rescue_indices);
+                        palette_transitions = rescue_transitions;
+                        mode_stats.palette_rescue_adopted++;
+                        mode_stats.palette_rescue_gain_bits_sum +=
+                            (uint64_t)std::max(0, (filter_bits2 - rescue_bits2) / 2);
+                    }
+                }
+            }
+
             if (palette_found) {
                 palette_bits2 = estimate_palette_bits(
-                    palette_candidate, transitions, profile
+                    palette_candidate, palette_transitions, profile
                 );
                 // Phase 9s-6: Anime-specific palette bias
-                if (profile == LosslessProfile::ANIME && palette_candidate.size >= 2 && transitions <= 60) {
+                if (profile == LosslessProfile::ANIME && palette_candidate.size >= 2 && palette_transitions <= 60) {
                     palette_bits2 -= 24;
                     tl_lossless_mode_debug_stats_.anime_palette_bonus_applied++;
+                }
+
+                // Phase 9t-2: Palette rescue bias for UI/ANIME-like flat regions.
+                // Guarded by high variance proxy to avoid Photo/Natural regressions.
+                const bool rescue_bias_cond =
+                    (profile != LosslessProfile::PHOTO) &&
+                    (palette_candidate.size <= 8) &&
+                    (unique_cnt <= 8) &&
+                    (palette_transitions <= 32) &&
+                    (variance_proxy >= 30000);
+                if (rescue_bias_cond) {
+                    mode_stats.palette_rescue_attempted++;
+                    palette_bits2 -= 32; // 16-bit rescue bias
                 }
             }
 
@@ -1813,7 +1915,6 @@ public:
                 if (prev_mode == FileHeader::BlockType::DCT) filter_bits2 -= 4;
             }
 
-            auto& mode_stats = tl_lossless_mode_debug_stats_;
             mode_stats.total_blocks++;
             mode_stats.est_filter_bits_sum += (uint64_t)(filter_bits2 / 2);
             if (tile4_found) {
@@ -1881,9 +1982,58 @@ public:
                 mode_stats.est_selected_bits_sum += (uint64_t)(selected_bits2 / 2);
                 palettes.push_back(palette_candidate);
                 palette_indices.push_back(std::move(palette_index_candidate));
+                // Count rescue adoption for biased palette paths.
+                if (profile != LosslessProfile::PHOTO &&
+                    palette_candidate.size <= 8 &&
+                    unique_cnt <= 8 &&
+                    palette_transitions <= 32 &&
+                    variance_proxy >= 30000) {
+                    mode_stats.palette_rescue_adopted++;
+                    mode_stats.palette_rescue_gain_bits_sum += 16;
+                }
             } else {
                 mode_stats.filter_selected++;
                 mode_stats.est_selected_bits_sum += (uint64_t)(selected_bits2 / 2);
+
+                // Phase 9t-1: collect detailed diagnostics for filter-selected blocks.
+                if (copy_found) mode_stats.filter_blocks_with_copy_candidate++;
+                if (palette_found) mode_stats.filter_blocks_with_palette_candidate++;
+                if (unique_cnt <= 2) mode_stats.filter_blocks_unique_le2++;
+                else if (unique_cnt <= 4) mode_stats.filter_blocks_unique_le4++;
+                else if (unique_cnt <= 8) mode_stats.filter_blocks_unique_le8++;
+                else mode_stats.filter_blocks_unique_gt8++;
+                mode_stats.filter_blocks_transitions_sum += (uint64_t)transitions;
+                mode_stats.filter_blocks_variance_proxy_sum +=
+                    (uint64_t)std::max<int64_t>(0, variance_proxy);
+                mode_stats.filter_blocks_est_filter_bits_sum += (uint64_t)(filter_bits2 / 2);
+
+                // Diagnose whether palette(<=8, current palette struct limit)
+                // could beat filter on this block.
+                if (unique_cnt <= 8) {
+                    Palette diag_palette16 = PaletteExtractor::extract(block, 8);
+                    if (diag_palette16.size > 0 && diag_palette16.size <= 8) {
+                        auto diag_indices = PaletteExtractor::map_indices(block, diag_palette16);
+                        int diag_transitions = 0;
+                        for (int k = 1; k < 64; k++) {
+                            if (diag_indices[(size_t)k] != diag_indices[(size_t)k - 1]) {
+                                diag_transitions++;
+                            }
+                        }
+                        int diag_palette_bits2 = estimate_palette_bits(diag_palette16, diag_transitions, profile);
+                        if (profile == LosslessProfile::ANIME &&
+                            diag_palette16.size >= 2 && diag_transitions <= 60) {
+                            diag_palette_bits2 -= 24;
+                        }
+                        mode_stats.filter_diag_palette16_candidates++;
+                        mode_stats.filter_diag_palette16_size_sum += diag_palette16.size;
+                        mode_stats.filter_diag_palette16_est_bits_sum += (uint64_t)(diag_palette_bits2 / 2);
+                        if (diag_palette_bits2 < filter_bits2) {
+                            mode_stats.filter_diag_palette16_better++;
+                            mode_stats.filter_diag_palette16_gain_bits_sum +=
+                                (uint64_t)((filter_bits2 - diag_palette_bits2) / 2);
+                        }
+                    }
+                }
             }
             // Filter mode keeps default DCT tag.
         }
@@ -1941,6 +2091,10 @@ public:
                 if (sum < best_sum) { best_sum = sum; best_f = f; }
             }
             filter_ids[y] = (uint8_t)best_f;
+            tl_lossless_mode_debug_stats_.filter_rows_with_pixels++;
+            if (best_f >= 0 && best_f < 6) {
+                tl_lossless_mode_debug_stats_.filter_row_id_hist[best_f]++;
+            }
             if (best_f == 5) tl_lossless_mode_debug_stats_.filter_med_selected++;
 
             // Emit residuals for filter-block pixels only
@@ -2017,7 +2171,8 @@ public:
             std::vector<std::vector<uint8_t>> mode4_streams(6);
             std::vector<uint32_t> mode4_ctx_raw_counts(6, 0);
 
-            if (profile == LosslessProfile::PHOTO && lo_bytes.size() > 256) {
+            if ((profile == LosslessProfile::PHOTO || profile == LosslessProfile::ANIME) &&
+                lo_bytes.size() > 256) {
                 // Reconstruct row lengths of filter pixels
                 row_lens.assign(pad_h, 0);
                 for (uint32_t y = 0; y < pad_h; y++) {

@@ -33,7 +33,7 @@ struct FileHeader {
     uint8_t  reserved[16];  // 将来拡張用
     
     static constexpr uint32_t MAGIC = 0x484B4E00;       // 'HKN\0'
-    static constexpr uint16_t VERSION = 0x000E;         // v0.14 (screen-indexed tile mode)
+    static constexpr uint16_t VERSION = 0x000F;         // v0.15 (palette wide-range stream v4)
     static constexpr uint16_t MIN_SUPPORTED_VERSION = 0x0003;
     static constexpr uint16_t VERSION_BAND_GROUP_CDF = 0x0004;
     static constexpr uint16_t VERSION_TILE_MATCH4 = 0x0005;
@@ -46,6 +46,7 @@ struct FileHeader {
     static constexpr uint16_t VERSION_FILTER_LO_CONTEXT_SPLIT = 0x000C;
     static constexpr uint16_t VERSION_TILE4_WRAPPER = 0x000D;
     static constexpr uint16_t VERSION_SCREEN_INDEXED_TILE = 0x000E;
+    static constexpr uint16_t VERSION_PALETTE_WIDE = 0x000F;
     
     enum class BlockType : uint8_t {
         DCT = 0,

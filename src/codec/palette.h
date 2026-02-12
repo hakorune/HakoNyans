@@ -13,13 +13,13 @@ namespace hakonyans {
 
 struct Palette {
     uint8_t size;
-    uint8_t colors[8];
+    int16_t colors[8];
 
-    Palette() : size(0) { std::memset(colors, 0, 8); }
+    Palette() : size(0) { std::memset(colors, 0, sizeof(colors)); }
     
     bool operator==(const Palette& other) const {
         if (size != other.size) return false;
-        return std::memcmp(colors, other.colors, size) == 0;
+        return std::memcmp(colors, other.colors, size * sizeof(int16_t)) == 0;
     }
     
     bool operator!=(const Palette& other) const { return !(*this == other); }
@@ -52,8 +52,7 @@ public:
         });
 
         for (const auto& kv : sorted_counts) {
-            // colors stored as uint8_t (0-255), input block is -128..127
-            p.colors[idx++] = (uint8_t)(kv.first + 128);
+            p.colors[idx++] = kv.first;
         }
         return p;
     }
@@ -61,9 +60,9 @@ public:
     static std::vector<uint8_t> map_indices(const int16_t* block, const Palette& p) {
         std::vector<uint8_t> indices(64);
         for (int i = 0; i < 64; i++) {
-            uint8_t val = (uint8_t)(block[i] + 128);
+            int16_t val = block[i];
             int best_idx = 0;
-            int min_dist = 256*256;
+            int min_dist = 1 << 30;
             
             for (int k = 0; k < p.size; k++) {
                 if (p.colors[k] == val) {
@@ -85,7 +84,7 @@ public:
         // 1. Delta cost of palette colors: sum(|c[i] - c[i-1]|)
         uint32_t delta_cost = 0;
         if (p.size > 0) {
-            delta_cost += p.colors[0]; // first color cost (assume prev is 0)
+            delta_cost += (uint32_t)std::abs((int)p.colors[0]); // first color cost (assume prev is 0)
             for (int i = 1; i < p.size; i++) {
                 int d = (int)p.colors[i] - (int)p.colors[i-1];
                 delta_cost += std::abs(d);
@@ -283,21 +282,23 @@ class PaletteCodec {
 
     static constexpr uint8_t kStreamV2Magic = 0x40;
     static constexpr uint8_t kStreamV3Magic = 0x41;
+    static constexpr uint8_t kStreamV4Magic = 0x42; // signed 16-bit palette colors
     static constexpr uint8_t kFlagMaskDict = 0x01;
     static constexpr uint8_t kFlagPaletteDict = 0x02;
 
     struct PalKey {
         uint8_t size = 0;
-        uint64_t packed = 0;
-        bool operator==(const PalKey& o) const { return size == o.size && packed == o.packed; }
+        std::array<int16_t, 8> colors{};
+        bool operator==(const PalKey& o) const { return size == o.size && colors == o.colors; }
     };
 
     struct PalKeyHash {
         size_t operator()(const PalKey& k) const {
-            uint64_t h = k.packed ^ (uint64_t)k.size * 0x9E3779B97F4A7C15ULL;
-            h ^= (h >> 33);
-            h *= 0xff51afd7ed558ccdULL;
-            h ^= (h >> 33);
+            uint64_t h = (uint64_t)k.size * 0x9E3779B97F4A7C15ULL;
+            for (int i = 0; i < k.size && i < 8; i++) {
+                uint64_t v = (uint16_t)k.colors[i];
+                h ^= (v + 0x9E3779B97F4A7C15ULL + (h << 6) + (h >> 2));
+            }
             return (size_t)h;
         }
     };
@@ -305,11 +306,7 @@ class PaletteCodec {
     static PalKey make_pal_key(const Palette& p) {
         PalKey k;
         k.size = p.size;
-        uint64_t v = 0;
-        for (int i = 0; i < p.size && i < 8; i++) {
-            v |= ((uint64_t)p.colors[i] << (8 * i));
-        }
-        k.packed = v;
+        for (int i = 0; i < p.size && i < 8; i++) k.colors[i] = p.colors[i];
         return k;
     }
 
@@ -407,6 +404,17 @@ public:
             if (dict_size < raw_size) flags |= kFlagMaskDict;
         }
 
+        bool use_wide_colors = false;
+        for (const auto& p : palettes) {
+            for (int k = 0; k < p.size; k++) {
+                if (p.colors[k] < -128 || p.colors[k] > 127) {
+                    use_wide_colors = true;
+                    break;
+                }
+            }
+            if (use_wide_colors) break;
+        }
+
         // Optional v3 palette dictionary for non-consecutive recurring palettes.
         std::vector<Palette> palette_dict;
         std::unordered_map<PalKey, uint8_t, PalKeyHash> pal_to_id;
@@ -439,9 +447,11 @@ public:
                 uint32_t m = kv.second;
                 const Palette& p = key_palette[key];
                 if (p.size < 2) continue;
-                // Raw per occurrence: p.size bytes of colors.
+                int color_bytes = use_wide_colors ? 2 : 1;
+                // Raw per occurrence: p.size * color_bytes bytes of colors.
                 // Dict: 1-byte ref per occurrence + one dict entry [size + colors].
-                int gain = (int)(m * (uint32_t)p.size) - (int)(m + 1 + (uint32_t)p.size);
+                int gain = (int)(m * (uint32_t)(p.size * color_bytes)) -
+                           (int)(m + 1 + (uint32_t)(p.size * color_bytes));
                 if (gain > 0) cands.push_back({key, p, gain, m});
             }
             std::sort(cands.begin(), cands.end(), [](const PalCand& a, const PalCand& b) {
@@ -462,7 +472,17 @@ public:
             }
         }
 
-        out.push_back(use_v3 ? kStreamV3Magic : kStreamV2Magic);
+        auto write_color = [&](int16_t c) {
+            if (use_wide_colors) {
+                uint16_t v = (uint16_t)c;
+                out.push_back((uint8_t)(v & 0xFF));
+                out.push_back((uint8_t)((v >> 8) & 0xFF));
+            } else {
+                out.push_back((uint8_t)((int)c + 128));
+            }
+        };
+
+        out.push_back(use_wide_colors ? kStreamV4Magic : (use_v3 ? kStreamV3Magic : kStreamV2Magic));
         out.push_back(flags);
         if (flags & kFlagMaskDict) {
             out.push_back((uint8_t)mask_dict.size());
@@ -476,7 +496,7 @@ public:
             out.push_back((uint8_t)palette_dict.size());
             for (const auto& p : palette_dict) {
                 out.push_back(p.size);
-                for (int k = 0; k < p.size; k++) out.push_back(p.colors[k]);
+                for (int k = 0; k < p.size; k++) write_color(p.colors[k]);
             }
         }
 
@@ -506,7 +526,7 @@ public:
                 if (use_dict_ref) {
                     out.push_back(dict_ref);
                 } else {
-                    for (int k = 0; k < p.size; k++) out.push_back(p.colors[k]);
+                    for (int k = 0; k < p.size; k++) write_color(p.colors[k]);
                 }
                 prev_pal = p;
             }
@@ -553,13 +573,15 @@ public:
         size_t pos = 0;
         bool is_v2 = false;
         bool is_v3 = false;
+        bool is_v4 = false;
         uint8_t flags = 0;
         std::vector<uint64_t> mask_dict;
         std::vector<Palette> palette_dict;
 
-        if (data[0] == kStreamV2Magic || data[0] == kStreamV3Magic) {
+        if (data[0] == kStreamV2Magic || data[0] == kStreamV3Magic || data[0] == kStreamV4Magic) {
             is_v2 = true;
-            is_v3 = (data[0] == kStreamV3Magic);
+            is_v3 = (data[0] == kStreamV3Magic || data[0] == kStreamV4Magic);
+            is_v4 = (data[0] == kStreamV4Magic);
             pos = 1;
             if (pos < size) flags = data[pos++];
 
@@ -586,9 +608,16 @@ public:
                     Palette p;
                     p.size = data[pos++];
                     if (p.size == 0 || p.size > 8) return;
-                    if (pos + p.size > size) return;
+                    size_t color_bytes = (size_t)p.size * (is_v4 ? 2 : 1);
+                    if (pos + color_bytes > size) return;
                     for (int k = 0; k < p.size; k++) {
-                        p.colors[k] = data[pos++];
+                        if (is_v4) {
+                            uint16_t v = (uint16_t)data[pos] | ((uint16_t)data[pos + 1] << 8);
+                            p.colors[k] = (int16_t)v;
+                            pos += 2;
+                        } else {
+                            p.colors[k] = (int16_t)data[pos++] - 128;
+                        }
                     }
                     palette_dict.push_back(p);
                 }
@@ -618,9 +647,16 @@ public:
                 if (p.size != p_size) return;
                 prev_pal = p;
             } else {
-                if (pos + (size_t)p_size > size) return;
+                size_t color_bytes = (size_t)p_size * (is_v4 ? 2 : 1);
+                if (pos + color_bytes > size) return;
                 for (int k = 0; k < p_size; k++) {
-                    if (pos < size) p.colors[k] = data[pos++];
+                    if (is_v4) {
+                        uint16_t v = (uint16_t)data[pos] | ((uint16_t)data[pos + 1] << 8);
+                        p.colors[k] = (int16_t)v;
+                        pos += 2;
+                    } else {
+                        p.colors[k] = (int16_t)data[pos++] - 128;
+                    }
                 }
                 prev_pal = p;
             }

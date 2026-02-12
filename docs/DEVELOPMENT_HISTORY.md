@@ -1251,6 +1251,112 @@ Photo向け改善を狙って `filter_lo` の row predictor mode（NONE/SUB/UP/A
 
 ---
 
+### Phase 9t-1: Filter-block診断カウンタ追加（分析基盤）(2026-02-12)
+
+`anime_sunset` などの未達ケースで「どの filter ブロックがボトルネックか」を特定するため、
+lossless の mode decision 統計を拡張。
+
+**主な変更**:
+1. `src/codec/encode.h`
+   - `LosslessModeDebugStats` に filter選択ブロック専用の統計を追加
+     - 色数バケット（`<=2 / <=4 / <=8 / >8`）
+     - 遷移数平均、分散 proxy 平均、推定 filter bits 平均
+     - `palette8` 診断（候補数/優位数/平均 gain）
+     - 行フィルタIDヒストグラム（N/S/U/A/P/M）
+2. `bench/bench_bit_accounting.cpp`
+   - `Filter block diagnostics` セクションを追加
+   - 画像ごとに `palette8_better_than_filter` を可視化
+
+**検証結果**:
+- `ctest`: 17/17 PASS
+- `anime_sunset`
+  - `filter_selected_blocks=502`
+  - `palette8_better_than_filter=0/187 (0.00%)`
+- `vscode`
+  - `filter_selected_blocks=2251`
+  - `palette8_better_than_filter=0/1 (0.00%)`
+- `nature_01`
+  - `filter_selected_blocks=34957`
+  - `palette8_better_than_filter=0/19530 (0.00%)`
+
+**所見**:
+- `Palette` が 8bit値（`[-128,127]`）前提のため、YCoCg の chroma 平面で候補がほぼ無効化される。
+- `palette rescue` を効かせるには、palette値域の拡張（符号付き9bit相当）または chroma専用経路が必要。
+
+---
+
+### Phase 9t-2: UI/Anime Palette rescue（filter候補限定）(2026-02-12)
+
+filterに落ちるブロックを palette に引き戻すための rescue バイアスを導入。
+
+**主な変更**:
+1. `src/codec/encode.h`
+   - `palette_rescue_attempted/adopted/gain_bits` テレメトリ追加
+   - UI/ANIME の `palette_found` ブロックに rescue バイアス（条件付き）を適用
+   - palette遷移推定を「画素値遷移」から「index遷移」に修正
+
+**検証結果**:
+- `ctest`: 17/17 PASS
+- `anime_sunset` / `vscode` / `nature_01` の total bytes は変化なし
+
+**所見**:
+- rescueバイアスは実装されたが、対象画像では有効ブロックが不足し、サイズ改善に繋がらなかった。
+
+---
+
+### Phase 9t-3: filter_lo mode4 gate再調整（ANIME有効化）(2026-02-12)
+
+`filter_lo` の mode3/mode4 探索を `PHOTO` 限定から `ANIME` に拡張。
+
+**主な変更**:
+1. `src/codec/encode.h`
+   - `filter_lo` mode3/mode4 の探索条件を `profile==PHOTO || profile==ANIME` に変更
+
+**検証結果**:
+- `ctest`: 17/17 PASS
+- `anime_sunset`: `filter_lo_mode0/1/2/3/4 = 3/0/0/0/0`（mode切替なし）
+- total bytes は変化なし
+
+**所見**:
+- gateは開いたが、現行データでは mode0 が依然最小で、ANIME 改善は未達。
+
+---
+
+### Phase 9u-1: Palette値域拡張（signed 16-bit / stream v4）(2026-02-12)
+
+`Palette` の値域制約（`[-128,127]`）を解除し、lossless chroma平面でも
+palette候補を扱えるようにした。
+
+**主な変更**:
+1. `src/codec/palette.h`
+   - `Palette.colors` を `uint8_t[8]` から `int16_t[8]` に変更
+   - palette stream に v4 magic `0x42` を追加（16-bit signed色値）
+   - v2/v3/v4 すべてをデコード可能に維持
+2. `src/codec/decode.h`
+   - lossless palette 復元での `-128` 二重適用を解消
+   - lossy palette 復元では `+128` を明示して画素ドメインへ戻す
+3. `src/codec/encode.h`
+   - palette stream診断パーサを v4 (`0x42`) 対応
+   - lossless mode判定から `palette_range_ok` 制約を撤廃
+   - `estimate_palette_bits()` を wide-color（16-bit）コスト対応
+4. `src/codec/headers.h`
+   - `VERSION=0x000F`
+   - `VERSION_PALETTE_WIDE=0x000F` 追加
+
+**検証結果**:
+- `ctest`: **17/17 PASS**
+- `bench_bit_accounting`:
+  - `anime_sunset`: `14035B -> 13731B`（**-2.17%**）
+  - `vscode`: `4881B`（実質維持）
+  - `nature_01`: `817303B`（改善）
+- `bench_png_compare`（現時点）:
+  - UI平均: `0.36x`（PNGより小）
+  - Anime平均: `1.02x`（ほぼ拮抗、`anime_sunset` が未達）
+  - Photo平均: `0.67x`（PNGより小）
+  - Natural平均: `28.68x`（別課題として継続）
+
+---
+
 ## 🏆 技術的ハイライト
 
 ### 1. NyANS-P エントロピーエンジン
@@ -1295,6 +1401,6 @@ MIT License (予定)
 
 ---
 
-**最終更新**: 2026-02-11  
-**バージョン**: Phase 9 P0完了 + Phase 9i-1 CfL調整（互換性修正/安全策）  
+**最終更新**: 2026-02-12  
+**バージョン**: Phase 9u-1（palette値域拡張 + stream v4）  
 **ステータス**: 🚀 Active Development

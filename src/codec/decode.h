@@ -484,8 +484,13 @@ public:
                             for (int y = 0; y < 8; y++) {
                                 for (int x = 0; x < 8; x++) {
                                     int k = y * 8 + x;
-                                    uint8_t color = (k < (int)idx.size()) ? p.colors[idx[k]] : 0;
-                                    pad[(by * 8 + y) * pw + (bx * 8 + x)] = color;
+                                    int16_t pal_v = 0;
+                                    if (k < (int)idx.size()) {
+                                        uint8_t pi = idx[k];
+                                        if (pi < p.size) pal_v = p.colors[pi];
+                                    }
+                                    pad[(by * 8 + y) * pw + (bx * 8 + x)] =
+                                        (uint8_t)std::clamp((int)pal_v + 128, 0, 255);
                                 }
                             }
                             palette_block_idx++;
@@ -1152,10 +1157,17 @@ public:
             int bx = i % nx, by = i / nx;
             const auto& p = palettes[pidx];
             const auto& idx = palette_indices[pidx];
-            for (int py = 0; py < 8; py++)
-                for (int px = 0; px < 8; px++)
-                    padded[(by * 8 + py) * pad_w + (bx * 8 + px)] =
-                        (int16_t)p.colors[idx[py * 8 + px]] - 128;
+            for (int py = 0; py < 8; py++) {
+                for (int px = 0; px < 8; px++) {
+                    int k = py * 8 + px;
+                    int16_t pal_v = 0;
+                    if (k < (int)idx.size()) {
+                        uint8_t pi2 = idx[k];
+                        if (pi2 < p.size) pal_v = p.colors[pi2];
+                    }
+                    padded[(by * 8 + py) * pad_w + (bx * 8 + px)] = pal_v;
+                }
+            }
         }
 
         // Process rows in raster order: Copy, Tile4, and Filter blocks

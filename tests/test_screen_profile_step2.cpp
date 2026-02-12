@@ -23,22 +23,20 @@ void test_palette_extraction() {
     
     Palette p = PaletteExtractor::extract(block, 8);
     assert(p.size == 2);
-    // Colors are stored as uint8_t (val + 128)
-    // 10 -> 138, 50 -> 178
-    bool has_138 = false, has_178 = false;
+    // Colors are stored as signed int16 values in plane domain.
+    bool has_10 = false, has_50 = false;
     for(int i=0; i<p.size; i++) {
-        if(p.colors[i] == 138) has_138 = true;
-        if(p.colors[i] == 178) has_178 = true;
+        if(p.colors[i] == 10) has_10 = true;
+        if(p.colors[i] == 50) has_50 = true;
     }
-    assert(has_138 && has_178);
+    assert(has_10 && has_50);
     
     std::cout << "  [PASS] 2-color extraction" << std::endl;
     
     // Test indices mapping
     auto indices = PaletteExtractor::map_indices(block, p);
     for(int i=0; i<64; i++) {
-        uint8_t val = (uint8_t)(block[i] + 128);
-        assert(p.colors[indices[i]] == val);
+        assert(p.colors[indices[i]] == block[i]);
     }
     std::cout << "  [PASS] Indices mapping" << std::endl;
 }
@@ -117,6 +115,47 @@ void test_palette_codec_v3_dict() {
     std::cout << "  [PASS] v3 dictionary stream roundtrip" << std::endl;
 }
 
+void test_palette_codec_v4_wide() {
+    std::cout << "Testing Palette Codec v4 wide-range..." << std::endl;
+
+    std::vector<Palette> palettes;
+    std::vector<std::vector<uint8_t>> indices;
+
+    Palette p1; p1.size = 3; p1.colors[0] = -220; p1.colors[1] = 40; p1.colors[2] = 180;
+    Palette p2; p2.size = 2; p2.colors[0] = -150; p2.colors[1] = 300;
+    palettes.push_back(p1);
+    palettes.push_back(p2);
+
+    std::vector<uint8_t> idx1(64, 0);
+    for (int i = 0; i < 64; i++) idx1[i] = (uint8_t)(i % 3);
+    std::vector<uint8_t> idx2(64, 0);
+    for (int i = 0; i < 64; i++) idx2[i] = (uint8_t)(i & 1);
+    indices.push_back(idx1);
+    indices.push_back(idx2);
+
+    auto stream = PaletteCodec::encode_palette_stream(palettes, indices, true);
+    assert(!stream.empty());
+    assert(stream[0] == 0x42);  // v4 magic (16-bit signed colors)
+
+    std::vector<Palette> dec_pal;
+    std::vector<std::vector<uint8_t>> dec_ind;
+    PaletteCodec::decode_palette_stream(stream.data(), stream.size(), dec_pal, dec_ind, 2);
+    assert(dec_pal.size() == 2);
+    assert(dec_ind.size() == 2);
+    assert(dec_ind[0].size() == 64);
+    assert(dec_ind[1].size() == 64);
+    for (int i = 0; i < 64; i++) {
+        int16_t orig0 = p1.colors[idx1[i]];
+        int16_t dec0 = dec_pal[0].colors[dec_ind[0][i]];
+        assert(orig0 == dec0);
+        int16_t orig1 = p2.colors[idx2[i]];
+        int16_t dec1 = dec_pal[1].colors[dec_ind[1][i]];
+        assert(orig1 == dec1);
+    }
+
+    std::cout << "  [PASS] v4 wide-range stream roundtrip" << std::endl;
+}
+
 void test_integration() {
     std::cout << "Testing Integration (Encode -> Decode)..." << std::endl;
     
@@ -152,6 +191,7 @@ int main() {
         test_palette_extraction();
         test_palette_codec();
         test_palette_codec_v3_dict();
+        test_palette_codec_v4_wide();
         // test_integration(); // skipped for now until we expose a way to force palette
         std::cout << "All Step 2 tests passed!" << std::endl;
         return 0;
