@@ -146,3 +146,45 @@ Phase 9w speed work, in a format suitable for later paper write-up.
 Interpretation:
 - Encode side showed consistent or better behavior in repeated runs.
 - Decode side is near-neutral with small run-to-run fluctuation.
+
+## 2026-02-13: `plane_reconstruct` COPY/TM4 In-bounds Fast Path
+
+### Objective
+- Reduce decode cost in `plane_reconstruct` without touching format/rate logic.
+- Start from low-risk paths only: `COPY` and `TILE_MATCH4`.
+
+### Implementation
+- Updated `src/codec/lossless_plane_decode_core.h`:
+  - added in-bounds checks for `COPY` rows and `TILE_MATCH4` 4-pixel segments.
+  - in in-bounds cases, replaced per-pixel clamp/copy loops with direct `memcpy`.
+  - kept existing per-pixel clamped fallback for boundary cases.
+  - hoisted `pad_w_i/pad_h_i` and `residual_size` to avoid repeated casts/size calls.
+
+### Validation
+- Build: `cmake --build . -j`
+- Tests: `ctest --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- `bench_results/phase9w_speed_stage_profile_after_reconstruct_copytm4_memcpy.csv`
+- `bench_results/phase9w_speed_stage_profile_after_reconstruct_copytm4_memcpy_rerun.csv`
+- (non-promoted trial) `bench_results/phase9w_speed_stage_profile_after_reconstruct_row_dispatch.csv`
+- (non-promoted trial) `bench_results/phase9w_speed_stage_profile_after_reconstruct_row_dispatch_rerun.csv`
+
+### Result Summary
+- Comparison target:
+  - `bench_results/phase9w_speed_stage_profile_after_route_dedupe_rerun2.csv`
+- Latest rerun:
+  - `bench_results/phase9w_speed_stage_profile_after_reconstruct_copytm4_memcpy_rerun.csv`
+
+| Metric | Route-dedupe rerun2 | COPY/TM4 fast-path rerun | Delta |
+|---|---:|---:|---:|
+| median Enc(ms) | 146.795 | 146.601 | -0.194 |
+| median Dec(ms) | 17.672 | 18.047 | +0.375 |
+| median PNG/HKN | 0.2610 | 0.2610 | 0.0000 |
+| total HKN bytes | 2,977,544 | 2,977,544 | 0 |
+
+### Decision
+- Size/ratio invariants are preserved.
+- Decode gain is not yet stable against run-to-run noise; this is **not promoted as a clear speed win**.
+- Next work should move to larger hotspots (`plane_filter_lo`, route-comp encode cost), with stronger per-stage counters before further decode micro-tuning.
