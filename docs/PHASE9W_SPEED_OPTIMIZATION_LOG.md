@@ -101,3 +101,48 @@ Phase 9w speed work, in a format suitable for later paper write-up.
 ### Decision
 - **Not promoted** (kept out of mainline): decode gain was negligible while encode median regressed.
 - Kept only the additional TileLZ test coverage for future low-level iterations.
+
+## 2026-02-13: Route-Comp Dedupe (Reuse Padded + Screen Map Optimization)
+
+### Objective
+- Reduce duplicate work in `plane_route_comp` candidate paths without changing format/rate.
+- Specifically remove repeated pad/clamp work in screen/natural candidate encoders.
+
+### Implementation
+- Added padded-input entry points and routed candidate encode through them:
+  - `src/codec/lossless_screen_route.h`
+    - `encode_plane_lossless_screen_indexed_tile_padded(...)`
+  - `src/codec/lossless_natural_route.h`
+    - `encode_plane_lossless_natural_row_tile_padded(...)`
+  - `src/codec/encode.h`
+    - new wrappers in `GrayscaleEncoder`
+    - route compete lambdas now capture prebuilt `padded`, `pad_w`, `pad_h`
+- Reworked screen candidate histogram/index mapping:
+  - replaced `unordered_map`-based counting/indexing with thread-local fixed-table
+    mapping (`int16 -> index`) and explicit frequency sort (same ordering semantics).
+
+### Validation
+- Build: `cmake --build . -j`
+- Tests: `ctest --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- `bench_results/phase9w_speed_stage_profile_after_route_dedupe.csv`
+- `bench_results/phase9w_speed_stage_profile_after_route_dedupe_rerun.csv`
+- `bench_results/phase9w_speed_stage_profile_after_route_dedupe_rerun2.csv`
+
+### Result Summary
+- Compression metrics unchanged across runs:
+  - `median PNG/HKN = 0.2610`
+  - `total HKN bytes = 2,977,544`
+- Speed effect is positive but within normal variance envelope:
+  - previous promoted rerun:
+    - `thread_tokens_rerun`: Enc `148.649`, Dec `17.958`
+  - route-dedupe rerun #1:
+    - Enc `148.597`, Dec `18.145`
+  - route-dedupe rerun #2:
+    - Enc `146.795`, Dec `17.672`
+
+Interpretation:
+- Encode side showed consistent or better behavior in repeated runs.
+- Decode side is near-neutral with small run-to-run fluctuation.

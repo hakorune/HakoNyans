@@ -713,11 +713,38 @@ public:
         );
     }
 
+    static std::vector<uint8_t> encode_plane_lossless_screen_indexed_tile_padded(
+        const int16_t* padded, uint32_t pad_w, uint32_t pad_h,
+        ScreenBuildFailReason* fail_reason = nullptr
+    ) {
+        return lossless_screen_route::encode_plane_lossless_screen_indexed_tile_padded(
+            padded, pad_w, pad_h, fail_reason,
+            [](const std::vector<uint8_t>& bytes) {
+                return GrayscaleEncoder::encode_byte_stream(bytes);
+            }
+        );
+    }
+
     static std::vector<uint8_t> encode_plane_lossless_natural_row_tile(
         const int16_t* plane, uint32_t width, uint32_t height
     ) {
         return lossless_natural_route::encode_plane_lossless_natural_row_tile(
             plane, width, height,
+            [](int16_t v) { return zigzag_encode_val(v); },
+            [](const std::vector<uint8_t>& bytes) {
+                return GrayscaleEncoder::encode_byte_stream_shared_lz(bytes);
+            },
+            [](const std::vector<uint8_t>& bytes) {
+                return GrayscaleEncoder::encode_byte_stream(bytes);
+            }
+        );
+    }
+
+    static std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
+        const int16_t* padded, uint32_t pad_w, uint32_t pad_h
+    ) {
+        return lossless_natural_route::encode_plane_lossless_natural_row_tile_padded(
+            padded, pad_w, pad_h,
             [](int16_t v) { return zigzag_encode_val(v); },
             [](const std::vector<uint8_t>& bytes) {
                 return GrayscaleEncoder::encode_byte_stream_shared_lz(bytes);
@@ -966,14 +993,18 @@ public:
             [](const int16_t* p, uint32_t w, uint32_t h) {
                 return GrayscaleEncoder::analyze_screen_indexed_preflight(p, w, h);
             },
-            [](const int16_t* p, uint32_t w, uint32_t h, ScreenBuildFailReason* fail_reason) {
-                return GrayscaleEncoder::encode_plane_lossless_screen_indexed_tile(p, w, h, fail_reason);
+            [&padded, pad_w, pad_h](const int16_t*, uint32_t, uint32_t, ScreenBuildFailReason* fail_reason) {
+                return GrayscaleEncoder::encode_plane_lossless_screen_indexed_tile_padded(
+                    padded.data(), pad_w, pad_h, fail_reason
+                );
             },
             [](const ScreenPreflightMetrics& m) {
                 return GrayscaleEncoder::is_natural_like(m);
             },
-            [](const int16_t* p, uint32_t w, uint32_t h) {
-                return GrayscaleEncoder::encode_plane_lossless_natural_row_tile(p, w, h);
+            [&padded, pad_w, pad_h](const int16_t*, uint32_t, uint32_t) {
+                return GrayscaleEncoder::encode_plane_lossless_natural_row_tile_padded(
+                    padded.data(), pad_w, pad_h
+                );
             }
         );
         const auto t_route1 = Clock::now();

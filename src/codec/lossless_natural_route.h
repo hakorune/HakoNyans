@@ -328,6 +328,57 @@ inline std::vector<uint8_t> build_mode1_payload(
 // mode1: row SUB/UP/AVG/PAETH/MED + compressed predictor stream
 // mode2: mode1 predictor set + natural-only global-chain LZ for residual stream
 template <typename ZigzagEncodeFn, typename EncodeSharedLzFn, typename EncodeByteStreamFn>
+inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
+    const int16_t* padded, uint32_t pad_w, uint32_t pad_h,
+    ZigzagEncodeFn&& zigzag_encode_val,
+    EncodeSharedLzFn&& encode_byte_stream_shared_lz,
+    EncodeByteStreamFn&& encode_byte_stream
+) {
+    if (!padded || pad_w == 0 || pad_h == 0) return {};
+    const uint32_t pixel_count = pad_w * pad_h;
+    if (pixel_count == 0) return {};
+
+    const auto& lz_params = detail::global_chain_lz_runtime_params();
+
+    auto mode0 = detail::build_mode0_payload(
+        padded, pad_w, pad_h, pixel_count,
+        zigzag_encode_val, encode_byte_stream_shared_lz
+    );
+    if (mode0.empty()) return {};
+
+    auto mode1 = detail::build_mode1_payload(
+        padded, pad_w, pad_h, pixel_count,
+        zigzag_encode_val, encode_byte_stream_shared_lz, encode_byte_stream,
+        1,
+        [](const std::vector<uint8_t>& bytes) {
+            return TileLZ::compress(bytes);
+        }
+    );
+
+    auto mode2 = detail::build_mode1_payload(
+        padded, pad_w, pad_h, pixel_count,
+        zigzag_encode_val, encode_byte_stream_shared_lz, encode_byte_stream,
+        2,
+        [&](const std::vector<uint8_t>& bytes) {
+            return detail::compress_global_chain_lz(bytes, lz_params);
+        }
+    );
+
+    std::vector<uint8_t> best = std::move(mode0);
+    if (!mode1.empty() && mode1.size() < best.size()) {
+        best = std::move(mode1);
+    }
+    if (!mode2.empty()) {
+        const uint64_t lhs = (uint64_t)mode2.size() * 1000ull;
+        const uint64_t rhs = (uint64_t)best.size() * (uint64_t)lz_params.bias_permille;
+        if (lhs <= rhs) {
+            best = std::move(mode2);
+        }
+    }
+    return best;
+}
+
+template <typename ZigzagEncodeFn, typename EncodeSharedLzFn, typename EncodeByteStreamFn>
 inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile(
     const int16_t* plane, uint32_t width, uint32_t height,
     ZigzagEncodeFn&& zigzag_encode_val,
@@ -349,44 +400,10 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile(
         }
     }
 
-    const auto& lz_params = detail::global_chain_lz_runtime_params();
-
-    auto mode0 = detail::build_mode0_payload(
-        padded.data(), pad_w, pad_h, pixel_count,
-        zigzag_encode_val, encode_byte_stream_shared_lz
+    return encode_plane_lossless_natural_row_tile_padded(
+        padded.data(), pad_w, pad_h,
+        zigzag_encode_val, encode_byte_stream_shared_lz, encode_byte_stream
     );
-    if (mode0.empty()) return {};
-
-    auto mode1 = detail::build_mode1_payload(
-        padded.data(), pad_w, pad_h, pixel_count,
-        zigzag_encode_val, encode_byte_stream_shared_lz, encode_byte_stream,
-        1,
-        [](const std::vector<uint8_t>& bytes) {
-            return TileLZ::compress(bytes);
-        }
-    );
-
-    auto mode2 = detail::build_mode1_payload(
-        padded.data(), pad_w, pad_h, pixel_count,
-        zigzag_encode_val, encode_byte_stream_shared_lz, encode_byte_stream,
-        2,
-        [&](const std::vector<uint8_t>& bytes) {
-            return detail::compress_global_chain_lz(bytes, lz_params);
-        }
-    );
-
-    std::vector<uint8_t> best = std::move(mode0);
-    if (!mode1.empty() && mode1.size() < best.size()) {
-        best = std::move(mode1);
-    }
-    if (!mode2.empty()) {
-        const uint64_t lhs = (uint64_t)mode2.size() * 1000ull;
-        const uint64_t rhs = (uint64_t)best.size() * (uint64_t)lz_params.bias_permille;
-        if (lhs <= rhs) {
-            best = std::move(mode2);
-        }
-    }
-    return best;
 }
 
 } // namespace hakonyans::lossless_natural_route
