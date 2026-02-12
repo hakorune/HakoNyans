@@ -1401,6 +1401,29 @@ lossless 経路の「どこで遅いか」を定量化するため、HKN encode/
 
 ---
 
+### Phase 9w-balance: 速さ×圧縮率ポリシー固定 + 並列化更新 (2026-02-12)
+
+Phase 9w の評価基準を「圧縮率のみ」から「speed/size の固定ゲート」へ明文化した。  
+同時に、route競合と filter_lo の並列化を反映した最新観測値に更新。
+
+**追加/更新ドキュメント**:
+1. `docs/PHASE9W_SPEED_SIZE_BALANCE_POLICY.md`（新規）
+   - `median PNG/HKN` + total bytes + `Enc/Dec wall(ms)` の固定受け入れゲートを定義
+   - `cpu_sum` は診断専用、go/no-go は wall-clock で判定と明記
+2. `docs/PHASE9W_NATURAL_GLOBAL_LZ_INSTRUCTIONS.md`
+   - ポリシー参照を追加し、DoD を speed/size 両立ゲートに更新
+3. `docs/PHASE9W_ROUTEPARAM_SWEEP_INSTRUCTIONS.md`
+   - Acceptance criteria に `Enc/Dec` 非悪化を追加
+   - 最新の速度観測値とホットスポットに更新
+
+**最新観測（fixed 6, median）**:
+- Enc `HKN/PNG`: `1.539x`（`168.179 / 109.246 ms`）
+- Dec `HKN/PNG`: `2.860x`（`18.511 / 6.472 ms`）
+- Encode hotspot: `route_comp`, `block_class`, `lo_stream`
+- Decode hotspot: `filter_lo`, `reconstruct`, `filter_hi`
+
+---
+
 ## 🏆 技術的ハイライト
 
 ### 1. NyANS-P エントロピーエンジン

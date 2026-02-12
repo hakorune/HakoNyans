@@ -82,7 +82,11 @@ HKN_LZ_BIAS_PERMILLE=990 \
 - `ctest` 17/17 PASS
 - no regression in median `PNG/HKN`
 - improved or equal total HKN bytes on fixed 6 images
+- no regression in median `Enc(ms)` and `Dec(ms)` (wall-clock)
 - report `natural_row_selected`, `gain_bytes`, `loss_bytes` for audit
+
+Fixed policy reference:
+- `docs/PHASE9W_SPEED_SIZE_BALANCE_POLICY.md`
 
 ## Speed front comparison (HKN vs PNG)
 
@@ -98,6 +102,7 @@ Printed summary:
 - per-image `Enc(ms HKN/PNG)` and `Dec(ms HKN/PNG)`
 - median `Enc(ms)` and `Dec(ms)` for HKN/PNG
 - `HKN Stage Breakdown (median over fixed 6)`
+- stage lines are `cpu_sum`; use wall-clock lines for go/no-go
 
 CSV (same file) keeps old columns and appends stage metrics:
 - top-level: `hkn_enc_ms`, `hkn_dec_ms`, `png_enc_ms`, `png_dec_ms`
@@ -106,16 +111,19 @@ CSV (same file) keeps old columns and appends stage metrics:
 
 ## Current hotspot snapshot (2026-02-12)
 
-From `bench_results/phase9w_speed_stage_profile.csv`:
-- median `Enc(ms)` HKN/PNG: `337.691 / 107.825` (`HKN/PNG=3.132`)
-- median `Dec(ms)` HKN/PNG: `35.298 / 6.442` (`HKN/PNG=5.479`)
+From `bench_results/phase9w_speed_stage_profile_after_route_filter_parallel.csv`:
+- median `Enc(ms)` HKN/PNG: `168.179 / 109.246` (`HKN/PNG=1.539`)
+- median `Dec(ms)` HKN/PNG: `18.511 / 6.472` (`HKN/PNG=2.860`)
+- `cpu_sum / wall`:
+  - Encode: `1.915`
+  - Decode: `1.862`
 
 Encode hotspot (median):
-- `plane_route_comp`: `138.299 ms`
-- `plane_block_class`: `92.062 ms`
-- `plane_lo_stream`: `65.373 ms`
+- `plane_route_comp`: `135.876 ms`
+- `plane_block_class`: `84.311 ms`
+- `plane_lo_stream`: `58.921 ms`
 
 Decode hotspot (median):
-- `plane_filter_lo`: `16.451 ms`
-- `plane_reconstruct`: `5.970 ms`
-- `plane_filter_hi`: `2.394 ms`
+- `plane_filter_lo`: `15.176 ms`
+- `plane_reconstruct`: `6.208 ms`
+- `plane_filter_hi`: `2.424 ms`

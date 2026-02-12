@@ -13,6 +13,19 @@ Naturalカテゴリ（`kodim*`, `hd_01`, `nature_*`）での PNG 比劣位を縮
   - `natural_row_selected`（タイル採用率）
   - `gain_bytes` / `loss_bytes`（route競合内訳）
 - Natural 6枚の中央値で `PNG_bytes / HKN_bytes` を改善（悪化禁止）
+- 速度も同時に非悪化（`Enc(ms)` と `Dec(ms)` の median）
+
+## 方針固定（最優先）
+速さと圧縮率は片方だけ最適化しない。  
+固定ポリシーは以下を参照:
+
+- `docs/PHASE9W_SPEED_SIZE_BALANCE_POLICY.md`
+
+デフォルト受け入れゲート:
+- `median(PNG/HKN)` 非悪化
+- total `HKN_bytes` 非悪化
+- median `Enc(ms)` / `Dec(ms)` 非悪化
+- すべて baseline 比で判定
 
 ## 対象ファイル
 - `src/codec/encode.h`
@@ -107,8 +120,11 @@ ctest --test-dir build --output-on-failure
 - `HKN Stage Breakdown (median over fixed 6)`
 
 現状の観測結果:
-- Enc: `HKN/PNG = 3.132x`
-- Dec: `HKN/PNG = 5.479x`
+- Enc: `HKN/PNG = 1.539x`（`168.179 / 109.246 ms`）
+- Dec: `HKN/PNG = 2.860x`（`18.511 / 6.472 ms`）
+- `cpu_sum / wall`:
+  - Encode: `1.915`
+  - Decode: `1.862`
 - Encode主ボトルネック:
   - `plane_route_comp`（route競合）
   - `plane_block_class`（block分類）
@@ -121,14 +137,17 @@ ctest --test-dir build --output-on-failure
 ## 並列化の現状メモ
 
 進んでいる箇所:
-- 主に lossy decode 側（Cb/Cr の `std::async`、AC band並列、block並列）
+- lossless color plane 並列（Y/Co/Cg）
+- lossless route 競合候補（screen/natural）並列
+- `filter_lo` encode/decode の一部（base候補、mode4 ctx）並列
 
 未着手/不足している箇所:
-- lossless encode の `encode_plane_lossless` 本体
-- lossless route 競合 (`route_compete`)
-- lossless decode の `lossless_plane_decode_core`（`filter_lo`/再構築）
+- `lossless_plane_decode_core` の再構築ループ並列化
+- `block_class` 本体の並列化/計算削減
+- 並列の重複発行を抑える thread budget の全体統一
 
-次フェーズでは、まず lossless 経路の並列化を優先すること。
+次フェーズでは、`reconstruct` と `block_class` を優先しつつ、
+`speed/size` の固定ゲートを満たすことを最優先とする。
 
 ## 失敗パターンと対処
 - LZ後にサイズ膨張:
