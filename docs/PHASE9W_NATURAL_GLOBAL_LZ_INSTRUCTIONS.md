@@ -90,6 +90,46 @@ ctest --test-dir build --output-on-failure
 - 1回値だけでなく、最低3回の中央値を使う
 - 失敗時はまず route採用ログを見る（採用されていない可能性が高い）
 
+## 追記: 速度正面比較と段階観測（2026-02-12）
+
+`bench_png_compare` に HKN/PNG の速度正面比較と HKN段階内訳を追加済み。
+
+実行:
+```bash
+./build/bench_png_compare \
+  --runs 3 --warmup 1 \
+  --out bench_results/phase9w_speed_stage_profile.csv
+```
+
+必須確認:
+- `median Enc(ms) HKN/PNG`
+- `median Dec(ms) HKN/PNG`
+- `HKN Stage Breakdown (median over fixed 6)`
+
+現状の観測結果:
+- Enc: `HKN/PNG = 3.132x`
+- Dec: `HKN/PNG = 5.479x`
+- Encode主ボトルネック:
+  - `plane_route_comp`（route競合）
+  - `plane_block_class`（block分類）
+  - `plane_lo_stream`（filter_lo符号化）
+- Decode主ボトルネック:
+  - `plane_filter_lo`
+  - `plane_reconstruct`
+  - `plane_filter_hi`
+
+## 並列化の現状メモ
+
+進んでいる箇所:
+- 主に lossy decode 側（Cb/Cr の `std::async`、AC band並列、block並列）
+
+未着手/不足している箇所:
+- lossless encode の `encode_plane_lossless` 本体
+- lossless route 競合 (`route_compete`)
+- lossless decode の `lossless_plane_decode_core`（`filter_lo`/再構築）
+
+次フェーズでは、まず lossless 経路の並列化を優先すること。
+
 ## 失敗パターンと対処
 - LZ後にサイズ膨張:
   - 小ストリームでは CDF/ラッパ固定費が支配
@@ -102,4 +142,3 @@ ctest --test-dir build --output-on-failure
 
 ## コミットメッセージ例
 `Phase 9w: add natural global-chain LZ route with fixed pre-classification and 6-image A/B telemetry`
-

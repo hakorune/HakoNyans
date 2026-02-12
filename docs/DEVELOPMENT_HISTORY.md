@@ -1357,6 +1357,50 @@ palette候補を扱えるようにした。
 
 ---
 
+### Phase 9w-observe: 速度正面比較 + 段階別プロファイル導入 (2026-02-12)
+
+lossless 経路の「どこで遅いか」を定量化するため、HKN encode/decode の段階別カウンターを導入。
+同時に `bench_png_compare` を拡張し、PNGとの速度正面比較を1コマンドで取得可能にした。
+
+**主な変更**:
+1. `src/codec/lossless_mode_debug_stats.h`
+   - encode側 perf counters（ns）を追加
+2. `src/codec/lossless_decode_debug_stats.h`（新規）
+   - decode側 perf counters（ns）を追加
+3. `src/codec/encode.h`
+   - `encode_color_lossless` / `encode_plane_lossless` に段階タイマー追加
+4. `src/codec/decode.h`
+   - decode側 thread-local perf stats を追加
+   - `decode_color_lossless` / `decode_plane_lossless` に段階タイマー追加
+5. `src/codec/lossless_plane_decode_core.h`
+   - `filter_lo`, `filter_hi`, reconstruct など内部段階の計測追加
+6. `bench/bench_png_compare.cpp`
+   - per-image `Enc(ms HKN/PNG)` / `Dec(ms HKN/PNG)` を表示
+   - `HKN Stage Breakdown (median over fixed 6)` を表示
+   - CSV に stage columns を追記（旧列は維持）
+
+**検証結果**:
+- `ctest`: 17/17 PASS
+- `bench_results/phase9w_speed_stage_profile.csv`
+  - median `Enc(ms)` HKN/PNG: `337.691 / 107.825`（`HKN/PNG=3.132`）
+  - median `Dec(ms)` HKN/PNG: `35.298 / 6.442`（`HKN/PNG=5.479`）
+
+**ホットスポット（中央値）**:
+- Encode:
+  - `plane_route_comp`: `138.299 ms`
+  - `plane_block_class`: `92.062 ms`
+  - `plane_lo_stream`: `65.373 ms`
+- Decode:
+  - `plane_filter_lo`: `16.451 ms`
+  - `plane_reconstruct`: `5.970 ms`
+  - `plane_filter_hi`: `2.394 ms`
+
+**並列化観点の所見**:
+- 並列化が進んでいるのは主に lossy decode 側。
+- lossless の主経路（route競合、filter_lo、再構築）は直列度が高く、今後の最優先改善対象。
+
+---
+
 ## 🏆 技術的ハイライト
 
 ### 1. NyANS-P エントロピーエンジン

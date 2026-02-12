@@ -83,3 +83,39 @@ HKN_LZ_BIAS_PERMILLE=990 \
 - no regression in median `PNG/HKN`
 - improved or equal total HKN bytes on fixed 6 images
 - report `natural_row_selected`, `gain_bytes`, `loss_bytes` for audit
+
+## Speed front comparison (HKN vs PNG)
+
+`bench_png_compare` now reports size + speed in one run:
+
+```bash
+./build/bench_png_compare \
+  --runs 3 --warmup 1 \
+  --out bench_results/phase9w_speed_stage_profile.csv
+```
+
+Printed summary:
+- per-image `Enc(ms HKN/PNG)` and `Dec(ms HKN/PNG)`
+- median `Enc(ms)` and `Dec(ms)` for HKN/PNG
+- `HKN Stage Breakdown (median over fixed 6)`
+
+CSV (same file) keeps old columns and appends stage metrics:
+- top-level: `hkn_enc_ms`, `hkn_dec_ms`, `png_enc_ms`, `png_dec_ms`
+- encode stages: `hkn_enc_rgb_to_ycocg_ms`, `hkn_enc_plane_*`, `hkn_enc_container_pack_ms`
+- decode stages: `hkn_dec_header_ms`, `hkn_dec_plane_*`, `hkn_dec_ycocg_to_rgb_ms`
+
+## Current hotspot snapshot (2026-02-12)
+
+From `bench_results/phase9w_speed_stage_profile.csv`:
+- median `Enc(ms)` HKN/PNG: `337.691 / 107.825` (`HKN/PNG=3.132`)
+- median `Dec(ms)` HKN/PNG: `35.298 / 6.442` (`HKN/PNG=5.479`)
+
+Encode hotspot (median):
+- `plane_route_comp`: `138.299 ms`
+- `plane_block_class`: `92.062 ms`
+- `plane_lo_stream`: `65.373 ms`
+
+Decode hotspot (median):
+- `plane_filter_lo`: `16.451 ms`
+- `plane_reconstruct`: `5.970 ms`
+- `plane_filter_hi`: `2.394 ms`
