@@ -39,7 +39,7 @@ inline const GlobalChainLzParams& global_chain_lz_runtime_params() {
         t.window_size = parse_lz_env_int("HKN_LZ_WINDOW_SIZE", 65535, 1024, 65535);
         t.chain_depth = parse_lz_env_int("HKN_LZ_CHAIN_DEPTH", 32, 1, 128);
         t.min_dist_len3 = parse_lz_env_int("HKN_LZ_MIN_DIST_LEN3", 128, 0, 65535);
-        t.bias_permille = parse_lz_env_int("HKN_LZ_BIAS_PERMILLE", 1000, 900, 1100);
+        t.bias_permille = parse_lz_env_int("HKN_LZ_BIAS_PERMILLE", 990, 900, 1100);
         return t;
     }();
     return p;

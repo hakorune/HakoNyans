@@ -24,7 +24,7 @@ Natural route now accepts runtime env overrides:
 - `HKN_LZ_CHAIN_DEPTH` (default `32`, range `1..128`)
 - `HKN_LZ_WINDOW_SIZE` (default `65535`, range `1024..65535`)
 - `HKN_LZ_MIN_DIST_LEN3` (default `128`, range `0..65535`)
-- `HKN_LZ_BIAS_PERMILLE` (default `1000`, range `900..1100`)
+- `HKN_LZ_BIAS_PERMILLE` (default `990`, range `900..1100`)
 
 Natural prefilter thresholds (already tuned) can also be overridden:
 
@@ -65,7 +65,7 @@ ctest --test-dir build --output-on-failure
 HKN_LZ_CHAIN_DEPTH=32 \
 HKN_LZ_WINDOW_SIZE=65535 \
 HKN_LZ_MIN_DIST_LEN3=128 \
-HKN_LZ_BIAS_PERMILLE=1000 \
+HKN_LZ_BIAS_PERMILLE=990 \
 ./build/bench_png_compare --runs 3 --warmup 1 --out bench_results/phase9w_final.csv
 ```
 
