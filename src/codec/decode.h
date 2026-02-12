@@ -885,6 +885,8 @@ public:
 
         uint32_t cdf_size;
         std::memcpy(&cdf_size, data, 4);
+        if ((cdf_size & 3u) != 0u) return std::vector<uint8_t>(expected_count, 0);
+        if ((size_t)cdf_size > size - 12) return std::vector<uint8_t>(expected_count, 0);
 
         std::vector<uint32_t> freq(cdf_size / 4);
         std::memcpy(freq.data(), data + 4, cdf_size);
@@ -895,13 +897,27 @@ public:
 
         uint32_t rans_size;
         std::memcpy(&rans_size, data + 8 + cdf_size, 4);
+        if ((size_t)rans_size > size - 12 - (size_t)cdf_size) {
+            return std::vector<uint8_t>(expected_count, 0);
+        }
 
         FlatInterleavedDecoder dec(std::span<const uint8_t>(data + 12 + cdf_size, rans_size));
-
-        std::vector<uint8_t> result;
-        result.reserve(count);
-        for (uint32_t i = 0; i < count; i++) {
-            result.push_back((uint8_t)dec.decode_symbol(cdf));
+        std::vector<uint8_t> result(count);
+        if (count > 0) {
+            constexpr uint32_t kUseLutMinCount = 128;
+            if (count >= kUseLutMinCount) {
+                auto tbl = CDFBuilder::build_simd_table(cdf);
+                for (uint32_t i = 0; i < count; i++) {
+                    result[i] = (uint8_t)dec.decode_symbol_lut(*tbl);
+                }
+            } else {
+                for (uint32_t i = 0; i < count; i++) {
+                    result[i] = (uint8_t)dec.decode_symbol(cdf);
+                }
+            }
+        }
+        if (expected_count > 0 && result.size() != expected_count) {
+            result.resize(expected_count, 0);
         }
         return result;
     }
@@ -924,11 +940,12 @@ public:
 
         const CDFTable& cdf = get_mode5_shared_lz_cdf();
         FlatInterleavedDecoder dec(std::span<const uint8_t>(data + 8, rans_size));
-
-        std::vector<uint8_t> result;
-        result.reserve(count);
-        for (uint32_t i = 0; i < count; i++) {
-            result.push_back((uint8_t)dec.decode_symbol(cdf));
+        std::vector<uint8_t> result(count);
+        if (count > 0) {
+            const SIMDDecodeTable& tbl = get_mode5_shared_lz_simd_table();
+            for (uint32_t i = 0; i < count; i++) {
+                result[i] = (uint8_t)dec.decode_symbol_lut(tbl);
+            }
         }
         if (expected_count > 0 && result.size() != expected_count) {
             result.resize(expected_count, 0);
@@ -940,6 +957,14 @@ private:
     static const CDFTable& get_mode5_shared_lz_cdf() {
         static const CDFTable cdf = CDFBuilder().build_from_freq(mode5_shared_lz_freq());
         return cdf;
+    }
+
+    static const SIMDDecodeTable& get_mode5_shared_lz_simd_table() {
+        static const SIMDDecodeTable tbl = []() {
+            auto p = CDFBuilder::build_simd_table(get_mode5_shared_lz_cdf());
+            return *p;
+        }();
+        return tbl;
     }
 };
 

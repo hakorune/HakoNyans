@@ -289,3 +289,78 @@ Observed:
 ### Note
 - This change is instrumentation-focused.
 - No format change, no intended compression/quality behavior change.
+
+## 2026-02-12: Deep-Counter Readout and Attack Order
+
+### Measurement
+- Command:
+  - `build/bench_png_compare --runs 3 --warmup 1 --out bench_results/tmp_stage_profile_deep_counters_runs3.csv`
+- Key medians (fixed 6):
+  - `median Enc(ms) = 132.797`
+  - `median Dec(ms) = 19.020`
+  - decode stage:
+    - `plane_filter_lo = 15.564 ms`
+    - `plane_reconstruct = 5.679 ms`
+  - decode deep internals:
+    - `filter_lo_decode_rans = 15.165 ms`
+    - `filter_lo_decode_shared_rans = 0.000 ms`
+    - `filter_lo_tilelz = 0.000 ms`
+  - reconstruct path counters:
+    - COPY slow-path: effectively `0` in median
+    - TM4 slow-path: effectively `0` in median
+    - `residual_missing = 0`
+
+### Interpretation
+- Current decode bottleneck is rANS byte-stream decode inside `plane_filter_lo`.
+- `plane_reconstruct` has already good fast-path hit rates; it is a secondary target.
+- Parallel scheduler counters show 3-way plane parallelism is active in both encode/decode; primary issue is per-core work cost, not missing parallel dispatch.
+
+### Attack Order (fixed)
+1. `decode_byte_stream` / `decode_byte_stream_shared_lz` fast path (LUT decode path first)
+2. `plane_route_comp` pruning / early exit for low-effect candidates
+3. Additional reconstruct micro-optimizations only after (1)(2)
+
+## 2026-02-12: rANS LUT Decode Fast Path
+
+### Objective
+- Reduce decode hotspot in `plane_filter_lo` without changing bitstream format.
+- Replace per-symbol linear symbol search with LUT lookup path already available in `FlatInterleavedDecoder`.
+
+### Implementation
+- `src/codec/decode.h`
+  - `decode_byte_stream(...)`
+    - Added basic payload bounds checks (`cdf_size`, `rans_size`).
+    - Switched output build from `reserve + push_back` to `resize + direct store`.
+    - Added LUT decode path:
+      - build `SIMDDecodeTable` once per stream (`CDFBuilder::build_simd_table`)
+      - decode via `decode_symbol_lut(...)` for `count >= 128`
+  - `decode_byte_stream_shared_lz(...)`
+    - Switched to `resize + direct store`.
+    - Added static shared LUT table (`get_mode5_shared_lz_simd_table()`).
+    - decode via `decode_symbol_lut(...)`.
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `ctest --test-dir build --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- baseline:
+  - `bench_results/tmp_stage_profile_deep_counters_runs3.csv`
+- candidate:
+  - `bench_results/tmp_stage_profile_deep_counters_lut_runs3.csv`
+  - `bench_results/tmp_stage_profile_deep_counters_lut_runs3_rerun.csv`
+
+### Result Summary
+- Compression invariants:
+  - `median PNG/HKN = 0.2610` (unchanged)
+  - total `HKN_bytes` unchanged (all 6 images)
+- Decode improvement is large and stable in stage counters:
+  - `plane_filter_lo` median: `15.564 ms` -> `6.059 ms` (rerun `6.151 ms`)
+  - `filter_lo_decode_rans` median: `15.165 ms` -> `5.536 ms` (rerun `5.908 ms`)
+  - `median Dec(ms)`: `19.020` -> `12.696` (rerun `11.930`)
+- Encode wall-clock showed host variance across runs; no encode logic was changed in this patch.
+
+### Decision
+- Keep and promote this optimization as decode-hotspot reduction.
+- Next step remains `plane_route_comp` pruning for encode wall-clock.
