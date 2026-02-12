@@ -30,6 +30,7 @@
 #include "lossless_route_competition.h"
 #include "lossless_stream_diagnostics.h"
 #include "lossy_tile_packer.h"
+#include "lossy_plane_analysis.h"
 // New modular components
 #include "cfl_codec.h"
 #include "token_stream_codec.h"
@@ -214,219 +215,40 @@ public:
         bool use_band_group_cdf = true,
         int target_pindex_meta_ratio_percent = 2
     ) {
-        std::vector<uint8_t> padded = pad_image(pixels, width, height, pad_w, pad_h);
-        std::vector<uint8_t> y_padded; if (y_ref) y_padded = pad_image(y_ref->data(), (y_ref->size() > width*height/2 ? width : (width+1)/2), (y_ref->size() > width*height/2 ? height : (height+1)/2), pad_w, pad_h);
-        int nx = pad_w / 8, ny = pad_h / 8, nb = nx * ny;
-        
-        // Block Types handling
-        std::vector<FileHeader::BlockType> block_types;
-        if (block_types_in && block_types_in->size() == nb) {
-            block_types = *block_types_in;
-        } else {
-            block_types.assign(nb, FileHeader::BlockType::DCT);
-        }
-        
-        
-        // std::vector<uint8_t> bt_data = encode_block_types(block_types); // Moved to after loop
+        auto analysis = lossy_plane_analysis::analyze_blocks_and_tokenize(
+            pixels,
+            width,
+            height,
+            pad_w,
+            pad_h,
+            quant,
+            aq,
+            y_ref,
+            block_types_in,
+            copy_params_in,
+            enable_screen_profile,
+            use_band_group_cdf
+        );
 
+        std::vector<uint8_t> bt_data = encode_block_types(analysis.block_types);
 
-        std::vector<std::vector<int16_t>> dct_blocks(nb, std::vector<int16_t>(64));
-        std::vector<float> activities(nb); float total_activity = 0.0f;
-        std::vector<CfLParams> cfl_params;
-        
-        std::vector<Palette> palettes;
-        std::vector<std::vector<uint8_t>> palette_indices;
-        
-        std::vector<CopyParams> copy_ops;
-        int copy_op_idx = 0;
-
-        for (int i = 0; i < nb; i++) {
-            int bx = i % nx, by = i / nx; int16_t block[64]; extract_block(padded.data(), pad_w, pad_h, bx, by, block);
-            
-            // Automatic Block Type Selection Logic
-            // Priority: Forced Input -> Copy (Search) -> Palette (Check) -> DCT
-            
-            FileHeader::BlockType selected_type = FileHeader::BlockType::DCT;
-            
-            // 1. Check Forced Input
-            if (block_types_in && i < (int)block_types_in->size()) {
-                selected_type = (*block_types_in)[i];
-            } else if (enable_screen_profile) {
-                // Automatic selection only if Screen Profile is enabled
-                // A. Try Copy
-                // Limit search to mainly text/UI areas (high variance? or always try?)
-                // Copy search is expensive. For V1, let's limit radius or try only if variance is high?
-                // Actually, Palette/Copy are good for flat areas too.
-                // Let's try Copy Search with small radius (e.g. 128 px)
-                
-                CopyParams cp;
-                // Note: We should search in `padded` (original pixels)?
-                // Ideally we search in `reconstructed` pixels for correctness (drift prevention).
-                // But `dct_blocks` haven't been quantized/dequantized yet!
-                // We are in the loop `for (int i=0; i<nb; i++)`.
-                // Previous blocks `0..i-1` have been processed but their RECONSTRUCTED pixels are not stored yet?
-                // `encode_plane` calculates `quantized` coeff in the NEXT loop.
-                // So strict IntraBC is impossible in this single-pass structure without buffering.
-                //
-                // SOLUTION for Multi-Pass:
-                // We need to reconstruct blocks as we go if we want to search in them.
-                // OR: We assume "high quality" and search in Processed Original pixels.
-                // Screen content is usually lossless-ish.
-                // Let's search in `padded` (Original) for Step 4 V1.
-                // This introduces slight mismatch (Encoder thinks match, Decoder sees reconstructed diff).
-                // But for lossless-like settings (Q90+), it matches.
-                
-                int sad = IntraBCSearch::search(padded.data(), pad_w, pad_h, bx, by, 64, cp);
-                if (sad == 0) { // Perfect match
-                    selected_type = FileHeader::BlockType::COPY;
-                    copy_ops.push_back(cp);
-                    block_types[i] = selected_type;
-                    continue; // Skip Palette/DCT
-                }
-                
-                // B. Try Palette
-                Palette p = PaletteExtractor::extract(block, 8);
-                if (p.size > 0 && p.size <= 8) {
-                    // Check error? PaletteExtractor as implemented is "Lossless if <= 8 colors"
-                    // If it returned a palette, it means the block HAD <= 8 colors.
-                    selected_type = FileHeader::BlockType::PALETTE;
-                }
-            }
-            
-            // Apply selection
-            block_types[i] = selected_type;
-
-            if (selected_type == FileHeader::BlockType::COPY) {
-                 // Already handled above if auto-detected.
-                 // But if forced via input, we need to push param.
-                 if (copy_params_in && copy_op_idx < (int)copy_params_in->size()) {
-                    copy_ops.push_back((*copy_params_in)[copy_op_idx++]);
-                 } else {
-                    // Fallback if forced but no param?
-                    // Should rely on auto-search if forced but no param?
-                    // For now assume forced input comes with params or we re-search?
-                    // Let's re-search if param missing.
-                    CopyParams cp;
-                    IntraBCSearch::search(padded.data(), pad_w, pad_h, bx, by, 64, cp);
-                    copy_ops.push_back(cp);
-                 }
-                 if (y_ref) cfl_params.push_back({0.0f, 128.0f, 0.0f, 0.0f});
-                 continue;
-            } else if (selected_type == FileHeader::BlockType::PALETTE) {
-                // Try to extract palette (redundant if we just did it, but safe)
-                Palette p = PaletteExtractor::extract(block, 8);
-                if (p.size > 0) {
-                    palettes.push_back(p);
-                    palette_indices.push_back(PaletteExtractor::map_indices(block, p));
-                    if (y_ref) cfl_params.push_back({0.0f, 128.0f, 0.0f, 0.0f});
-                    continue; 
-                } else {
-                    // Start of fallback to DCT
-                    block_types[i] = FileHeader::BlockType::DCT;
-                }
-            }
-            
-            // Fallthrough to DCT logic
-            bool cfl_applied = false;
-            int cfl_alpha_q8 = 0, cfl_beta = 128;
-
-            if (y_ref) {
-                int16_t yb[64]; extract_block(y_padded.data(), pad_w, pad_h, bx, by, yb);
-                uint8_t yu[64], cu[64]; 
-                int64_t mse_no_cfl = 0;
-                for (int k=0; k<64; k++) { 
-                    yu[k]=(uint8_t)(yb[k]+128); 
-                    cu[k]=(uint8_t)(block[k]+128); 
-                    int err = (int)cu[k] - 128;
-                    mse_no_cfl += (int64_t)err * err;
-                }
-                
-                int alpha_q8, beta;
-                compute_cfl_block_adaptive(yu, cu, alpha_q8, beta);
-                
-                // Reconstruct exactly as the decoder would (centered model)
-                int a_q6 = (int)std::lround(std::clamp((float)alpha_q8 / 256.0f * 64.0f, -128.0f, 127.0f));
-                int b_center = (int)std::lround(std::clamp((float)beta, 0.0f, 255.0f));
-
-                int64_t mse_cfl_recon = 0;
-                for (int k=0; k<64; k++) {
-                    // Decoder formula: p = (a6 * (py - 128) + 32) >> 6 + b
-                    int p = (a_q6 * (yu[k] - 128) + 32) >> 6;
-                    p += b_center;
-                    int err = (int)cu[k] - std::clamp(p, 0, 255);
-                    mse_cfl_recon += (int64_t)err * err;
-                }
-
-                // Adaptive Decision: MSE based on EXACT decoder predictor.
-                if (mse_cfl_recon < mse_no_cfl - 1024) {
-                    cfl_applied = true;
-                    cfl_alpha_q8 = (a_q6 * 256) / 64; 
-                    cfl_beta = b_center;
-                    
-                    for (int k=0; k<64; k++) {
-                        int p = (a_q6 * (yu[k] - 128) + 32) >> 6;
-                        p += b_center;
-                        block[k] = (int16_t)std::clamp((int)cu[k] - p, -128, 127);
-                    }
-                }
-            }
-            
-            if (y_ref) {
-                cfl_params.push_back({(float)cfl_alpha_q8 / 256.0f, (float)cfl_beta, cfl_applied ? 1.0f : 0.0f, 0.0f});
-            }
-
-            int16_t dct_out[64], zigzag[64]; DCT::forward(block, dct_out); Zigzag::scan(dct_out, zigzag);
-            std::memcpy(dct_blocks[i].data(), zigzag, 128);
-            if (aq) { float act = QuantTable::calc_activity(&zigzag[1]); activities[i] = act; total_activity += act; }
-        }
-        float avg_activity = total_activity / nb;
-        std::vector<Token> dc_tokens;
-        std::vector<Token> ac_tokens;
-        std::vector<Token> ac_low_tokens;
-        std::vector<Token> ac_mid_tokens;
-        std::vector<Token> ac_high_tokens;
-        std::vector<int8_t> q_deltas; if (aq) q_deltas.reserve(nb);
-        int16_t prev_dc = 0;
-        for (int i = 0; i < nb; i++) {
-            if (i < (int)block_types.size() && (block_types[i] == FileHeader::BlockType::PALETTE || block_types[i] == FileHeader::BlockType::COPY)) {
-                // Skip DCT encoding for palette/copy blocks
-                 continue;
-            }
-
-            float scale = 1.0f; if (aq) { scale = QuantTable::get_adaptive_scale(activities[i], avg_activity); int8_t delta = (int8_t)std::clamp((scale - 1.0f) * 50.0f, -127.0f, 127.0f); q_deltas.push_back(delta); scale = 1.0f + (delta / 50.0f); }
-            int16_t quantized[64]; for (int k = 0; k < 64; k++) { int16_t coeff = dct_blocks[i][k]; uint16_t q_adj = std::max((uint16_t)1, (uint16_t)std::round(quant[k] * scale)); int sign = (coeff < 0) ? -1 : 1; quantized[k] = sign * ((std::abs(coeff) + q_adj / 2) / q_adj); }
-            int16_t dc_diff = quantized[0] - prev_dc; prev_dc = quantized[0]; dc_tokens.push_back(Tokenizer::tokenize_dc(dc_diff));
-            if (use_band_group_cdf) {
-                tokenize_ac_band(quantized, BAND_LOW, ac_low_tokens);
-                tokenize_ac_band(quantized, BAND_MID, ac_mid_tokens);
-                tokenize_ac_band(quantized, BAND_HIGH, ac_high_tokens);
-            } else {
-                auto at = Tokenizer::tokenize_ac(&quantized[1]);
-                ac_tokens.insert(ac_tokens.end(), at.begin(), at.end());
-            }
-        }
-        
-        std::vector<uint8_t> bt_data = encode_block_types(block_types);
-        // Phase 9s-4: Modify this call to collect telemetry
         int reorder_trials = 0;
         int reorder_adopted = 0;
         std::vector<uint8_t> pal_data = PaletteCodec::encode_palette_stream(
-             palettes, palette_indices, false,
+             analysis.palettes, analysis.palette_indices, false,
              &reorder_trials, &reorder_adopted
         );
         tl_lossless_mode_debug_stats_.palette_reorder_trials += reorder_trials;
         tl_lossless_mode_debug_stats_.palette_reorder_adopted += reorder_adopted;
 
-        // Phase 9l-3: Tile-local LZ for Palette Stream
         if (!pal_data.empty()) {
              std::vector<uint8_t> lz = TileLZ::compress(pal_data);
              size_t wrapped_size = 6 + lz.size();
-             // Apply only if size reduction >= 2%
              if (wrapped_size * 100 <= pal_data.size() * 98) {
                  std::vector<uint8_t> wrapped;
                  wrapped.resize(6);
                  wrapped[0] = FileHeader::WRAPPER_MAGIC_PALETTE;
-                 wrapped[1] = 2; // Mode 2 = LZ
+                 wrapped[1] = 2;
                  uint32_t rc = (uint32_t)pal_data.size();
                  std::memcpy(&wrapped[2], &rc, 4);
                  wrapped.insert(wrapped.end(), lz.begin(), lz.end());
@@ -438,47 +260,44 @@ public:
              }
         }
 
-        std::vector<uint8_t> cpy_data = CopyCodec::encode_copy_stream(copy_ops);
-
-        // Phase 9l-1: Tile-local LZ for Copy Stream
+        std::vector<uint8_t> cpy_data = CopyCodec::encode_copy_stream(analysis.copy_ops);
         if (!cpy_data.empty()) {
             std::vector<uint8_t> lz = TileLZ::compress(cpy_data);
             size_t wrapped_size = 6 + lz.size();
-            // Apply only if size reduction >= 2% (wrapped * 100 <= raw * 98)
             if (wrapped_size * 100 <= cpy_data.size() * 98) {
                 std::vector<uint8_t> wrapped;
                 wrapped.resize(6);
                 wrapped[0] = FileHeader::WRAPPER_MAGIC_COPY;
-                wrapped[1] = 2; // Mode 2 = LZ
+                wrapped[1] = 2;
                 uint32_t rc = (uint32_t)cpy_data.size();
                 std::memcpy(&wrapped[2], &rc, 4);
                 wrapped.insert(wrapped.end(), lz.begin(), lz.end());
-                
+
                 tl_lossless_mode_debug_stats_.copy_lz_used_count++;
                 tl_lossless_mode_debug_stats_.copy_lz_saved_bytes_sum += (cpy_data.size() - wrapped.size());
-                
+
                 cpy_data = std::move(wrapped);
             }
         }
+
         std::vector<uint8_t> pindex_data;
+        std::vector<uint8_t> cfl_data = build_cfl_payload(analysis.cfl_params);
 
-        std::vector<uint8_t> cfl_data = build_cfl_payload(cfl_params);
-
-        auto dc_stream = encode_tokens(dc_tokens, build_cdf(dc_tokens));
+        auto dc_stream = encode_tokens(analysis.dc_tokens, build_cdf(analysis.dc_tokens));
         std::vector<uint8_t> tile_data;
         if (use_band_group_cdf) {
-            constexpr size_t kBandPindexMinStreamBytes = 32 * 1024;  // avoid overhead on tiny AC bands
+            constexpr size_t kBandPindexMinStreamBytes = 32 * 1024;
             std::vector<uint8_t> pindex_low, pindex_mid, pindex_high;
             auto ac_low_stream = encode_tokens(
-                ac_low_tokens, build_cdf(ac_low_tokens), pi ? &pindex_low : nullptr,
+                analysis.ac_low_tokens, build_cdf(analysis.ac_low_tokens), pi ? &pindex_low : nullptr,
                 target_pindex_meta_ratio_percent, kBandPindexMinStreamBytes
             );
             auto ac_mid_stream = encode_tokens(
-                ac_mid_tokens, build_cdf(ac_mid_tokens), pi ? &pindex_mid : nullptr,
+                analysis.ac_mid_tokens, build_cdf(analysis.ac_mid_tokens), pi ? &pindex_mid : nullptr,
                 target_pindex_meta_ratio_percent, kBandPindexMinStreamBytes
             );
             auto ac_high_stream = encode_tokens(
-                ac_high_tokens, build_cdf(ac_high_tokens), pi ? &pindex_high : nullptr,
+                analysis.ac_high_tokens, build_cdf(analysis.ac_high_tokens), pi ? &pindex_high : nullptr,
                 target_pindex_meta_ratio_percent, kBandPindexMinStreamBytes
             );
             pindex_data = serialize_band_pindex_blob(pindex_low, pindex_mid, pindex_high);
@@ -488,7 +307,7 @@ public:
                 ac_mid_stream,
                 ac_high_stream,
                 pindex_data,
-                q_deltas,
+                analysis.q_deltas,
                 cfl_data,
                 bt_data,
                 pal_data,
@@ -496,14 +315,14 @@ public:
             );
         } else {
             auto ac_stream = encode_tokens(
-                ac_tokens, build_cdf(ac_tokens), pi ? &pindex_data : nullptr,
+                analysis.ac_tokens, build_cdf(analysis.ac_tokens), pi ? &pindex_data : nullptr,
                 target_pindex_meta_ratio_percent
             );
             tile_data = lossy_tile_packer::pack_legacy_tile(
                 dc_stream,
                 ac_stream,
                 pindex_data,
-                q_deltas,
+                analysis.q_deltas,
                 cfl_data,
                 bt_data,
                 pal_data,
@@ -511,6 +330,7 @@ public:
             );
         }
 
+        (void)chroma_idx;
         return tile_data;
     }
 
@@ -1335,5 +1155,6 @@ public:
 private:
     // Note: get_mode5_shared_lz_cdf is now in byte_stream_encoder module
 };
+
 
 } // namespace hakonyans
