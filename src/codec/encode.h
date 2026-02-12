@@ -44,10 +44,12 @@
 #include <cerrno>
 #include <cstring>
 #include <cstdlib>
+#include <future>
 #include <stdexcept>
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <thread>
 #include <unordered_map>
 
 namespace hakonyans {
@@ -495,23 +497,70 @@ public:
         tl_lossless_mode_debug_stats_.perf_encode_profile_classify_ns +=
             (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_cls1 - t_cls0).count();
 
-        const auto t_plane_y0 = Clock::now();
-        auto tile_y  = encode_plane_lossless(y_plane.data(), width, height, profile);
-        const auto t_plane_y1 = Clock::now();
-        tl_lossless_mode_debug_stats_.perf_encode_plane_y_ns +=
-            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_plane_y1 - t_plane_y0).count();
+        struct PlaneEncodeTaskResult {
+            std::vector<uint8_t> tile;
+            LosslessModeDebugStats stats;
+            uint64_t elapsed_ns = 0;
+        };
 
-        const auto t_plane_co0 = Clock::now();
-        auto tile_co = encode_plane_lossless(co_plane.data(), width, height, profile);
-        const auto t_plane_co1 = Clock::now();
-        tl_lossless_mode_debug_stats_.perf_encode_plane_co_ns +=
-            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_plane_co1 - t_plane_co0).count();
+        auto run_plane_task = [width, height, profile](const int16_t* plane) -> PlaneEncodeTaskResult {
+            using TaskClock = std::chrono::steady_clock;
+            GrayscaleEncoder::reset_lossless_mode_debug_stats();
+            const auto t0 = TaskClock::now();
+            auto tile = GrayscaleEncoder::encode_plane_lossless(plane, width, height, profile);
+            const auto t1 = TaskClock::now();
 
-        const auto t_plane_cg0 = Clock::now();
-        auto tile_cg = encode_plane_lossless(cg_plane.data(), width, height, profile);
-        const auto t_plane_cg1 = Clock::now();
-        tl_lossless_mode_debug_stats_.perf_encode_plane_cg_ns +=
-            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_plane_cg1 - t_plane_cg0).count();
+            PlaneEncodeTaskResult out;
+            out.tile = std::move(tile);
+            out.stats = GrayscaleEncoder::get_lossless_mode_debug_stats();
+            out.elapsed_ns =
+                (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+            return out;
+        };
+
+        std::vector<uint8_t> tile_y, tile_co, tile_cg;
+        const unsigned int hw_threads = std::max(1u, std::thread::hardware_concurrency());
+        const bool use_parallel_planes = (hw_threads >= 2);
+
+        if (use_parallel_planes) {
+            auto fy = std::async(std::launch::async, run_plane_task, y_plane.data());
+            auto fco = std::async(std::launch::async, run_plane_task, co_plane.data());
+            auto fcg = std::async(std::launch::async, run_plane_task, cg_plane.data());
+
+            auto y_res = fy.get();
+            auto co_res = fco.get();
+            auto cg_res = fcg.get();
+
+            tile_y = std::move(y_res.tile);
+            tile_co = std::move(co_res.tile);
+            tile_cg = std::move(cg_res.tile);
+
+            tl_lossless_mode_debug_stats_.accumulate_from(y_res.stats);
+            tl_lossless_mode_debug_stats_.accumulate_from(co_res.stats);
+            tl_lossless_mode_debug_stats_.accumulate_from(cg_res.stats);
+
+            tl_lossless_mode_debug_stats_.perf_encode_plane_y_ns += y_res.elapsed_ns;
+            tl_lossless_mode_debug_stats_.perf_encode_plane_co_ns += co_res.elapsed_ns;
+            tl_lossless_mode_debug_stats_.perf_encode_plane_cg_ns += cg_res.elapsed_ns;
+        } else {
+            const auto t_plane_y0 = Clock::now();
+            tile_y = encode_plane_lossless(y_plane.data(), width, height, profile);
+            const auto t_plane_y1 = Clock::now();
+            tl_lossless_mode_debug_stats_.perf_encode_plane_y_ns +=
+                (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_plane_y1 - t_plane_y0).count();
+
+            const auto t_plane_co0 = Clock::now();
+            tile_co = encode_plane_lossless(co_plane.data(), width, height, profile);
+            const auto t_plane_co1 = Clock::now();
+            tl_lossless_mode_debug_stats_.perf_encode_plane_co_ns +=
+                (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_plane_co1 - t_plane_co0).count();
+
+            const auto t_plane_cg0 = Clock::now();
+            tile_cg = encode_plane_lossless(cg_plane.data(), width, height, profile);
+            const auto t_plane_cg1 = Clock::now();
+            tl_lossless_mode_debug_stats_.perf_encode_plane_cg_ns +=
+                (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_plane_cg1 - t_plane_cg0).count();
+        }
 
         const auto t_pack0 = Clock::now();
         FileHeader header;

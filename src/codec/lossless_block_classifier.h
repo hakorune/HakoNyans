@@ -7,6 +7,7 @@
 #include "lossless_tile4_codec.h"
 #include "palette.h"
 #include <algorithm>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -22,6 +23,16 @@ struct ClassificationResult {
     std::vector<CopyParams> copy_ops;
     std::vector<lossless_tile4_codec::Tile4Result> tile4_results;
 };
+
+inline bool enable_filter_diag_palette16() {
+    static const bool kEnabled = []() {
+        const char* env = std::getenv("HKN_FILTER_DIAG_PALETTE16");
+        if (!env || env[0] == '\0') return false;
+        const char c = env[0];
+        return (c == '1' || c == 'y' || c == 'Y' || c == 't' || c == 'T');
+    }();
+    return kEnabled;
+}
 
 inline ClassificationResult classify_blocks(
     const std::vector<int16_t>& padded,
@@ -112,13 +123,14 @@ inline ClassificationResult classify_blocks(
                 if (!(src_y < cur_y || (src_y == cur_y && src_x < cur_x))) continue;
 
                 bool match = true;
-                for (int y = 0; y < 8 && match; y++) {
-                    for (int x = 0; x < 8; x++) {
-                        if (padded[(size_t)(cur_y + y) * (size_t)pad_w + (size_t)(cur_x + x)] !=
-                            padded[(size_t)(src_y + y) * (size_t)pad_w + (size_t)(src_x + x)]) {
-                            match = false;
-                            break;
-                        }
+                for (int y = 0; y < 8; y++) {
+                    const int16_t* dst_row =
+                        &padded[(size_t)(cur_y + y) * (size_t)pad_w + (size_t)cur_x];
+                    const int16_t* src_row =
+                        &padded[(size_t)(src_y + y) * (size_t)pad_w + (size_t)src_x];
+                    if (std::memcmp(dst_row, src_row, 8 * sizeof(int16_t)) != 0) {
+                        match = false;
+                        break;
                     }
                 }
                 if (match) {
@@ -172,13 +184,14 @@ inline ClassificationResult classify_blocks(
                     if (!(src_y < cur_qy || (src_y == cur_qy && src_x < cur_qx))) continue;
 
                     bool match = true;
-                    for (int dy = 0; dy < 4 && match; dy++) {
-                        for (int dx = 0; dx < 4; dx++) {
-                            if (padded[(size_t)(cur_qy + dy) * (size_t)pad_w + (size_t)(cur_qx + dx)] !=
-                                padded[(size_t)(src_y + dy) * (size_t)pad_w + (size_t)(src_x + dx)]) {
-                                match = false;
-                                break;
-                            }
+                    for (int dy = 0; dy < 4; dy++) {
+                        const int16_t* dst_row =
+                            &padded[(size_t)(cur_qy + dy) * (size_t)pad_w + (size_t)cur_qx];
+                        const int16_t* src_row =
+                            &padded[(size_t)(src_y + dy) * (size_t)pad_w + (size_t)src_x];
+                        if (std::memcmp(dst_row, src_row, 4 * sizeof(int16_t)) != 0) {
+                            match = false;
+                            break;
                         }
                     }
                     if (match) {
@@ -365,7 +378,7 @@ inline ClassificationResult classify_blocks(
                     (uint64_t)std::max<int64_t>(0, variance_proxy);
                 stats->filter_blocks_est_filter_bits_sum += (uint64_t)(filter_bits2 / 2);
 
-                if (unique_cnt <= 8) {
+                if (enable_filter_diag_palette16() && unique_cnt <= 8) {
                     Palette diag_palette16 = PaletteExtractor::extract(block, 8);
                     if (diag_palette16.size > 0 && diag_palette16.size <= 8) {
                         auto diag_indices = PaletteExtractor::map_indices(block, diag_palette16);

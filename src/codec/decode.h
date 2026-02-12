@@ -652,30 +652,100 @@ public:
         tl_lossless_decode_debug_stats_.decode_header_dir_ns +=
             (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_hdr1 - t_hdr0).count();
 
-        const auto t_y0 = Clock::now();
-        auto y_plane  = decode_plane_lossless(&hkn[t0->offset], t0->size, w, h, hdr.version);
-        const auto t_y1 = Clock::now();
-        tl_lossless_decode_debug_stats_.decode_plane_y_ns +=
-            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_y1 - t_y0).count();
+        struct PlaneDecodeTaskResult {
+            std::vector<int16_t> plane;
+            LosslessDecodeDebugStats stats;
+            uint64_t elapsed_ns = 0;
+        };
 
-        const auto t_co0 = Clock::now();
-        auto co_plane = decode_plane_lossless(&hkn[t1->offset], t1->size, w, h, hdr.version);
-        const auto t_co1 = Clock::now();
-        tl_lossless_decode_debug_stats_.decode_plane_co_ns +=
-            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_co1 - t_co0).count();
+        auto run_plane_task = [&](size_t offset, size_t size) -> PlaneDecodeTaskResult {
+            using TaskClock = std::chrono::steady_clock;
+            GrayscaleDecoder::reset_lossless_decode_debug_stats();
+            const auto t0p = TaskClock::now();
+            auto plane = GrayscaleDecoder::decode_plane_lossless(&hkn[offset], size, w, h, hdr.version);
+            const auto t1p = TaskClock::now();
 
-        const auto t_cg0 = Clock::now();
-        auto cg_plane = decode_plane_lossless(&hkn[t2->offset], t2->size, w, h, hdr.version);
-        const auto t_cg1 = Clock::now();
-        tl_lossless_decode_debug_stats_.decode_plane_cg_ns +=
-            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_cg1 - t_cg0).count();
+            PlaneDecodeTaskResult out;
+            out.plane = std::move(plane);
+            out.stats = GrayscaleDecoder::get_lossless_decode_debug_stats();
+            out.elapsed_ns =
+                (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t1p - t0p).count();
+            return out;
+        };
+
+        std::vector<int16_t> y_plane, co_plane, cg_plane;
+        const unsigned int hw_threads = std::max(1u, std::thread::hardware_concurrency());
+        const bool use_parallel_planes = (hw_threads >= 2);
+
+        if (use_parallel_planes) {
+            auto fy = std::async(std::launch::async, run_plane_task, t0->offset, t0->size);
+            auto fco = std::async(std::launch::async, run_plane_task, t1->offset, t1->size);
+            auto fcg = std::async(std::launch::async, run_plane_task, t2->offset, t2->size);
+
+            auto y_res = fy.get();
+            auto co_res = fco.get();
+            auto cg_res = fcg.get();
+
+            y_plane = std::move(y_res.plane);
+            co_plane = std::move(co_res.plane);
+            cg_plane = std::move(cg_res.plane);
+
+            tl_lossless_decode_debug_stats_.accumulate_from(y_res.stats);
+            tl_lossless_decode_debug_stats_.accumulate_from(co_res.stats);
+            tl_lossless_decode_debug_stats_.accumulate_from(cg_res.stats);
+
+            tl_lossless_decode_debug_stats_.decode_plane_y_ns += y_res.elapsed_ns;
+            tl_lossless_decode_debug_stats_.decode_plane_co_ns += co_res.elapsed_ns;
+            tl_lossless_decode_debug_stats_.decode_plane_cg_ns += cg_res.elapsed_ns;
+        } else {
+            const auto t_y0 = Clock::now();
+            y_plane  = decode_plane_lossless(&hkn[t0->offset], t0->size, w, h, hdr.version);
+            const auto t_y1 = Clock::now();
+            tl_lossless_decode_debug_stats_.decode_plane_y_ns +=
+                (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_y1 - t_y0).count();
+
+            const auto t_co0 = Clock::now();
+            co_plane = decode_plane_lossless(&hkn[t1->offset], t1->size, w, h, hdr.version);
+            const auto t_co1 = Clock::now();
+            tl_lossless_decode_debug_stats_.decode_plane_co_ns +=
+                (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_co1 - t_co0).count();
+
+            const auto t_cg0 = Clock::now();
+            cg_plane = decode_plane_lossless(&hkn[t2->offset], t2->size, w, h, hdr.version);
+            const auto t_cg1 = Clock::now();
+            tl_lossless_decode_debug_stats_.decode_plane_cg_ns +=
+                (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_cg1 - t_cg0).count();
+        }
 
         // YCoCg-R -> RGB
         const auto t_rgb0 = Clock::now();
         std::vector<uint8_t> rgb(w * h * 3);
-        for (int i = 0; i < w * h; i++) {
-            ycocg_r_to_rgb(y_plane[i], co_plane[i], cg_plane[i],
-                           rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
+        const unsigned int rgb_threads =
+            std::max(1u, std::min<unsigned int>(hw_threads, (unsigned int)h));
+        if (rgb_threads >= 2) {
+            std::vector<std::future<void>> futs;
+            futs.reserve(rgb_threads);
+            const int rows_per_task = h / (int)rgb_threads;
+            for (unsigned int t = 0; t < rgb_threads; t++) {
+                const int sy = (int)t * rows_per_task;
+                const int ey = (t == rgb_threads - 1) ? h : (int)(t + 1) * rows_per_task;
+                futs.push_back(std::async(std::launch::async, [&, sy, ey]() {
+                    for (int y = sy; y < ey; y++) {
+                        const int row_off = y * w;
+                        for (int x = 0; x < w; x++) {
+                            const int i = row_off + x;
+                            ycocg_r_to_rgb(y_plane[i], co_plane[i], cg_plane[i],
+                                           rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
+                        }
+                    }
+                }));
+            }
+            for (auto& f : futs) f.get();
+        } else {
+            for (int i = 0; i < w * h; i++) {
+                ycocg_r_to_rgb(y_plane[i], co_plane[i], cg_plane[i],
+                               rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
+            }
         }
         const auto t_rgb1 = Clock::now();
         tl_lossless_decode_debug_stats_.decode_ycocg_to_rgb_ns +=

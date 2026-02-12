@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 
@@ -34,6 +35,14 @@ struct LosslessDecodeDebugStats {
 
     LosslessDecodeDebugStats() { reset(); }
     void reset() { std::memset(this, 0, sizeof(*this)); }
+    void accumulate_from(const LosslessDecodeDebugStats& other) {
+        static_assert(sizeof(LosslessDecodeDebugStats) % sizeof(uint64_t) == 0,
+                      "LosslessDecodeDebugStats must be uint64_t aligned");
+        auto* dst = reinterpret_cast<uint64_t*>(this);
+        const auto* src = reinterpret_cast<const uint64_t*>(&other);
+        constexpr size_t kWords = sizeof(LosslessDecodeDebugStats) / sizeof(uint64_t);
+        for (size_t i = 0; i < kWords; i++) dst[i] += src[i];
+    }
 };
 
 } // namespace hakonyans
