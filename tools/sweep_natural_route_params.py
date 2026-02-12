@@ -2,6 +2,7 @@ import subprocess
 import os
 import csv
 import itertools
+import statistics
 
 # Parameter candidates
 chain_depth_list = [8, 16, 24, 32]
@@ -33,17 +34,11 @@ def run_bench(chain_depth, window_size, min_dist_len3, bias_permille, runs=1, wa
     try:
         result = subprocess.run(cmd, env=env, capture_output=True, text=True)
         if result.returncode != 0:
+            print("Error for " + str((chain_depth, window_size, min_dist_len3, bias_permille)))
+            print(result.stderr.strip())
             return None
-        
-        # Parse result from stdout (median ratio)
-        lines = result.stdout.splitlines()
-        median_ratio = 0.0
-        for line in lines:
-            if "median(PNG_bytes/HKN_bytes):" in line:
-                median_ratio = float(line.split(":")[-1].strip())
-                break
-        
-        # Parse per-image ratios and metrics from CSV
+
+        # Parse per-image metrics from CSV
         image_data = {}
         with open(temp_csv, "r") as f:
             reader = csv.DictReader(f)
@@ -56,16 +51,32 @@ def run_bench(chain_depth, window_size, min_dist_len3, bias_permille, runs=1, wa
                     "gain_bytes": int(row['gain_bytes']),
                     "loss_bytes": int(row['loss_bytes'])
                 }
-                
+
+        ratio_values = [d["ratio"] for d in image_data.values()]
+        median_ratio = statistics.median(ratio_values) if ratio_values else 0.0
+        kodim_keys = [k for k in ("kodim01", "kodim02", "kodim03") if k in image_data]
+        kodim_mean = (
+            sum(image_data[k]["ratio"] for k in kodim_keys) / len(kodim_keys)
+            if kodim_keys else 0.0
+        )
+        total_hkn = sum(d["hkn_bytes"] for d in image_data.values())
+        median_dec_ms = statistics.median([d["dec_ms"] for d in image_data.values()]) if image_data else 0.0
+        total_natural_selected = sum(d["natural_row_selected"] for d in image_data.values())
+
         # Cleanup
         os.remove(temp_csv)
-        
+
         return {
             "params": (chain_depth, window_size, min_dist_len3, bias_permille),
             "median_ratio": median_ratio,
+            "kodim_mean": kodim_mean,
+            "total_hkn": total_hkn,
+            "median_dec_ms": median_dec_ms,
+            "total_natural_selected": total_natural_selected,
             "image_data": image_data
         }
-    except Exception:
+    except Exception as e:
+        print("Exception for " + str((chain_depth, window_size, min_dist_len3, bias_permille)) + ": " + str(e))
         return None
 
 def main():
@@ -86,29 +97,49 @@ def main():
         if (i + 1) % 10 == 0:
             print(f"Progress: {i + 1}/{len(combinations)}")
 
-    # Sort by median_ratio descending
-    results.sort(key=lambda x: x["median_ratio"], reverse=True)
+    # Rank: median(PNG/HKN) > Kodak mean > total HKN(bytes, smaller better) > decode(ms, smaller better)
+    results.sort(
+        key=lambda x: (x["median_ratio"], x["kodim_mean"], -x["total_hkn"], -x["median_dec_ms"]),
+        reverse=True
+    )
     
     with open("bench_results/phase9w_routeparam_sweep_raw.csv", "w", newline="") as f:
         writer = csv.writer(f)
         if results:
             img_names = sorted(results[0]["image_data"].keys())
-            header = ["chain_depth", "window_size", "min_dist_len3", "bias_permille", "median_ratio"]
+            header = [
+                "chain_depth", "window_size", "min_dist_len3", "bias_permille",
+                "median_ratio", "kodim_mean_ratio", "total_hkn_bytes", "median_dec_ms",
+                "total_natural_selected"
+            ]
             for name in img_names:
                 header.append(f"{name}_ratio")
                 header.append(f"{name}_hkn_bytes")
                 header.append(f"{name}_dec_ms")
+                header.append(f"{name}_natural_selected")
+                header.append(f"{name}_gain_bytes")
+                header.append(f"{name}_loss_bytes")
             writer.writerow(header)
             for r in results:
-                row = list(r["params"]) + [r["median_ratio"]]
+                row = list(r["params"]) + [
+                    r["median_ratio"], r["kodim_mean"], r["total_hkn"],
+                    r["median_dec_ms"], r["total_natural_selected"]
+                ]
                 for name in img_names:
                     d = r["image_data"][name]
-                    row.extend([d["ratio"], d["hkn_bytes"], d["dec_ms"]])
+                    row.extend([
+                        d["ratio"], d["hkn_bytes"], d["dec_ms"],
+                        d["natural_row_selected"], d["gain_bytes"], d["loss_bytes"]
+                    ])
                 writer.writerow(row)
 
     print("\nTop 5 results (Crude search):")
     for r in results[:5]:
-        print(f"Params: {r['params']}, Median Ratio: {r['median_ratio']:.4f}")
+        print(
+            f"Params: {r['params']}, Median Ratio: {r['median_ratio']:.6f}, "
+            f"Kodak Mean: {r['kodim_mean']:.6f}, Total HKN: {r['total_hkn']}, "
+            f"Median Dec(ms): {r['median_dec_ms']:.3f}"
+        )
 
     # Refine top 5
     print("\nRefining top 5 results with 3 runs...")
@@ -118,16 +149,23 @@ def main():
         if res:
             refined_results.append(res)
     
-    refined_results.sort(key=lambda x: x["median_ratio"], reverse=True)
+    refined_results.sort(
+        key=lambda x: (x["median_ratio"], x["kodim_mean"], -x["total_hkn"], -x["median_dec_ms"]),
+        reverse=True
+    )
     
     print("\nTop results (Refined):")
     for r in refined_results:
-        print(f"Params: {r['params']}, Median Ratio: {r['median_ratio']:.4f}")
+        print(
+            f"Params: {r['params']}, Median Ratio: {r['median_ratio']:.6f}, "
+            f"Kodak Mean: {r['kodim_mean']:.6f}, Total HKN: {r['total_hkn']}, "
+            f"Median Dec(ms): {r['median_dec_ms']:.3f}"
+        )
         
     if refined_results:
         best = refined_results[0]
         print(f"\nBest params found: {best['params']}")
-        print(f"Best median ratio: {best['median_ratio']:.4f}")
+        print(f"Best median ratio: {best['median_ratio']:.6f}")
 
 if __name__ == "__main__":
     main()

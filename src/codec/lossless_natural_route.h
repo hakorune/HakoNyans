@@ -5,7 +5,9 @@
 #include "lossless_filter.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <vector>
 
@@ -13,14 +15,46 @@ namespace hakonyans::lossless_natural_route {
 
 namespace detail {
 
-inline std::vector<uint8_t> compress_global_chain_lz(const std::vector<uint8_t>& src) {
+struct GlobalChainLzParams {
+    int window_size = 65535;
+    int chain_depth = 32;
+    int min_dist_len3 = 128;
+    int bias_permille = 1000;
+};
+
+inline int parse_lz_env_int(const char* key, int fallback, int min_v, int max_v) {
+    const char* raw = std::getenv(key);
+    if (!raw || raw[0] == '\0') return fallback;
+    char* end = nullptr;
+    errno = 0;
+    long v = std::strtol(raw, &end, 10);
+    if (errno != 0 || end == raw || *end != '\0') return fallback;
+    if (v < (long)min_v || v > (long)max_v) return fallback;
+    return (int)v;
+}
+
+inline const GlobalChainLzParams& global_chain_lz_runtime_params() {
+    static const GlobalChainLzParams p = []() {
+        GlobalChainLzParams t{};
+        t.window_size = parse_lz_env_int("HKN_LZ_WINDOW_SIZE", 65535, 1024, 65535);
+        t.chain_depth = parse_lz_env_int("HKN_LZ_CHAIN_DEPTH", 32, 1, 128);
+        t.min_dist_len3 = parse_lz_env_int("HKN_LZ_MIN_DIST_LEN3", 128, 0, 65535);
+        t.bias_permille = parse_lz_env_int("HKN_LZ_BIAS_PERMILLE", 1000, 900, 1100);
+        return t;
+    }();
+    return p;
+}
+
+inline std::vector<uint8_t> compress_global_chain_lz(
+    const std::vector<uint8_t>& src, const GlobalChainLzParams& p
+) {
     if (src.empty()) return {};
 
     const int HASH_BITS = 16;
     const int HASH_SIZE = 1 << HASH_BITS;
-    const int WINDOW_SIZE = 65535;
-    const int CHAIN_DEPTH = 32;
-    const int MIN_DIST_LEN3 = 128;
+    const int window_size = p.window_size;
+    const int chain_depth = p.chain_depth;
+    const int min_dist_len3 = p.min_dist_len3;
 
     const size_t src_size = src.size();
     std::vector<uint8_t> out;
@@ -56,10 +90,10 @@ inline std::vector<uint8_t> compress_global_chain_lz(const std::vector<uint8_t>&
         int best_len = 0;
         int best_dist = 0;
         int depth = 0;
-        while (ref >= 0 && depth < CHAIN_DEPTH) {
+        while (ref >= 0 && depth < chain_depth) {
             size_t ref_pos = (size_t)ref;
             int dist = (int)(pos - ref_pos);
-            if (dist > 0 && dist <= WINDOW_SIZE) {
+            if (dist > 0 && dist <= window_size) {
                 if (src[ref_pos] == src[pos] &&
                     src[ref_pos + 1] == src[pos + 1] &&
                     src[ref_pos + 2] == src[pos + 2]) {
@@ -70,14 +104,14 @@ inline std::vector<uint8_t> compress_global_chain_lz(const std::vector<uint8_t>&
                            src[ref_pos + (size_t)len] == src[pos + (size_t)len]) {
                         len++;
                     }
-                    const bool acceptable = (len >= 4) || (len == 3 && dist <= MIN_DIST_LEN3);
+                    const bool acceptable = (len >= 4) || (len == 3 && dist <= min_dist_len3);
                     if (acceptable && (len > best_len || (len == best_len && dist < best_dist))) {
                         best_len = len;
                         best_dist = dist;
                         if (best_len == 255) break;
                     }
                 }
-            } else if (dist > WINDOW_SIZE) {
+            } else if (dist > window_size) {
                 break;
             }
             ref = prev[ref_pos];
@@ -315,6 +349,8 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile(
         }
     }
 
+    const auto& lz_params = detail::global_chain_lz_runtime_params();
+
     auto mode0 = detail::build_mode0_payload(
         padded.data(), pad_w, pad_h, pixel_count,
         zigzag_encode_val, encode_byte_stream_shared_lz
@@ -334,8 +370,8 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile(
         padded.data(), pad_w, pad_h, pixel_count,
         zigzag_encode_val, encode_byte_stream_shared_lz, encode_byte_stream,
         2,
-        [](const std::vector<uint8_t>& bytes) {
-            return detail::compress_global_chain_lz(bytes);
+        [&](const std::vector<uint8_t>& bytes) {
+            return detail::compress_global_chain_lz(bytes, lz_params);
         }
     );
 
@@ -344,7 +380,9 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile(
         best = std::move(mode1);
     }
     if (!mode2.empty()) {
-        if (mode2.size() <= best.size()) {
+        const uint64_t lhs = (uint64_t)mode2.size() * 1000ull;
+        const uint64_t rhs = (uint64_t)best.size() * (uint64_t)lz_params.bias_permille;
+        if (lhs <= rhs) {
             best = std::move(mode2);
         }
     }
