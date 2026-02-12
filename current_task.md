@@ -1027,3 +1027,47 @@ MEDの効果（Photo/Natural）を維持しつつ、UI/Anime側の将来回帰�
 完了条件:
 - [x] 既存 17 テスト PASS 維持
 - [x] `encode.h`/`decode.h` の責務が helper 単位で追跡可能
+
+---
+
+## 2026-02-12 再開ハンドオフ（Phase 9w 準備）
+
+### いまの到達点（再起動前の確定状態）
+- Lossless ルートは `legacy / screen-indexed / natural-row` の競合基盤まで実装済み。
+- `encode.h` / `decode.h` の大型分割は完了。
+  - `src/codec/encode.h`: 806 lines
+  - `src/codec/decode.h`: 725 lines
+  - 新規: `src/codec/lossless_block_classifier.h`
+  - 新規: `src/codec/lossless_plane_decode_core.h`
+- 回帰確認: `ctest` 17/17 PASS。
+
+### 次の最優先（Phase 9w）
+1. Natural 専用の「全体連結LZ」ルート追加
+2. エンコード前の判定を固定（`screen-like` / `natural-like`）
+3. 評価軸を固定してA/Bを毎回同条件で比較
+
+### 固定評価セット（6枚）
+- `test_images/photo/kodim01.ppm`
+- `test_images/photo/kodim02.ppm`
+- `test_images/photo/kodim03.ppm`
+- `test_images/natural/hd_01.ppm`
+- `test_images/photo/nature_01.ppm`
+- `test_images/photo/nature_02.ppm`
+
+### 必須ログ（毎回）
+- `size_bytes`（HKN / PNG）
+- `Dec(ms)`
+- `natural_row_selected`（tile数、採用率）
+- `gain_bytes` / `loss_bytes`（route競合の勝敗内訳）
+
+### 再開クイックスタート
+```bash
+cmake --build build -j8
+ctest --test-dir build --output-on-failure
+./build/bench_bit_accounting test_images/photo/nature_01.ppm --lossless
+./build/bench_png_compare
+```
+
+### 参照ドキュメント
+- 詳細指示書: `docs/PHASE9W_NATURAL_GLOBAL_LZ_INSTRUCTIONS.md`
+- 直前分析: `docs/PHASE9U_NATURAL_PNG_ANALYSIS.md`

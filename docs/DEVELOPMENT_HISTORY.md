@@ -1419,3 +1419,28 @@ MIT License (予定)
 狙い:
 - 機能責務を小さなヘッダに分割し、デバッグとレビューを容易にする。
 - 将来のアルゴリズム分岐追加時に、`encode.h`/`decode.h` への直書きを減らす。
+
+## 2026-02-12: Refactor completion + Phase 9w handoff
+
+### Completed
+- Refactored large lossless encode/decode bodies into dedicated modules.
+  - Added `src/codec/lossless_block_classifier.h`
+  - Added `src/codec/lossless_plane_decode_core.h`
+  - `src/codec/encode.h` now delegates block classification
+  - `src/codec/decode.h` now delegates plane-lossless decode core
+- Structural result:
+  - `encode.h`: 806 lines
+  - `decode.h`: 725 lines
+- Validation:
+  - build success
+  - `ctest` 17/17 PASS
+
+### Next (Phase 9w)
+- Prioritize Natural category gap vs PNG.
+- Add Natural-only global-chain LZ route.
+- Add pre-classification (`screen-like` vs `natural-like`) before expensive route attempts.
+- Lock evaluation on 6 fixed images: `kodim01/02/03`, `hd_01`, `nature_01/02`.
+- Always log: `size_bytes`, `Dec(ms)`, `natural_row_selected`, `gain/loss bytes`.
+
+### Reference
+- `docs/PHASE9W_NATURAL_GLOBAL_LZ_INSTRUCTIONS.md`
