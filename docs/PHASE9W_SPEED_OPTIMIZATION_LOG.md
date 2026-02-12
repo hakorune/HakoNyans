@@ -364,3 +364,44 @@ Observed:
 ### Decision
 - Keep and promote this optimization as decode-hotspot reduction.
 - Next step remains `plane_route_comp` pruning for encode wall-clock.
+
+## 2026-02-12: Natural Route Mode1/Mode2 Compute Dedupe
+
+### Objective
+- Reduce route competition cost without affecting bitstream decisions.
+- Remove duplicated pixel-loop work in natural route mode1/mode2 generation.
+
+### Implementation
+- `src/codec/lossless_natural_route.h`
+  - Added `Mode1Prepared` and `build_mode1_prepared(...)`.
+    - Computes predictor IDs + residual bytes once for mode1 predictor set.
+  - Added `build_mode1_payload_from_prepared(...)`.
+    - Builds mode1/mode2 wrappers from shared prepared data.
+  - Updated `encode_plane_lossless_natural_row_tile_padded(...)`:
+    - mode1/mode2 now reuse the same prepared predictor/residual streams.
+  - Legacy wrapper `build_mode1_payload(...)` remains available and now uses the shared helpers.
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `ctest --test-dir build --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- baseline:
+  - `bench_results/tmp_stage_profile_deep_counters_lut_runs3_rerun.csv`
+- candidate:
+  - `bench_results/tmp_stage_profile_natural_mode_dedupe_runs3_ab.csv`
+  - `bench_results/tmp_stage_profile_natural_mode_dedupe_runs3_rerun.csv`
+
+### Result Summary
+- Compression invariants:
+  - all 6 images `HKN_bytes` unchanged
+  - `median PNG/HKN = 0.2610` unchanged
+- Stage diagnostics:
+  - `plane_route_comp` showed consistent reduction in A/B run (`median dRoute ~= -4.3 ms` across per-image diffs).
+- Wall-clock:
+  - run-to-run variance remains large; treat wall-clock gain as promising but not yet fully stabilized.
+
+### Decision
+- Keep this change (safe compute dedupe, no compression impact).
+- Continue with additional route-comp pruning where measurement noise can be reduced by tighter benchmark control.

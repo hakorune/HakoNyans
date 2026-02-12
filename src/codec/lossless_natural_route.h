@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace hakonyans::lossless_natural_route {
@@ -218,20 +219,19 @@ inline std::vector<uint8_t> build_mode0_payload(
     return out;
 }
 
-template <typename ZigzagEncodeFn,
-          typename EncodeSharedLzFn,
-          typename EncodeByteStreamFn,
-          typename CompressResidualFn>
-inline std::vector<uint8_t> build_mode1_payload(
-    const int16_t* padded, uint32_t pad_w, uint32_t pad_h, uint32_t pixel_count,
-    ZigzagEncodeFn&& zigzag_encode_val, EncodeSharedLzFn&& encode_byte_stream_shared_lz,
-    EncodeByteStreamFn&& encode_byte_stream,
-    uint8_t out_mode,
-    CompressResidualFn&& compress_residual
-) {
-    std::vector<uint8_t> row_pred_ids(pad_h, 0);
+struct Mode1Prepared {
+    std::vector<uint8_t> row_pred_ids;
     std::vector<uint8_t> residual_bytes;
-    residual_bytes.reserve((size_t)pixel_count * 2);
+};
+
+template <typename ZigzagEncodeFn>
+inline Mode1Prepared build_mode1_prepared(
+    const int16_t* padded, uint32_t pad_w, uint32_t pad_h, uint32_t pixel_count,
+    ZigzagEncodeFn&& zigzag_encode_val
+) {
+    Mode1Prepared prepared;
+    prepared.row_pred_ids.resize(pad_h, 0);
+    prepared.residual_bytes.reserve((size_t)pixel_count * 2);
 
     std::vector<int16_t> recon(pixel_count, 0);
     for (uint32_t y = 0; y < pad_h; y++) {
@@ -258,7 +258,7 @@ inline std::vector<uint8_t> build_mode1_payload(
                 best_p = p;
             }
         }
-        row_pred_ids[y] = (uint8_t)best_p;
+        prepared.row_pred_ids[y] = (uint8_t)best_p;
 
         for (uint32_t x = 0; x < pad_w; x++) {
             int16_t a = (x > 0) ? recon[(size_t)y * pad_w + (x - 1)] : 0;
@@ -276,10 +276,29 @@ inline std::vector<uint8_t> build_mode1_payload(
             recon[(size_t)y * pad_w + x] = (int16_t)(pred + resid);
 
             uint16_t zz = zigzag_encode_val(resid);
-            residual_bytes.push_back((uint8_t)(zz & 0xFF));
-            residual_bytes.push_back((uint8_t)((zz >> 8) & 0xFF));
+            prepared.residual_bytes.push_back((uint8_t)(zz & 0xFF));
+            prepared.residual_bytes.push_back((uint8_t)((zz >> 8) & 0xFF));
         }
     }
+    return prepared;
+}
+
+template <typename Mode1PreparedT,
+          typename EncodeSharedLzFn,
+          typename EncodeByteStreamFn,
+          typename CompressResidualFn>
+inline std::vector<uint8_t> build_mode1_payload_from_prepared(
+    const Mode1PreparedT& prepared,
+    uint32_t pad_h,
+    uint32_t pixel_count,
+    EncodeSharedLzFn&& encode_byte_stream_shared_lz,
+    EncodeByteStreamFn&& encode_byte_stream,
+    uint8_t out_mode,
+    CompressResidualFn&& compress_residual
+) {
+    const auto& row_pred_ids = prepared.row_pred_ids;
+    const auto& residual_bytes = prepared.residual_bytes;
+    if (row_pred_ids.empty() || residual_bytes.empty()) return {};
 
     auto resid_lz = compress_residual(residual_bytes);
     if (resid_lz.empty()) return {};
@@ -321,6 +340,30 @@ inline std::vector<uint8_t> build_mode1_payload(
     return out;
 }
 
+template <typename ZigzagEncodeFn,
+          typename EncodeSharedLzFn,
+          typename EncodeByteStreamFn,
+          typename CompressResidualFn>
+inline std::vector<uint8_t> build_mode1_payload(
+    const int16_t* padded, uint32_t pad_w, uint32_t pad_h, uint32_t pixel_count,
+    ZigzagEncodeFn&& zigzag_encode_val, EncodeSharedLzFn&& encode_byte_stream_shared_lz,
+    EncodeByteStreamFn&& encode_byte_stream,
+    uint8_t out_mode,
+    CompressResidualFn&& compress_residual
+) {
+    auto prepared = build_mode1_prepared(
+        padded, pad_w, pad_h, pixel_count,
+        std::forward<ZigzagEncodeFn>(zigzag_encode_val)
+    );
+    return build_mode1_payload_from_prepared(
+        prepared, pad_h, pixel_count,
+        std::forward<EncodeSharedLzFn>(encode_byte_stream_shared_lz),
+        std::forward<EncodeByteStreamFn>(encode_byte_stream),
+        out_mode,
+        std::forward<CompressResidualFn>(compress_residual)
+    );
+}
+
 } // namespace detail
 
 // Natural/photo-oriented route:
@@ -346,18 +389,27 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
     );
     if (mode0.empty()) return {};
 
-    auto mode1 = detail::build_mode1_payload(
+    auto mode1_prepared = detail::build_mode1_prepared(
         padded, pad_w, pad_h, pixel_count,
-        zigzag_encode_val, encode_byte_stream_shared_lz, encode_byte_stream,
+        zigzag_encode_val
+    );
+
+    auto mode1 = detail::build_mode1_payload_from_prepared(
+        mode1_prepared,
+        pad_h,
+        pixel_count,
+        encode_byte_stream_shared_lz, encode_byte_stream,
         1,
         [](const std::vector<uint8_t>& bytes) {
             return TileLZ::compress(bytes);
         }
     );
 
-    auto mode2 = detail::build_mode1_payload(
-        padded, pad_w, pad_h, pixel_count,
-        zigzag_encode_val, encode_byte_stream_shared_lz, encode_byte_stream,
+    auto mode2 = detail::build_mode1_payload_from_prepared(
+        mode1_prepared,
+        pad_h,
+        pixel_count,
+        encode_byte_stream_shared_lz, encode_byte_stream,
         2,
         [&](const std::vector<uint8_t>& bytes) {
             return detail::compress_global_chain_lz(bytes, lz_params);
