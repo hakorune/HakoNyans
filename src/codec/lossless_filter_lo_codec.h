@@ -2,12 +2,12 @@
 
 #include "headers.h"
 #include "lossless_mode_debug_stats.h"
+#include "../platform/thread_budget.h"
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <future>
 #include <limits>
-#include <thread>
 #include <vector>
 
 namespace hakonyans::lossless_filter_lo_codec {
@@ -29,8 +29,9 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
 ) {
     if (lo_bytes.empty()) return {};
 
-    const unsigned int hw_threads = std::max(1u, std::thread::hardware_concurrency());
-    const bool allow_parallel_base = (hw_threads >= 4 && lo_bytes.size() >= 4096);
+    const unsigned int hw_threads = thread_budget::max_threads();
+    const bool allow_parallel_base =
+        (hw_threads >= 4 && lo_bytes.size() >= 4096 && thread_budget::can_spawn(2));
 
     std::vector<uint8_t> lo_legacy;
     std::vector<uint8_t> lo_lz;
@@ -39,9 +40,11 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
 
     if (allow_parallel_base) {
         fut_legacy = std::async(std::launch::async, [&]() {
+            thread_budget::ScopedParallelRegion guard;
             return encode_byte_stream(lo_bytes);
         });
         fut_lz = std::async(std::launch::async, [&]() {
+            thread_budget::ScopedParallelRegion guard;
             return compress_lz(lo_bytes);
         });
     } else {
@@ -232,7 +235,8 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
         int nonempty_ctx = 0;
         std::vector<std::vector<uint8_t>> ctx_streams(6);
         std::vector<uint32_t> ctx_raw_counts(6, 0);
-        const bool allow_parallel_ctx = (hw_threads >= 6 && lo_bytes.size() >= 8192);
+        const bool allow_parallel_ctx =
+            (hw_threads >= 6 && lo_bytes.size() >= 8192 && thread_budget::can_spawn(6));
         if (allow_parallel_ctx) {
             std::vector<std::future<std::vector<uint8_t>>> futs(6);
             std::vector<bool> launched(6, false);
@@ -242,6 +246,7 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
                 nonempty_ctx++;
                 launched[k] = true;
                 futs[k] = std::async(std::launch::async, [&, k]() {
+                    thread_budget::ScopedParallelRegion guard;
                     return encode_byte_stream(lo_ctx[k]);
                 });
             }

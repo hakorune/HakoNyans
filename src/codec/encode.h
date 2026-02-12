@@ -39,6 +39,7 @@
 #include "lossless_tile4_codec.h"
 #include "byte_stream_encoder.h"
 #include "filter_hi_wrapper.h"
+#include "../platform/thread_budget.h"
 #include <vector>
 #include <chrono>
 #include <cerrno>
@@ -49,7 +50,6 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <thread>
 #include <unordered_map>
 
 namespace hakonyans {
@@ -519,13 +519,21 @@ public:
         };
 
         std::vector<uint8_t> tile_y, tile_co, tile_cg;
-        const unsigned int hw_threads = std::max(1u, std::thread::hardware_concurrency());
-        const bool use_parallel_planes = (hw_threads >= 2);
+        const bool use_parallel_planes = thread_budget::can_spawn(3);
 
         if (use_parallel_planes) {
-            auto fy = std::async(std::launch::async, run_plane_task, y_plane.data());
-            auto fco = std::async(std::launch::async, run_plane_task, co_plane.data());
-            auto fcg = std::async(std::launch::async, run_plane_task, cg_plane.data());
+            auto fy = std::async(std::launch::async, [&]() {
+                thread_budget::ScopedParallelRegion guard;
+                return run_plane_task(y_plane.data());
+            });
+            auto fco = std::async(std::launch::async, [&]() {
+                thread_budget::ScopedParallelRegion guard;
+                return run_plane_task(co_plane.data());
+            });
+            auto fcg = std::async(std::launch::async, [&]() {
+                thread_budget::ScopedParallelRegion guard;
+                return run_plane_task(cg_plane.data());
+            });
 
             auto y_res = fy.get();
             auto co_res = fco.get();

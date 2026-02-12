@@ -1,11 +1,11 @@
 #pragma once
 
 #include "headers.h"
+#include "../platform/thread_budget.h"
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <future>
-#include <thread>
 #include <vector>
 
 namespace hakonyans::lossless_filter_lo_decode {
@@ -167,10 +167,9 @@ inline std::vector<uint8_t> decode_filter_lo_stream(
                     off += lens[k];
                 }
 
-                const unsigned int hw_threads =
-                    std::max(1u, std::thread::hardware_concurrency());
+                const unsigned int hw_threads = thread_budget::max_threads();
                 const bool allow_parallel_ctx =
-                    (hw_threads >= 6 && raw_count >= 8192);
+                    (hw_threads >= 6 && raw_count >= 8192 && thread_budget::can_spawn(6));
                 if (allow_parallel_ctx) {
                     std::vector<std::future<std::vector<uint8_t>>> futs(6);
                     std::vector<bool> launched(6, false);
@@ -178,6 +177,7 @@ inline std::vector<uint8_t> decode_filter_lo_stream(
                         if (lens[k] == 0) continue;
                         launched[k] = true;
                         futs[k] = std::async(std::launch::async, [&, k]() {
+                            thread_budget::ScopedParallelRegion guard;
                             return decode_byte_stream(
                                 payload + ctx_offsets[k], lens[k], ctx_expected[k]
                             );

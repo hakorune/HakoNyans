@@ -10,12 +10,12 @@
 #include "../entropy/nyans_p/rans_tables.h"
 #include "../entropy/nyans_p/parallel_decode.h"
 #include "../simd/simd_dispatch.h"
+#include "../platform/thread_budget.h"
 #include <vector>
 #include <chrono>
 #include <cstring>
 #include <stdexcept>
 #include <future>
-#include <thread>
 #include <cmath>
 #include <iostream>
 #include "palette.h"
@@ -107,9 +107,23 @@ public:
                 y_ref = pad_image(y_ds.data(), ydw, ydh, pcw, pch);
             } else y_ref = yp_v;
         }
-        auto f1 = std::async(std::launch::async, [=, &hkn, &y_ref]() { return decode_plane(&hkn[t1->offset], t1->size, pcw, pch, deq_cb, is_cfl ? &y_ref : nullptr, hdr.version); });
-        auto f2 = std::async(std::launch::async, [=, &hkn, &y_ref]() { return decode_plane(&hkn[t2->offset], t2->size, pcw, pch, deq_cr, is_cfl ? &y_ref : nullptr, hdr.version); });
-        auto cb_raw = f1.get(); auto cr_raw = f2.get();
+        std::vector<uint8_t> cb_raw, cr_raw;
+        const bool use_parallel_chroma = thread_budget::can_spawn(2);
+        if (use_parallel_chroma) {
+            auto f1 = std::async(std::launch::async, [=, &hkn, &y_ref]() {
+                thread_budget::ScopedParallelRegion guard;
+                return decode_plane(&hkn[t1->offset], t1->size, pcw, pch, deq_cb, is_cfl ? &y_ref : nullptr, hdr.version);
+            });
+            auto f2 = std::async(std::launch::async, [=, &hkn, &y_ref]() {
+                thread_budget::ScopedParallelRegion guard;
+                return decode_plane(&hkn[t2->offset], t2->size, pcw, pch, deq_cr, is_cfl ? &y_ref : nullptr, hdr.version);
+            });
+            cb_raw = f1.get();
+            cr_raw = f2.get();
+        } else {
+            cb_raw = decode_plane(&hkn[t1->offset], t1->size, pcw, pch, deq_cb, is_cfl ? &y_ref : nullptr, hdr.version);
+            cr_raw = decode_plane(&hkn[t2->offset], t2->size, pcw, pch, deq_cr, is_cfl ? &y_ref : nullptr, hdr.version);
+        }
         std::vector<uint8_t> y_p(w * h), cb_p(w * h), cr_p(w * h);
         for (int y = 0; y < h; y++) std::memcpy(&y_p[y * w], &yp_v[y * pyw], w);
         if (is_420) {
@@ -119,17 +133,28 @@ public:
         } else {
             for (int y = 0; y < h; y++) { std::memcpy(&cb_p[y * w], &cb_raw[y * pyw], w); std::memcpy(&cr_p[y * w], &cr_raw[y * pyw], w); }
         }
-        std::vector<uint8_t> rgb(w * h * 3); unsigned int nt = std::thread::hardware_concurrency(); if (nt == 0) nt = 4; nt = std::min<unsigned int>(nt, 8); nt = std::max(1u, std::min<unsigned int>(nt, (unsigned int)h));
-        std::vector<std::future<void>> futs; int rpt = h / nt;
-        for (unsigned int t = 0; t < nt; t++) {
-            int sy = t * rpt, ey = (t == nt - 1) ? h : (t + 1) * rpt;
-            futs.push_back(std::async(std::launch::async, [=, &y_p, &cb_p, &cr_p, &rgb]() {
-                for (int y = sy; y < ey; y++) {
-                    simd::ycbcr_to_rgb_row(&y_p[y*w], &cb_p[y*w], &cr_p[y*w], &rgb[y*w*3], w);
-                }
-            }));
+        std::vector<uint8_t> rgb(w * h * 3);
+        unsigned int nt = thread_budget::max_threads(8);
+        nt = std::max(1u, std::min<unsigned int>(nt, (unsigned int)h));
+        if (nt >= 2 && thread_budget::can_spawn(2)) {
+            std::vector<std::future<void>> futs;
+            int rpt = h / (int)nt;
+            for (unsigned int t = 0; t < nt; t++) {
+                int sy = (int)t * rpt, ey = (t == nt - 1) ? h : (int)(t + 1) * rpt;
+                futs.push_back(std::async(std::launch::async, [=, &y_p, &cb_p, &cr_p, &rgb]() {
+                    thread_budget::ScopedParallelRegion guard;
+                    for (int y = sy; y < ey; y++) {
+                        simd::ycbcr_to_rgb_row(&y_p[y*w], &cb_p[y*w], &cr_p[y*w], &rgb[y*w*3], w);
+                    }
+                }));
+            }
+            for (auto& f : futs) f.get();
+        } else {
+            for (int y = 0; y < h; y++) {
+                simd::ycbcr_to_rgb_row(&y_p[y*w], &cb_p[y*w], &cr_p[y*w], &rgb[y*w*3], w);
+            }
         }
-        for (auto& f : futs) f.get(); return rgb;
+        return rgb;
     }
 
 public:
@@ -287,28 +312,41 @@ public:
                 );
             }
 
-            // Decode 3 AC bands in parallel (independent streams).
-            auto f_low = std::async(std::launch::async, [=, &sz, &band_pi]() {
-                if (has_band_pindex && band_pi.has_low) {
-                    return decode_stream_parallel(low_ptr, sz[1], band_pi.low);
-                }
-                return decode_stream(low_ptr, sz[1]);
-            });
-            auto f_mid = std::async(std::launch::async, [=, &sz, &band_pi]() {
-                if (has_band_pindex && band_pi.has_mid) {
-                    return decode_stream_parallel(mid_ptr, sz[2], band_pi.mid);
-                }
-                return decode_stream(mid_ptr, sz[2]);
-            });
-            auto f_high = std::async(std::launch::async, [=, &sz, &band_pi]() {
-                if (has_band_pindex && band_pi.has_high) {
-                    return decode_stream_parallel(high_ptr, sz[3], band_pi.high);
-                }
-                return decode_stream(high_ptr, sz[3]);
-            });
-            ac_low_tokens = f_low.get();
-            ac_mid_tokens = f_mid.get();
-            ac_high_tokens = f_high.get();
+            if (thread_budget::can_spawn(3)) {
+                auto f_low = std::async(std::launch::async, [=, &sz, &band_pi]() {
+                    thread_budget::ScopedParallelRegion guard;
+                    if (has_band_pindex && band_pi.has_low) {
+                        return decode_stream_parallel(low_ptr, sz[1], band_pi.low);
+                    }
+                    return decode_stream(low_ptr, sz[1]);
+                });
+                auto f_mid = std::async(std::launch::async, [=, &sz, &band_pi]() {
+                    thread_budget::ScopedParallelRegion guard;
+                    if (has_band_pindex && band_pi.has_mid) {
+                        return decode_stream_parallel(mid_ptr, sz[2], band_pi.mid);
+                    }
+                    return decode_stream(mid_ptr, sz[2]);
+                });
+                auto f_high = std::async(std::launch::async, [=, &sz, &band_pi]() {
+                    thread_budget::ScopedParallelRegion guard;
+                    if (has_band_pindex && band_pi.has_high) {
+                        return decode_stream_parallel(high_ptr, sz[3], band_pi.high);
+                    }
+                    return decode_stream(high_ptr, sz[3]);
+                });
+                ac_low_tokens = f_low.get();
+                ac_mid_tokens = f_mid.get();
+                ac_high_tokens = f_high.get();
+            } else {
+                if (has_band_pindex && band_pi.has_low) ac_low_tokens = decode_stream_parallel(low_ptr, sz[1], band_pi.low);
+                else ac_low_tokens = decode_stream(low_ptr, sz[1]);
+
+                if (has_band_pindex && band_pi.has_mid) ac_mid_tokens = decode_stream_parallel(mid_ptr, sz[2], band_pi.mid);
+                else ac_mid_tokens = decode_stream(mid_ptr, sz[2]);
+
+                if (has_band_pindex && band_pi.has_high) ac_high_tokens = decode_stream_parallel(high_ptr, sz[3], band_pi.high);
+                else ac_high_tokens = decode_stream(high_ptr, sz[3]);
+            }
 
             if (sz[5] > 0) { qds.resize(sz[5]); std::memcpy(qds.data(), ptr, sz[5]); ptr += sz[5]; }
             
@@ -404,144 +442,155 @@ public:
         // Threading logic:
         // If Copy Mode is used, we force sequential decoding (nt=1)
         // to ensure Intra-Block Copy vectors point to already-decoded pixels.
-        unsigned int nt = std::thread::hardware_concurrency(); if (nt == 0) nt = 4; nt = std::min<unsigned int>(nt, 8); nt = std::max(1u, std::min<unsigned int>(nt, (unsigned int)nb));
-        if (copy_size > 0) {
+        unsigned int nt = thread_budget::max_threads(8);
+        nt = std::max(1u, std::min<unsigned int>(nt, (unsigned int)nb));
+        if (copy_size > 0 || !thread_budget::can_spawn(2)) {
             nt = 1;
         }
 
-        std::vector<std::future<void>> futs; int bpt = nb / nt;
-        for (unsigned int t = 0; t < nt; t++) {
-            int sb = t * bpt, eb = (t == nt - 1) ? nb : (t + 1) * bpt;
-            futs.push_back(std::async(std::launch::async, [=, &dcs, &acs, &ac_low_tokens, &ac_mid_tokens, &ac_high_tokens, &block_starts, &low_starts, &mid_starts, &high_starts, &qds, &cfls, &pad, &block_types, &palettes, &palette_indices, &copy_params]() {
-                // Initialize pdc with correct value for the start of this thread's block range
-                int16_t pdc = 0; 
-                int palette_block_idx = 0;
-                int copy_block_idx = 0;
-                
-                int dct_block_idx = 0;
-                
-                // Pre-scan to find correct indices for palette/copy logic
-                for (int i = 0; i < sb; i++) {
-                     if (block_types[i] == FileHeader::BlockType::DCT) {
-                         pdc += Tokenizer::detokenize_dc(dcs[dct_block_idx]);
-                         dct_block_idx++;
-                     } else if (block_types[i] == FileHeader::BlockType::PALETTE) {
-                         palette_block_idx++;
-                     } else if (block_types[i] == FileHeader::BlockType::COPY) {
-                         copy_block_idx++;
-                     }
-                }
-                
-                int16_t ac[63];
-                for (int i = sb; i < eb; i++) {
-                    int bx = i % nx, by = i / nx;
-                    
-                    if (block_types[i] == FileHeader::BlockType::DCT) {
-                        int16_t dc = pdc + Tokenizer::detokenize_dc(dcs[dct_block_idx]); pdc = dc;
-                        dct_block_idx++;
-                        std::fill(ac, ac + 63, 0);
+        auto decode_block_range = [&](int sb, int eb) {
+            // Initialize pdc with correct value for the start of this thread's block range
+            int16_t pdc = 0;
+            int palette_block_idx = 0;
+            int copy_block_idx = 0;
+            int dct_block_idx = 0;
 
-                        if (has_band_cdf) {
-                            size_t low_pos = low_starts[i];
-                            size_t mid_pos = mid_starts[i];
-                            size_t high_pos = high_starts[i];
-                            detokenize_ac_band_block(ac_low_tokens, low_pos, BAND_LOW, ac);
-                            detokenize_ac_band_block(ac_mid_tokens, mid_pos, BAND_MID, ac);
-                            detokenize_ac_band_block(ac_high_tokens, high_pos, BAND_HIGH, ac);
-                        } else {
-                            uint32_t start = block_starts[i], end = block_starts[i+1];
-                            int pos = 0;
-                            for (uint32_t k = start; k < end && pos < 63; ++k) {
-                                const Token& tok = acs[k];
-                                if (tok.type == TokenType::ZRUN_63) break;
-                                if ((int)tok.type <= 62) {
-                                    pos += (int)tok.type;
-                                    if (++k >= end) break;
-                                    const Token& mt = acs[k];
-                                    int magc = (int)mt.type - 64;
-                                    uint16_t sign = (mt.raw_bits >> magc) & 1;
-                                    uint16_t rem = mt.raw_bits & ((1 << magc) - 1);
-                                    uint16_t abs_v = (magc > 0) ? ((1 << (magc - 1)) + rem) : 0;
-                                    if (pos < 63) ac[pos++] = (sign == 0) ? abs_v : -abs_v;
-                                }
+            // Pre-scan to find correct indices for palette/copy logic
+            for (int i = 0; i < sb; i++) {
+                 if (block_types[i] == FileHeader::BlockType::DCT) {
+                     pdc += Tokenizer::detokenize_dc(dcs[dct_block_idx]);
+                     dct_block_idx++;
+                 } else if (block_types[i] == FileHeader::BlockType::PALETTE) {
+                     palette_block_idx++;
+                 } else if (block_types[i] == FileHeader::BlockType::COPY) {
+                     copy_block_idx++;
+                 }
+            }
+
+            int16_t ac[63];
+            for (int i = sb; i < eb; i++) {
+                int bx = i % nx, by = i / nx;
+
+                if (block_types[i] == FileHeader::BlockType::DCT) {
+                    int16_t dc = pdc + Tokenizer::detokenize_dc(dcs[dct_block_idx]); pdc = dc;
+                    dct_block_idx++;
+                    std::fill(ac, ac + 63, 0);
+
+                    if (has_band_cdf) {
+                        size_t low_pos = low_starts[i];
+                        size_t mid_pos = mid_starts[i];
+                        size_t high_pos = high_starts[i];
+                        detokenize_ac_band_block(ac_low_tokens, low_pos, BAND_LOW, ac);
+                        detokenize_ac_band_block(ac_mid_tokens, mid_pos, BAND_MID, ac);
+                        detokenize_ac_band_block(ac_high_tokens, high_pos, BAND_HIGH, ac);
+                    } else {
+                        uint32_t start = block_starts[i], end = block_starts[i + 1];
+                        int pos = 0;
+                        for (uint32_t k = start; k < end && pos < 63; ++k) {
+                            const Token& tok = acs[k];
+                            if (tok.type == TokenType::ZRUN_63) break;
+                            if ((int)tok.type <= 62) {
+                                pos += (int)tok.type;
+                                if (++k >= end) break;
+                                const Token& mt = acs[k];
+                                int magc = (int)mt.type - 64;
+                                uint16_t sign = (mt.raw_bits >> magc) & 1;
+                                uint16_t rem = mt.raw_bits & ((1 << magc) - 1);
+                                uint16_t abs_v = (magc > 0) ? ((1 << (magc - 1)) + rem) : 0;
+                                if (pos < 63) ac[pos++] = (sign == 0) ? abs_v : -abs_v;
                             }
                         }
-                        float s = 1.0f; if (!qds.empty()) s = 1.0f + qds[i] / 50.0f;
-                        int16_t dq[64]; dq[0] = dc * (uint16_t)std::max(1.0f, std::round(deq[0]*s));
-                        for (int k = 1; k < 64; k++) dq[k] = ac[k-1] * (uint16_t)std::max(1.0f, std::round(deq[k]*s));
-                        int16_t co[64], bl[64]; Zigzag::inverse_scan(dq, co); DCT::inverse(co, bl);
-                        if (y_ref && !cfls.empty() && i < (int)cfls.size()) {
-                            if (cfl_centered_predictor) {
-                                if (cfls[i].alpha_cr > 0.5f) {
-                                    int16_t a6 = (int16_t)std::round(cfls[i].alpha_cb * 64.0f);
-                                    int16_t b = (int16_t)std::round(cfls[i].beta_cb);
-                                    for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) {
-                                        int py = (*y_ref)[(by*8+y)*pw+(bx*8+x)];
-                                        int p = (a6 * (py - 128) + 32) >> 6;
-                                        p += b;
-                                        pad[(by*8+y)*pw+(bx*8+x)] = std::clamp((int)bl[y*8+x] + p, 0, 255);
-                                    }
-                                } else {
-                                    for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) pad[(by*8+y)*pw+(bx*8+x)] = (uint8_t)std::clamp(bl[y*8+x]+128, 0, 255);
+                    }
+                    float s = 1.0f; if (!qds.empty()) s = 1.0f + qds[i] / 50.0f;
+                    int16_t dq[64]; dq[0] = dc * (uint16_t)std::max(1.0f, std::round(deq[0] * s));
+                    for (int k = 1; k < 64; k++) dq[k] = ac[k - 1] * (uint16_t)std::max(1.0f, std::round(deq[k] * s));
+                    int16_t co[64], bl[64]; Zigzag::inverse_scan(dq, co); DCT::inverse(co, bl);
+                    if (y_ref && !cfls.empty() && i < (int)cfls.size()) {
+                        if (cfl_centered_predictor) {
+                            if (cfls[i].alpha_cr > 0.5f) {
+                                int16_t a6 = (int16_t)std::round(cfls[i].alpha_cb * 64.0f);
+                                int16_t b = (int16_t)std::round(cfls[i].beta_cb);
+                                for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) {
+                                    int py = (*y_ref)[(by * 8 + y) * pw + (bx * 8 + x)];
+                                    int p = (a6 * (py - 128) + 32) >> 6;
+                                    p += b;
+                                    pad[(by * 8 + y) * pw + (bx * 8 + x)] = std::clamp((int)bl[y * 8 + x] + p, 0, 255);
                                 }
                             } else {
-                                float a = cfls[i].alpha_cb;
-                                float b = cfls[i].beta_cb;
-                                for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) {
-                                    int py = (*y_ref)[(by*8+y)*pw+(bx*8+x)];
-                                    int p = (int)std::lround(a * py + b);
-                                    pad[(by*8+y)*pw+(bx*8+x)] = std::clamp((int)bl[y*8+x] + p, 0, 255);
-                                }
+                                for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) pad[(by * 8 + y) * pw + (bx * 8 + x)] = (uint8_t)std::clamp(bl[y * 8 + x] + 128, 0, 255);
                             }
                         } else {
-                            for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) pad[(by*8+y)*pw+(bx*8+x)] = (uint8_t)std::clamp(bl[y*8+x]+128, 0, 255);
-                        }
-                    } else if (block_types[i] == FileHeader::BlockType::PALETTE) {
-                        if (palette_block_idx < (int)palettes.size()) {
-                            const auto& p = palettes[palette_block_idx];
-                            const auto& idx = palette_indices[palette_block_idx];
-                            for (int y = 0; y < 8; y++) {
-                                for (int x = 0; x < 8; x++) {
-                                    int k = y * 8 + x;
-                                    int16_t pal_v = 0;
-                                    if (k < (int)idx.size()) {
-                                        uint8_t pi = idx[k];
-                                        if (pi < p.size) pal_v = p.colors[pi];
-                                    }
-                                    pad[(by * 8 + y) * pw + (bx * 8 + x)] =
-                                        (uint8_t)std::clamp((int)pal_v + 128, 0, 255);
-                                }
+                            float a = cfls[i].alpha_cb;
+                            float b = cfls[i].beta_cb;
+                            for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) {
+                                int py = (*y_ref)[(by * 8 + y) * pw + (bx * 8 + x)];
+                                int p = (int)std::lround(a * py + b);
+                                pad[(by * 8 + y) * pw + (bx * 8 + x)] = std::clamp((int)bl[y * 8 + x] + p, 0, 255);
                             }
-                            palette_block_idx++;
-                        }
-                    } else if (block_types[i] == FileHeader::BlockType::COPY) {
-                        if (copy_block_idx < (int)copy_params.size()) {
-                            CopyParams cp = copy_params[copy_block_idx];
-                            for (int y = 0; y < 8; y++) {
-                                for (int x = 0; x < 8; x++) {
-                                    int dst_x = bx * 8 + x;
-                                    int dst_y = by * 8 + y;
-                                    int src_x = dst_x + cp.dx;
-                                    int src_y = dst_y + cp.dy;
-                                    
-                                    // Boundary checks
-                                    // Should we clamp or replicate or black?
-                                    // Standard clamp
-                                    src_x = std::clamp(src_x, 0, (int)pw - 1);
-                                    src_y = std::clamp(src_y, 0, (int)ph - 1);
-                                    
-                                    pad[dst_y * pw + dst_x] = pad[src_y * pw + src_x];
-                                }
-                            }
-                            copy_block_idx++;
                         }
                     } else {
-                         // Unknown block type?
+                        for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) pad[(by * 8 + y) * pw + (bx * 8 + x)] = (uint8_t)std::clamp(bl[y * 8 + x] + 128, 0, 255);
                     }
+                } else if (block_types[i] == FileHeader::BlockType::PALETTE) {
+                    if (palette_block_idx < (int)palettes.size()) {
+                        const auto& p = palettes[palette_block_idx];
+                        const auto& idx = palette_indices[palette_block_idx];
+                        for (int y = 0; y < 8; y++) {
+                            for (int x = 0; x < 8; x++) {
+                                int k = y * 8 + x;
+                                int16_t pal_v = 0;
+                                if (k < (int)idx.size()) {
+                                    uint8_t pi = idx[k];
+                                    if (pi < p.size) pal_v = p.colors[pi];
+                                }
+                                pad[(by * 8 + y) * pw + (bx * 8 + x)] =
+                                    (uint8_t)std::clamp((int)pal_v + 128, 0, 255);
+                            }
+                        }
+                        palette_block_idx++;
+                    }
+                } else if (block_types[i] == FileHeader::BlockType::COPY) {
+                    if (copy_block_idx < (int)copy_params.size()) {
+                        CopyParams cp = copy_params[copy_block_idx];
+                        for (int y = 0; y < 8; y++) {
+                            for (int x = 0; x < 8; x++) {
+                                int dst_x = bx * 8 + x;
+                                int dst_y = by * 8 + y;
+                                int src_x = dst_x + cp.dx;
+                                int src_y = dst_y + cp.dy;
+
+                                // Boundary checks
+                                // Should we clamp or replicate or black?
+                                // Standard clamp
+                                src_x = std::clamp(src_x, 0, (int)pw - 1);
+                                src_y = std::clamp(src_y, 0, (int)ph - 1);
+
+                                pad[dst_y * pw + dst_x] = pad[src_y * pw + src_x];
+                            }
+                        }
+                        copy_block_idx++;
+                    }
+                } else {
+                     // Unknown block type?
                 }
-            }));
+            }
+        };
+
+        if (nt >= 2) {
+            std::vector<std::future<void>> futs;
+            int bpt = nb / (int)nt;
+            for (unsigned int t = 0; t < nt; t++) {
+                int sb = (int)t * bpt, eb = (t == nt - 1) ? nb : (int)(t + 1) * bpt;
+                futs.push_back(std::async(std::launch::async, [&, sb, eb]() {
+                    thread_budget::ScopedParallelRegion guard;
+                    decode_block_range(sb, eb);
+                }));
+            }
+            for (auto& f : futs) f.get();
+        } else {
+            decode_block_range(0, nb);
         }
-        for (auto& f : futs) f.get(); return pad;
+        return pad;
     }
 
 public:
@@ -585,9 +634,8 @@ public:
         CDFTable cdf = CDFBuilder().build_from_freq(f);
         uint32_t tc; std::memcpy(&tc, s+4+cs, 4);
         uint32_t rs; std::memcpy(&rs, s+8+cs, 4);
-        unsigned int nt = std::thread::hardware_concurrency();
-        if (nt == 0) nt = 4;
-        nt = std::min<unsigned int>(nt, 8);
+        unsigned int nt = thread_budget::max_threads(8);
+        if (!thread_budget::can_spawn(2)) nt = 1;
         auto syms = ParallelDecoder::decode(std::span<const uint8_t>(s+12+cs, rs), pi, cdf, nt);
         std::vector<Token> t; t.reserve(tc);
         for (int x : syms) t.emplace_back((TokenType)x, 0, 0);
@@ -674,13 +722,22 @@ public:
         };
 
         std::vector<int16_t> y_plane, co_plane, cg_plane;
-        const unsigned int hw_threads = std::max(1u, std::thread::hardware_concurrency());
-        const bool use_parallel_planes = (hw_threads >= 2);
+        const unsigned int hw_threads = thread_budget::max_threads();
+        const bool use_parallel_planes = thread_budget::can_spawn(3);
 
         if (use_parallel_planes) {
-            auto fy = std::async(std::launch::async, run_plane_task, t0->offset, t0->size);
-            auto fco = std::async(std::launch::async, run_plane_task, t1->offset, t1->size);
-            auto fcg = std::async(std::launch::async, run_plane_task, t2->offset, t2->size);
+            auto fy = std::async(std::launch::async, [&]() {
+                thread_budget::ScopedParallelRegion guard;
+                return run_plane_task(t0->offset, t0->size);
+            });
+            auto fco = std::async(std::launch::async, [&]() {
+                thread_budget::ScopedParallelRegion guard;
+                return run_plane_task(t1->offset, t1->size);
+            });
+            auto fcg = std::async(std::launch::async, [&]() {
+                thread_budget::ScopedParallelRegion guard;
+                return run_plane_task(t2->offset, t2->size);
+            });
 
             auto y_res = fy.get();
             auto co_res = fco.get();
@@ -722,7 +779,7 @@ public:
         std::vector<uint8_t> rgb(w * h * 3);
         const unsigned int rgb_threads =
             std::max(1u, std::min<unsigned int>(hw_threads, (unsigned int)h));
-        if (rgb_threads >= 2) {
+        if (rgb_threads >= 2 && thread_budget::can_spawn(2)) {
             std::vector<std::future<void>> futs;
             futs.reserve(rgb_threads);
             const int rows_per_task = h / (int)rgb_threads;
@@ -730,6 +787,7 @@ public:
                 const int sy = (int)t * rows_per_task;
                 const int ey = (t == rgb_threads - 1) ? h : (int)(t + 1) * rows_per_task;
                 futs.push_back(std::async(std::launch::async, [&, sy, ey]() {
+                    thread_budget::ScopedParallelRegion guard;
                     for (int y = sy; y < ey; y++) {
                         const int row_off = y * w;
                         for (int x = 0; x < w; x++) {

@@ -3,10 +3,10 @@
 #include "headers.h"
 #include "lossless_mode_debug_stats.h"
 #include "lossless_screen_route.h"
+#include "../platform/thread_budget.h"
 #include <cstddef>
 #include <cstdint>
 #include <future>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -45,22 +45,23 @@ inline std::vector<uint8_t> choose_best_tile(
     bool screen_prefilter_valid = false;
     bool screen_prefilter_likely_screen = false;
     bool natural_prefilter_ok = false;
+    ScreenPreflightMetrics pre_metrics{};
     const bool large_image = ((uint64_t)width * (uint64_t)height >= 262144ull);
     stats->screen_candidate_count++;
 
     if (width * height >= 4096) {
-        const auto pre = analyze_screen_preflight(data, width, height);
+        pre_metrics = analyze_screen_preflight(data, width, height);
         screen_prefilter_valid = true;
-        screen_prefilter_likely_screen = pre.likely_screen;
+        screen_prefilter_likely_screen = pre_metrics.likely_screen;
         stats->screen_prefilter_eval_count++;
-        stats->screen_prefilter_unique_sum += pre.unique_sample;
-        stats->screen_prefilter_avg_run_x100_sum += pre.avg_run_x100;
+        stats->screen_prefilter_unique_sum += pre_metrics.unique_sample;
+        stats->screen_prefilter_avg_run_x100_sum += pre_metrics.avg_run_x100;
         stats->natural_prefilter_eval_count++;
-        stats->natural_prefilter_unique_sum += pre.unique_sample;
-        stats->natural_prefilter_avg_run_x100_sum += pre.avg_run_x100;
-        stats->natural_prefilter_mad_x100_sum += pre.mean_abs_diff_x100;
-        stats->natural_prefilter_entropy_x100_sum += pre.run_entropy_hint_x100;
-        natural_prefilter_ok = is_natural_like(pre);
+        stats->natural_prefilter_unique_sum += pre_metrics.unique_sample;
+        stats->natural_prefilter_avg_run_x100_sum += pre_metrics.avg_run_x100;
+        stats->natural_prefilter_mad_x100_sum += pre_metrics.mean_abs_diff_x100;
+        stats->natural_prefilter_entropy_x100_sum += pre_metrics.run_entropy_hint_x100;
+        natural_prefilter_ok = is_natural_like(pre_metrics);
         if (natural_prefilter_ok) stats->natural_prefilter_pass_count++;
         else stats->natural_prefilter_reject_count++;
     }
@@ -80,10 +81,13 @@ inline std::vector<uint8_t> choose_best_tile(
     }
 
     size_t natural_size = 0;
-    const bool allow_natural_route = natural_like || (profile_id == 2 && !screen_like);
+    constexpr uint16_t kNaturalCompeteUniqueMin = 128;
+    const bool natural_compete_prefilter =
+        screen_prefilter_valid && (pre_metrics.unique_sample >= kNaturalCompeteUniqueMin);
+    const bool allow_natural_route = natural_like && natural_compete_prefilter;
     const bool try_natural_route = large_image && allow_natural_route;
-    const bool can_parallel_compete = allow_screen_route && try_natural_route &&
-                                      (std::max(1u, std::thread::hardware_concurrency()) >= 2);
+    const bool can_parallel_compete =
+        allow_screen_route && try_natural_route && thread_budget::can_spawn(2);
 
     struct ScreenCandidateResult {
         bool attempted = false;
@@ -113,8 +117,14 @@ inline std::vector<uint8_t> choose_best_tile(
     ScreenCandidateResult screen_res;
     NaturalCandidateResult natural_res;
     if (can_parallel_compete) {
-        auto f_screen = std::async(std::launch::async, run_screen_candidate);
-        auto f_natural = std::async(std::launch::async, run_natural_candidate);
+        auto f_screen = std::async(std::launch::async, [&]() {
+            thread_budget::ScopedParallelRegion guard;
+            return run_screen_candidate();
+        });
+        auto f_natural = std::async(std::launch::async, [&]() {
+            thread_budget::ScopedParallelRegion guard;
+            return run_natural_candidate();
+        });
         screen_res = f_screen.get();
         natural_res = f_natural.get();
     } else {

@@ -6,6 +6,7 @@
 #include "lossless_mode_select.h"
 #include "lossless_tile4_codec.h"
 #include "palette.h"
+#include "../platform/thread_budget.h"
 #include <algorithm>
 #include <array>
 #include <cstdlib>
@@ -13,7 +14,6 @@
 #include <cstring>
 #include <future>
 #include <limits>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -291,8 +291,8 @@ inline ClassificationResult classify_blocks(
     };
 
     std::vector<BlockEval> evals((size_t)nb);
-    const unsigned int hw_threads = std::max(1u, std::thread::hardware_concurrency());
-    const bool use_parallel_eval = (hw_threads >= 2 && nb >= 256);
+    const unsigned int hw_threads = thread_budget::max_threads();
+    const bool use_parallel_eval = (hw_threads >= 2 && nb >= 256 && thread_budget::can_spawn(2));
     if (use_parallel_eval) {
         int task_count = std::min<int>((int)hw_threads, std::max(1, nb / 64));
         task_count = std::max(1, task_count);
@@ -304,6 +304,7 @@ inline ClassificationResult classify_blocks(
             int end = std::min(nb, begin + chunk);
             if (begin >= end) continue;
             futs.push_back(std::async(std::launch::async, [&, begin, end]() {
+                thread_budget::ScopedParallelRegion guard;
                 for (int j = begin; j < end; j++) {
                     evals[(size_t)j] = evaluate_block(j);
                 }
