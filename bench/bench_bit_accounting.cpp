@@ -113,19 +113,41 @@ static void add_lossless_tile(Accounting& a, const uint8_t* tile_data, size_t ti
             return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
                    ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
         };
+        uint8_t mode = tile_data[1];
         uint32_t pred_count = read_u32(tile_data + 6);
         uint32_t resid_payload_size = read_u32(tile_data + 14);
-        size_t header_bytes = 18;
-        if (header_bytes + pred_count > tile_size) {
+        size_t header_bytes = 0;
+        size_t payload_off = 0;
+        uint32_t pred_payload_size = 0;
+        if (mode == 0) {
+            header_bytes = 18;
+            payload_off = header_bytes + (size_t)pred_count;
+        } else if (mode == 1 || mode == 2) {
+            if (tile_size < 27) {
+                a.unknown += tile_size;
+                return;
+            }
+            pred_payload_size = read_u32(tile_data + 23);
+            header_bytes = 27;
+            payload_off = header_bytes + (size_t)pred_payload_size;
+        } else {
             a.unknown += tile_size;
             return;
         }
+
+        if (payload_off > tile_size) {
+            a.unknown += tile_size;
+            return;
+        }
+
         a.tile_header += header_bytes;
         a.filter_ids += pred_count; // row predictor ids
-        size_t payload_bytes = tile_size - header_bytes - pred_count;
+        size_t payload_bytes = tile_size - payload_off;
         if (payload_bytes > 0) a.natural_row += payload_bytes;
-        if (payload_bytes > resid_payload_size) {
-            a.unknown += (payload_bytes - resid_payload_size);
+        uint64_t expected_payload = (uint64_t)resid_payload_size;
+        if (mode == 1 || mode == 2) expected_payload += (uint64_t)pred_payload_size;
+        if ((uint64_t)payload_bytes > expected_payload) {
+            a.unknown += (size_t)((uint64_t)payload_bytes - expected_payload);
         }
         return;
     }
@@ -207,7 +229,8 @@ static Accounting analyze_file(const std::vector<uint8_t>& hkn) {
         a.file_header + a.chunk_dir + a.qmat + a.tile_header +
         a.dc + a.ac + a.pindex + a.qdelta + a.cfl +
         a.filter_ids + a.filter_lo + a.filter_hi +
-        a.block_types + a.palette + a.copy + a.tile4 + a.screen_index + a.unknown;
+        a.block_types + a.palette + a.copy + a.tile4 +
+        a.screen_index + a.natural_row + a.unknown;
     if (a.total_file > accounted) a.unknown += (a.total_file - accounted);
     return a;
 }
@@ -712,9 +735,14 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
                                     (double)s.screen_prefilter_eval_count;
                 double avg_run = ((double)s.screen_prefilter_avg_run_x100_sum /
                                   (double)s.screen_prefilter_eval_count) / 100.0;
-                std::cout << "  prefilter_avg(unique/run) "
+                double avg_mad = ((double)s.natural_prefilter_mad_x100_sum /
+                                  (double)s.screen_prefilter_eval_count) / 100.0;
+                double avg_entropy = ((double)s.natural_prefilter_entropy_x100_sum /
+                                      (double)s.screen_prefilter_eval_count) / 100.0;
+                std::cout << "  prefilter_avg(unique/run/mad/entropy) "
                           << std::fixed << std::setprecision(1)
-                          << avg_unique << " / " << avg_run << "\n";
+                          << avg_unique << " / " << avg_run << " / "
+                          << avg_mad << " / " << avg_entropy << "\n";
             }
             if (s.screen_rejected_cost_gate > 0) {
                  print_gain("total_avoided_bloat", s.screen_loss_bytes_sum);

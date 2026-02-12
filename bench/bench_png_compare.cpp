@@ -1,346 +1,381 @@
-#include <iostream>
-#include <iomanip>
-#include <vector>
-#include <string>
-#include <map>
-#include <chrono>
-#include <cmath>
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <map>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
-#include "../src/codec/encode.h"
 #include "../src/codec/decode.h"
-#include "ppm_loader.h"
+#include "../src/codec/encode.h"
 #include "png_wrapper.h"
+#include "ppm_loader.h"
 
 using namespace hakonyans;
 
-/**
- * Test image definition
- */
-struct TestImage {
-    std::string path;      // Relative path to PPM file
-    std::string category;  // UI, Anime, Photo, Game, Natural
-    std::string name;      // Short name for display
-};
+namespace {
 
-/**
- * Benchmark result for a single image
- */
-struct BenchmarkResult {
+struct EvalImage {
+    std::string rel_path;
     std::string name;
-    std::string category;
-    int width;
-    int height;
-    size_t raw_size;      // Original RGB data size
-
-    // PNG results
-    size_t png_size;
-    double png_enc_ms;
-    double png_dec_ms;
-
-    // HKN results
-    size_t hkn_size;
-    double hkn_enc_ms;
-    double hkn_dec_ms;
-
-    // Comparison ratios
-    double size_ratio;      // hkn_size / png_size (lower is better for HKN)
-    double enc_speedup;     // png_enc_ms / hkn_enc_ms (higher is better for HKN)
-    double dec_speedup;     // png_dec_ms / hkn_dec_ms (higher is better for HKN)
 };
 
-/**
- * Category summary statistics
- */
-struct CategorySummary {
-    std::string category;
-    int count;
-    double avg_size_ratio;
-    double avg_enc_speedup;
-    double avg_dec_speedup;
+const std::vector<EvalImage> kFixedEvalSet = {
+    {"kodak/kodim01.ppm", "kodim01"},
+    {"kodak/kodim02.ppm", "kodim02"},
+    {"kodak/kodim03.ppm", "kodim03"},
+    {"kodak/hd_01.ppm", "hd_01"},
+    {"photo/nature_01.ppm", "nature_01"},
+    {"photo/nature_02.ppm", "nature_02"},
 };
 
-/**
- * Run benchmark on a single image
- */
-BenchmarkResult benchmark_image(const TestImage& test_img, const std::string& base_dir) {
-    BenchmarkResult result;
-    result.name = test_img.name;
-    result.category = test_img.category;
+struct Args {
+    std::string base_dir = "test_images";
+    std::string out_csv = "bench_results/phase9w_current.csv";
+    std::string baseline_csv;
+    int warmup = 1;
+    int runs = 3;
+};
 
-    std::string full_path = base_dir + "/" + test_img.path;
+struct ResultRow {
+    std::string image_id;
+    std::string image_name;
+    int width = 0;
+    int height = 0;
 
-    std::cout << "Processing " << test_img.category << "/" << test_img.name << "..." << std::flush;
+    size_t hkn_bytes = 0;
+    size_t png_bytes = 0;
+    double png_over_hkn = 0.0;
 
-    // Load PPM
+    double dec_ms = 0.0; // Median
+
+    uint64_t natural_row_selected = 0;
+    uint64_t natural_row_candidates = 0;
+    double natural_row_selected_rate = 0.0;
+
+    uint64_t gain_bytes = 0;
+    uint64_t loss_bytes = 0;
+};
+
+struct BaselineRow {
+    size_t hkn_bytes = 0;
+    double dec_ms = 0.0;
+    uint64_t natural_row_selected = 0;
+    uint64_t gain_bytes = 0;
+    uint64_t loss_bytes = 0;
+    double png_over_hkn = 0.0;
+};
+
+template <typename T>
+T median_value(std::vector<T> v) {
+    if (v.empty()) return T{};
+    std::sort(v.begin(), v.end());
+    size_t n = v.size();
+    if ((n & 1u) != 0u) return v[n / 2];
+    return (T)((v[n / 2 - 1] + v[n / 2]) / (T)2);
+}
+
+template <>
+double median_value(std::vector<double> v) {
+    if (v.empty()) return 0.0;
+    std::sort(v.begin(), v.end());
+    size_t n = v.size();
+    if ((n & 1u) != 0u) return v[n / 2];
+    return 0.5 * (v[n / 2 - 1] + v[n / 2]);
+}
+
+bool parse_int_arg(const std::string& s, int* out) {
+    try {
+        size_t idx = 0;
+        int v = std::stoi(s, &idx);
+        if (idx != s.size()) return false;
+        *out = v;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+Args parse_args(int argc, char** argv) {
+    Args args;
+    for (int i = 1; i < argc; i++) {
+        std::string a = argv[i];
+        if (a == "--base-dir" && i + 1 < argc) {
+            args.base_dir = argv[++i];
+        } else if (a == "--out" && i + 1 < argc) {
+            args.out_csv = argv[++i];
+        } else if (a == "--baseline" && i + 1 < argc) {
+            args.baseline_csv = argv[++i];
+        } else if (a == "--runs" && i + 1 < argc) {
+            int v = 0;
+            if (!parse_int_arg(argv[++i], &v) || v <= 0) {
+                throw std::runtime_error("--runs must be a positive integer");
+            }
+            args.runs = v;
+        } else if (a == "--warmup" && i + 1 < argc) {
+            int v = 0;
+            if (!parse_int_arg(argv[++i], &v) || v < 0) {
+                throw std::runtime_error("--warmup must be a non-negative integer");
+            }
+            args.warmup = v;
+        } else if (a == "--help" || a == "-h") {
+            std::cout << "Usage: " << argv[0]
+                      << " [--base-dir DIR] [--out CSV] [--baseline CSV] [--runs N] [--warmup N]\n";
+            std::exit(0);
+        } else {
+            throw std::runtime_error("Unknown argument: " + a);
+        }
+    }
+    return args;
+}
+
+std::vector<std::string> split_csv_line(const std::string& line) {
+    std::vector<std::string> cols;
+    std::string cur;
+    for (char c : line) {
+        if (c == ',') {
+            cols.push_back(cur);
+            cur.clear();
+        } else {
+            cur.push_back(c);
+        }
+    }
+    cols.push_back(cur);
+    return cols;
+}
+
+std::map<std::string, BaselineRow> load_baseline_csv(const std::string& path) {
+    std::map<std::string, BaselineRow> rows;
+    if (path.empty()) return rows;
+
+    std::ifstream ifs(path);
+    if (!ifs.is_open()) {
+        throw std::runtime_error("Failed to open baseline CSV: " + path);
+    }
+
+    std::string line;
+    bool first = true;
+    while (std::getline(ifs, line)) {
+        if (line.empty()) continue;
+        auto cols = split_csv_line(line);
+        if (first) {
+            first = false;
+            continue;
+        }
+        // image_id,image_name,width,height,hkn_bytes,png_bytes,png_over_hkn,dec_ms,natural_row_selected,natural_row_candidates,natural_row_selected_rate,gain_bytes,loss_bytes
+        if (cols.size() < 13) continue;
+        BaselineRow row;
+        row.hkn_bytes = (size_t)std::stoull(cols[4]);
+        row.png_over_hkn = std::stod(cols[6]);
+        row.dec_ms = std::stod(cols[7]);
+        row.natural_row_selected = (uint64_t)std::stoull(cols[8]);
+        row.gain_bytes = (uint64_t)std::stoull(cols[11]);
+        row.loss_bytes = (uint64_t)std::stoull(cols[12]);
+        rows[cols[0]] = row;
+    }
+    return rows;
+}
+
+void write_results_csv(const std::string& path, const std::vector<ResultRow>& rows) {
+    std::filesystem::path p(path);
+    if (!p.parent_path().empty()) {
+        std::filesystem::create_directories(p.parent_path());
+    }
+
+    std::ofstream ofs(path);
+    if (!ofs.is_open()) {
+        throw std::runtime_error("Failed to write CSV: " + path);
+    }
+
+    ofs << "image_id,image_name,width,height,hkn_bytes,png_bytes,png_over_hkn,dec_ms,natural_row_selected,natural_row_candidates,natural_row_selected_rate,gain_bytes,loss_bytes\n";
+    ofs << std::fixed << std::setprecision(6);
+    for (const auto& r : rows) {
+        ofs << r.image_id << ","
+            << r.image_name << ","
+            << r.width << ","
+            << r.height << ","
+            << r.hkn_bytes << ","
+            << r.png_bytes << ","
+            << r.png_over_hkn << ","
+            << r.dec_ms << ","
+            << r.natural_row_selected << ","
+            << r.natural_row_candidates << ","
+            << r.natural_row_selected_rate << ","
+            << r.gain_bytes << ","
+            << r.loss_bytes << "\n";
+    }
+}
+
+ResultRow benchmark_one(const EvalImage& img, const Args& args) {
+    ResultRow row;
+    row.image_id = img.rel_path;
+    row.image_name = img.name;
+
+    const std::string full_path = args.base_dir + "/" + img.rel_path;
     auto ppm = load_ppm(full_path);
-    result.width = ppm.width;
-    result.height = ppm.height;
-    result.raw_size = ppm.data_size();
+    row.width = ppm.width;
+    row.height = ppm.height;
 
-    const int WARMUP = 2;
-    const int RUNS = 5;
+    std::cout << "[RUN] " << img.name << " ... " << std::flush;
 
-    // === PNG Encoding ===
-    std::vector<double> png_enc_times;
-    std::vector<uint8_t> png_data;
+    // PNG size reference
+    auto png_enc = encode_png(ppm.rgb_data.data(), ppm.width, ppm.height);
+    row.png_bytes = png_enc.png_data.size();
 
-    for (int i = 0; i < WARMUP + RUNS; i++) {
-        auto enc_result = encode_png(ppm.rgb_data.data(), ppm.width, ppm.height);
-        if (i >= WARMUP) {
-            png_enc_times.push_back(enc_result.encode_time_ms);
-            if (png_data.empty()) png_data = enc_result.png_data;
+    std::vector<size_t> hkn_size_samples;
+    std::vector<double> dec_samples_ms;
+    std::vector<uint64_t> selected_samples;
+    std::vector<uint64_t> candidate_samples;
+    std::vector<uint64_t> gain_samples;
+    std::vector<uint64_t> loss_samples;
+
+    for (int i = 0; i < args.warmup + args.runs; i++) {
+        auto hkn = GrayscaleEncoder::encode_color_lossless(
+            ppm.rgb_data.data(),
+            (uint32_t)ppm.width,
+            (uint32_t)ppm.height
+        );
+        auto stats = GrayscaleEncoder::get_lossless_mode_debug_stats();
+
+        int dec_w = 0;
+        int dec_h = 0;
+        auto t0 = std::chrono::steady_clock::now();
+        auto dec = GrayscaleDecoder::decode_color_lossless(hkn, dec_w, dec_h);
+        auto t1 = std::chrono::steady_clock::now();
+        double dec_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+        if (dec_w != ppm.width || dec_h != ppm.height || dec != ppm.rgb_data) {
+            throw std::runtime_error("Lossless roundtrip failed for " + img.rel_path);
+        }
+
+        if (i >= args.warmup) {
+            hkn_size_samples.push_back(hkn.size());
+            dec_samples_ms.push_back(dec_ms);
+            selected_samples.push_back(stats.natural_row_selected_count);
+            candidate_samples.push_back(stats.natural_row_candidate_count);
+            gain_samples.push_back(stats.natural_row_gain_bytes_sum);
+            loss_samples.push_back(stats.natural_row_loss_bytes_sum);
         }
     }
 
-    result.png_size = png_data.size();
-    result.png_enc_ms = std::accumulate(png_enc_times.begin(), png_enc_times.end(), 0.0) / RUNS;
+    row.hkn_bytes = median_value(hkn_size_samples);
+    row.dec_ms = median_value(dec_samples_ms);
+    row.natural_row_selected = median_value(selected_samples);
+    row.natural_row_candidates = median_value(candidate_samples);
+    row.gain_bytes = median_value(gain_samples);
+    row.loss_bytes = median_value(loss_samples);
 
-    // === PNG Decoding ===
-    std::vector<double> png_dec_times;
-    for (int i = 0; i < WARMUP + RUNS; i++) {
-        auto dec_result = decode_png(png_data.data(), png_data.size());
-        if (i >= WARMUP) {
-            png_dec_times.push_back(dec_result.decode_time_ms);
-        }
+    if (row.hkn_bytes > 0) {
+        row.png_over_hkn = (double)row.png_bytes / (double)row.hkn_bytes;
     }
-    result.png_dec_ms = std::accumulate(png_dec_times.begin(), png_dec_times.end(), 0.0) / RUNS;
-
-    // === HKN Lossless Encoding ===
-    std::vector<double> hkn_enc_times;
-    std::vector<uint8_t> hkn_data;
-
-    for (int i = 0; i < WARMUP + RUNS; i++) {
-        auto start = std::chrono::steady_clock::now();
-        hkn_data = GrayscaleEncoder::encode_color_lossless(ppm.rgb_data.data(), ppm.width, ppm.height);
-        auto end = std::chrono::steady_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(end - start).count();
-        if (i >= WARMUP) {
-            hkn_enc_times.push_back(ms);
-        }
+    if (row.natural_row_candidates > 0) {
+        row.natural_row_selected_rate =
+            100.0 * (double)row.natural_row_selected / (double)row.natural_row_candidates;
     }
 
-    result.hkn_size = hkn_data.size();
-    result.hkn_enc_ms = std::accumulate(hkn_enc_times.begin(), hkn_enc_times.end(), 0.0) / RUNS;
-
-    // === HKN Lossless Decoding ===
-    std::vector<double> hkn_dec_times;
-    for (int i = 0; i < WARMUP + RUNS; i++) {
-        int dec_w, dec_h;
-        auto start = std::chrono::steady_clock::now();
-        auto decoded = GrayscaleDecoder::decode_color_lossless(hkn_data, dec_w, dec_h);
-        auto end = std::chrono::steady_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(end - start).count();
-        if (i >= WARMUP) {
-            hkn_dec_times.push_back(ms);
-        }
-    }
-    result.hkn_dec_ms = std::accumulate(hkn_dec_times.begin(), hkn_dec_times.end(), 0.0) / RUNS;
-
-    // Calculate ratios
-    result.size_ratio = static_cast<double>(result.hkn_size) / result.png_size;
-    result.enc_speedup = result.png_enc_ms / result.hkn_enc_ms;
-    result.dec_speedup = result.png_dec_ms / result.hkn_dec_ms;
-
-    std::cout << " done (PNG:" << (result.png_size/1024) << "KB, HKN:" << (result.hkn_size/1024) << "KB)" << std::endl;
-
-    return result;
+    std::cout << "done\n";
+    return row;
 }
 
-/**
- * Print results table
- */
-void print_results(const std::vector<BenchmarkResult>& results) {
-    std::cout << "\n";
-    std::cout << "================================================================================\n";
-    std::cout << "                         PNG vs HKN Lossless Comparison                      \n";
-    std::cout << "================================================================================\n";
-    std::cout << std::left << std::setw(24) << "Image"
-              << std::right << std::setw(10) << "PNG(KB)"
-              << std::setw(10) << "HKN(KB)"
-              << std::setw(10) << "Size%"
-              << std::setw(12) << "PNG Dec"
-              << std::setw(12) << "HKN Dec"
-              << std::left << std::setw(12) << "  Category" << std::endl;
-    std::cout << "--------------------------------------------------------------------------------\n";
+} // namespace
 
-    for (const auto& r : results) {
-        std::string size_str;
-        if (r.size_ratio < 1.0) {
-            double reduction = (1.0 - r.size_ratio) * 100;
-            size_str = "-" + std::to_string(static_cast<int>(reduction)) + "%";
-        } else {
-            size_str = "+" + std::to_string(static_cast<int>((r.size_ratio - 1.0) * 100)) + "%";
+int main(int argc, char** argv) {
+    try {
+        Args args = parse_args(argc, argv);
+
+        std::cout << "=== Phase 9w Fixed 6-image A/B Evaluation ===\n";
+        std::cout << "base_dir: " << args.base_dir << "\n";
+        std::cout << "runs: " << args.runs << " (warmup=" << args.warmup << ")\n";
+        if (!args.baseline_csv.empty()) {
+            std::cout << "baseline: " << args.baseline_csv << "\n";
+        }
+        std::cout << "\n";
+
+        std::vector<ResultRow> rows;
+        rows.reserve(kFixedEvalSet.size());
+
+        for (const auto& img : kFixedEvalSet) {
+            rows.push_back(benchmark_one(img, args));
         }
 
-        std::cout << std::left << std::setw(24) << r.name
-                  << std::right << std::setw(10) << std::fixed << std::setprecision(1) << (r.png_size / 1024.0)
-                  << std::setw(10) << (r.hkn_size / 1024.0)
-                  << std::setw(9) << size_str
-                  << std::setw(11) << std::setprecision(2) << r.png_dec_ms << "ms"
-                  << std::setw(11) << std::setprecision(2) << r.hkn_dec_ms << "ms"
-                  << std::left << std::setw(12) << r.category << std::endl;
-    }
-    std::cout << "================================================================================\n";
-}
+        write_results_csv(args.out_csv, rows);
 
-/**
- * Compute category summaries
- */
-std::map<std::string, CategorySummary> compute_summaries(const std::vector<BenchmarkResult>& results) {
-    std::map<std::string, CategorySummary> summaries;
-
-    for (const auto& r : results) {
-        auto& sum = summaries[r.category];
-        sum.category = r.category;
-        sum.count++;
-        sum.avg_size_ratio += r.size_ratio;
-        sum.avg_enc_speedup += r.enc_speedup;
-        sum.avg_dec_speedup += r.dec_speedup;
-    }
-
-    for (auto& [cat, sum] : summaries) {
-        sum.avg_size_ratio /= sum.count;
-        sum.avg_enc_speedup /= sum.count;
-        sum.avg_dec_speedup /= sum.count;
-    }
-
-    return summaries;
-}
-
-/**
- * Print category summaries
- */
-void print_summaries(const std::map<std::string, CategorySummary>& summaries) {
-    std::cout << "\n=== Category Averages ===\n";
-    for (const auto& [cat, sum] : summaries) {
-        std::string size_str;
-        if (sum.avg_size_ratio < 1.0) {
-            double reduction = (1.0 - sum.avg_size_ratio) * 100;
-            size_str = "-" + std::to_string(static_cast<int>(reduction)) + "%";
-        } else {
-            size_str = "+" + std::to_string(static_cast<int>((sum.avg_size_ratio - 1.0) * 100)) + "%";
+        std::cout << "\n=== Per-image Metrics (fixed 6) ===\n";
+        std::cout << "Image       size_bytes(HKN/PNG)    Dec(ms)  natural_row_selected   gain_bytes  loss_bytes  PNG/HKN\n";
+        for (const auto& r : rows) {
+            std::ostringstream sel;
+            sel << r.natural_row_selected << "/" << r.natural_row_candidates
+                << " (" << std::fixed << std::setprecision(1)
+                << r.natural_row_selected_rate << "%)";
+            std::cout << std::left << std::setw(10) << r.image_name
+                      << std::right << std::setw(12) << r.hkn_bytes << "/"
+                      << std::left << std::setw(12) << r.png_bytes
+                      << std::right << std::setw(9) << std::fixed << std::setprecision(3) << r.dec_ms
+                      << std::setw(23) << sel.str()
+                      << std::setw(12) << r.gain_bytes
+                      << std::setw(11) << r.loss_bytes
+                      << std::setw(9) << std::fixed << std::setprecision(3) << r.png_over_hkn
+                      << "\n";
         }
 
-        std::cout << std::left << std::setw(12) << cat
-                  << std::right << std::setw(10) << size_str
-                  << std::setw(9) << std::fixed << std::setprecision(2) << sum.avg_enc_speedup << "x enc"
-                  << std::setw(9) << std::setprecision(2) << sum.avg_dec_speedup << "x dec"
-                  << " (n=" << sum.count << ")" << std::endl;
-    }
-}
+        std::vector<double> ratios;
+        ratios.reserve(rows.size());
+        for (const auto& r : rows) ratios.push_back(r.png_over_hkn);
+        double median_ratio = median_value(ratios);
+        std::cout << "\nmedian(PNG_bytes/HKN_bytes): "
+                  << std::fixed << std::setprecision(4) << median_ratio << "\n";
+        std::cout << "CSV saved: " << args.out_csv << "\n";
 
-/**
- * Generate markdown table for BENCHMARKS.md
- */
-void generate_markdown(const std::vector<BenchmarkResult>& results,
-                      const std::map<std::string, CategorySummary>& summaries) {
-    std::cout << "\n=== Markdown Table for BENCHMARKS.md ===\n\n";
+        if (!args.baseline_csv.empty()) {
+            auto baseline = load_baseline_csv(args.baseline_csv);
+            std::cout << "\n=== A/B Diff vs Baseline ===\n";
+            std::cout << "Image       dHKN_bytes    dDec(ms)   dSelected   dGain_bytes   dLoss_bytes   d(PNG/HKN)\n";
 
-    std::cout << "## PNG vs HKN Lossless Comparison\n\n";
-    std::cout << "**Date**: " << __DATE__ << "\n";
-    std::cout << "**Hardware**: x86_64 (AVX2 enabled)\n";
-    std::cout << "**Test Conditions**: PNG level 9 vs HKN Lossless (YCoCg-R + filters)\n\n";
+            std::vector<double> ab_ratios;
+            for (const auto& r : rows) {
+                auto it = baseline.find(r.image_id);
+                if (it == baseline.end()) {
+                    std::cout << std::left << std::setw(10) << r.image_name << "(missing in baseline)\n";
+                    continue;
+                }
+                const auto& b = it->second;
+                long long d_hkn = (long long)r.hkn_bytes - (long long)b.hkn_bytes;
+                double d_dec = r.dec_ms - b.dec_ms;
+                long long d_sel = (long long)r.natural_row_selected - (long long)b.natural_row_selected;
+                long long d_gain = (long long)r.gain_bytes - (long long)b.gain_bytes;
+                long long d_loss = (long long)r.loss_bytes - (long long)b.loss_bytes;
+                double d_ratio = r.png_over_hkn - b.png_over_hkn;
 
-    std::cout << "### Overall Results\n\n";
-    std::cout << "| Image | Category | PNG (KB) | HKN (KB) | Size Ratio | Enc Speedup | Dec Speedup |\n";
-    std::cout << "|-------|----------|----------|----------|------------|-------------|-------------|\n";
+                ab_ratios.push_back(d_ratio);
 
-    for (const auto& r : results) {
-        std::cout << "| " << r.name
-                  << " | " << r.category
-                  << " | " << std::fixed << std::setprecision(1) << (r.png_size / 1024.0)
-                  << " | " << (r.hkn_size / 1024.0)
-                  << " | " << std::setprecision(2) << r.size_ratio << "x";
+                std::cout << std::left << std::setw(10) << r.image_name
+                          << std::right << std::showpos
+                          << std::setw(12) << d_hkn
+                          << std::setw(12) << std::fixed << std::setprecision(3) << d_dec
+                          << std::setw(11) << d_sel
+                          << std::setw(13) << d_gain
+                          << std::setw(13) << d_loss
+                          << std::setw(12) << std::fixed << std::setprecision(4) << d_ratio
+                          << std::noshowpos << "\n";
+            }
 
-        if (r.size_ratio < 1.0) {
-            std::cout << " ✅";
-        } else if (r.size_ratio > 1.1) {
-            std::cout << " ❌";
+            if (!ab_ratios.empty()) {
+                double median_d_ratio = median_value(ab_ratios);
+                std::cout << "\nmedian delta(PNG/HKN): "
+                          << std::showpos << std::fixed << std::setprecision(4)
+                          << median_d_ratio << std::noshowpos << "\n";
+            }
         }
 
-        std::cout << " | " << std::setprecision(2) << r.enc_speedup << "x"
-                  << " | " << r.dec_speedup << "x |\n";
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "ERROR: " << e.what() << "\n";
+        return 1;
     }
-
-    std::cout << "\n### Category Analysis\n\n";
-    std::cout << "| Category | Images | Avg Size Ratio | Avg Enc Speedup | Avg Dec Speedup |\n";
-    std::cout << "|----------|--------|----------------|-----------------|-----------------|\n";
-
-    for (const auto& [cat, sum] : summaries) {
-        std::cout << "| " << cat
-                  << " | " << sum.count
-                  << " | " << std::fixed << std::setprecision(2) << sum.avg_size_ratio << "x";
-
-        if (sum.avg_size_ratio < 1.0) {
-            std::cout << " ✅";
-        } else if (sum.avg_size_ratio > 1.1) {
-            std::cout << " ❌";
-        }
-
-        std::cout << " | " << std::setprecision(2) << sum.avg_enc_speedup << "x"
-                  << " | " << sum.avg_dec_speedup << "x |\n";
-    }
-}
-
-int main() {
-    std::cout << "=== PNG vs HKN Lossless Benchmark ===" << std::endl;
-    std::cout << "=====================================" << std::endl;
-    std::cout << std::endl;
-
-    // Test images (13 total)
-    std::vector<TestImage> test_images = {
-        // UI Screenshots (3)
-        {"ui/browser.ppm", "UI", "browser"},
-        {"ui/vscode.ppm", "UI", "vscode"},
-        {"ui/terminal.ppm", "UI", "terminal"},
-
-        // Anime (2)
-        {"anime/anime_girl_portrait.ppm", "Anime", "anime_girl"},
-        {"anime/anime_sunset.ppm", "Anime", "anime_sunset"},
-
-        // Photo (2)
-        {"photo/nature_01.ppm", "Photo", "nature_01"},
-        {"photo/nature_02.ppm", "Photo", "nature_02"},
-
-        // Game (2)
-        {"game/minecraft_2d.ppm", "Game", "minecraft_2d"},
-        {"game/retro.ppm", "Game", "retro"},
-
-        // Natural/Kodak (4)
-        {"kodak/kodim01.ppm", "Natural", "kodim01"},
-        {"kodak/kodim02.ppm", "Natural", "kodim02"},
-        {"kodak/kodim03.ppm", "Natural", "kodim03"},
-        {"kodak/hd_01.ppm", "Natural", "hd_01"},
-    };
-
-    std::string base_dir = "../test_images";
-
-    std::vector<BenchmarkResult> results;
-
-    // Run benchmarks
-    for (const auto& test_img : test_images) {
-        try {
-            auto result = benchmark_image(test_img, base_dir);
-            results.push_back(result);
-        } catch (const std::exception& e) {
-            std::cerr << "\nError: " << e.what() << std::endl;
-        }
-    }
-
-    // Print results
-    print_results(results);
-
-    // Compute and print summaries
-    auto summaries = compute_summaries(results);
-    print_summaries(summaries);
-
-    // Generate markdown
-    generate_markdown(results, summaries);
-
-    std::cout << "\n=== Interpretation ===\n";
-    std::cout << "Size Ratio: <1.0 = HKN smaller (better), >1.0 = PNG smaller\n";
-    std::cout << "Enc/Dec Speedup: >1.0 = HKN faster (better)\n";
-
-    return 0;
 }

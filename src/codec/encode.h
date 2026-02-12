@@ -40,7 +40,9 @@
 #include "byte_stream_encoder.h"
 #include "filter_hi_wrapper.h"
 #include <vector>
+#include <cerrno>
 #include <cstring>
+#include <cstdlib>
 #include <stdexcept>
 #include <algorithm>
 #include <cmath>
@@ -536,11 +538,62 @@ public:
         return lossless_screen_route::analyze_screen_indexed_preflight(plane, width, height);
     }
 
+    // Thresholds for natural-like texture detection
+    struct NaturalThresholds {
+        static constexpr uint16_t UNIQUE_MIN = 64;
+        static constexpr uint16_t AVG_RUN_MAX_X100 = 460;
+        static constexpr uint16_t MAD_MIN_X100 = 20;
+        static constexpr uint16_t ENTROPY_MIN_X100 = 5;
+    };
+
+    struct NaturalThresholdRuntime {
+        uint16_t unique_min;
+        uint16_t avg_run_max_x100;
+        uint16_t mad_min_x100;
+        uint16_t entropy_min_x100;
+    };
+
+    static uint16_t parse_natural_threshold_env(
+        const char* key, uint16_t fallback, uint16_t min_v, uint16_t max_v
+    ) {
+        const char* raw = std::getenv(key);
+        if (!raw || raw[0] == '\0') return fallback;
+        char* end = nullptr;
+        errno = 0;
+        long v = std::strtol(raw, &end, 10);
+        if (errno != 0 || end == raw || *end != '\0') return fallback;
+        if (v < (long)min_v || v > (long)max_v) return fallback;
+        return (uint16_t)v;
+    }
+
+    static const NaturalThresholdRuntime& natural_thresholds_runtime() {
+        static const NaturalThresholdRuntime kThresholds = []() {
+            NaturalThresholdRuntime t{};
+            t.unique_min = parse_natural_threshold_env(
+                "HKN_NATURAL_UNIQUE_MIN", NaturalThresholds::UNIQUE_MIN, 0, 65535
+            );
+            t.avg_run_max_x100 = parse_natural_threshold_env(
+                "HKN_NATURAL_AVG_RUN_MAX", NaturalThresholds::AVG_RUN_MAX_X100, 0, 65535
+            );
+            t.mad_min_x100 = parse_natural_threshold_env(
+                "HKN_NATURAL_MAD_MIN", NaturalThresholds::MAD_MIN_X100, 0, 65535
+            );
+            t.entropy_min_x100 = parse_natural_threshold_env(
+                "HKN_NATURAL_ENTROPY_MIN", NaturalThresholds::ENTROPY_MIN_X100, 0, 65535
+            );
+            return t;
+        }();
+        return kThresholds;
+    }
+
     static bool is_natural_like(const ScreenPreflightMetrics& m) {
-        // Natural-like textures: many unique samples, short runs, non-trivial gradients.
-        return (m.unique_sample >= 128) &&
-               (m.avg_run_x100 <= 260) &&
-               (m.mean_abs_diff_x100 >= 120);
+        const auto& t = natural_thresholds_runtime();
+        // Natural-like textures: rich value diversity, short runs, and non-trivial edges.
+        return !m.likely_screen &&
+               (m.unique_sample >= t.unique_min) &&
+               (m.avg_run_x100 <= t.avg_run_max_x100) &&
+               (m.mean_abs_diff_x100 >= t.mad_min_x100) &&
+               (m.run_entropy_hint_x100 >= t.entropy_min_x100);
     }
 
     static std::vector<uint8_t> encode_plane_lossless_screen_indexed_tile(

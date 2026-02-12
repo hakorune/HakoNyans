@@ -40,24 +40,38 @@ inline std::vector<uint8_t> choose_best_tile(
     using ScreenPreflightMetrics = lossless_screen_route::ScreenPreflightMetrics;
     using ScreenBuildFailReason = lossless_screen_route::ScreenBuildFailReason;
 
-    ScreenPreflightMetrics screen_prefilter_metrics{};
     bool screen_prefilter_valid = false;
     bool screen_prefilter_likely_screen = false;
+    bool natural_prefilter_ok = false;
+    const bool large_image = ((uint64_t)width * (uint64_t)height >= 262144ull);
     stats->screen_candidate_count++;
 
-    if (width * height < 4096) {
-        stats->screen_rejected_pre_gate++;
-        stats->screen_rejected_small_tile++;
-    } else {
+    if (width * height >= 4096) {
         const auto pre = analyze_screen_preflight(data, width, height);
-        screen_prefilter_metrics = pre;
         screen_prefilter_valid = true;
         screen_prefilter_likely_screen = pre.likely_screen;
         stats->screen_prefilter_eval_count++;
         stats->screen_prefilter_unique_sum += pre.unique_sample;
         stats->screen_prefilter_avg_run_x100_sum += pre.avg_run_x100;
+        stats->natural_prefilter_eval_count++;
+        stats->natural_prefilter_unique_sum += pre.unique_sample;
+        stats->natural_prefilter_avg_run_x100_sum += pre.avg_run_x100;
+        stats->natural_prefilter_mad_x100_sum += pre.mean_abs_diff_x100;
+        stats->natural_prefilter_entropy_x100_sum += pre.run_entropy_hint_x100;
+        natural_prefilter_ok = is_natural_like(pre);
+        if (natural_prefilter_ok) stats->natural_prefilter_pass_count++;
+        else stats->natural_prefilter_reject_count++;
+    }
 
-        if (!pre.likely_screen) {
+    const bool screen_like = screen_prefilter_valid && screen_prefilter_likely_screen;
+    const bool natural_like = screen_prefilter_valid && natural_prefilter_ok;
+    const bool skip_screen_for_natural = natural_like && profile_id == 2;
+
+    if (width * height < 4096) {
+        stats->screen_rejected_pre_gate++;
+        stats->screen_rejected_small_tile++;
+    } else {
+        if (!screen_prefilter_likely_screen || skip_screen_for_natural) {
             stats->screen_rejected_pre_gate++;
             stats->screen_rejected_prefilter_texture++;
         } else {
@@ -139,23 +153,7 @@ inline std::vector<uint8_t> choose_best_tile(
     }
 
     size_t natural_size = 0;
-    const bool large_image = ((uint64_t)width * (uint64_t)height >= 262144ull);
-    bool natural_prefilter_ok = false;
-    if (screen_prefilter_valid) {
-        stats->natural_prefilter_eval_count++;
-        stats->natural_prefilter_unique_sum += screen_prefilter_metrics.unique_sample;
-        stats->natural_prefilter_avg_run_x100_sum += screen_prefilter_metrics.avg_run_x100;
-        stats->natural_prefilter_mad_x100_sum += screen_prefilter_metrics.mean_abs_diff_x100;
-        stats->natural_prefilter_entropy_x100_sum += screen_prefilter_metrics.run_entropy_hint_x100;
-        natural_prefilter_ok = is_natural_like(screen_prefilter_metrics);
-        if (natural_prefilter_ok) stats->natural_prefilter_pass_count++;
-        else stats->natural_prefilter_reject_count++;
-    }
-
-    const bool allow_natural_route =
-        (profile_id == 2) ||
-        natural_prefilter_ok ||
-        (screen_prefilter_valid && !screen_prefilter_likely_screen);
+    const bool allow_natural_route = natural_like || (profile_id == 2 && !screen_like);
 
     if (large_image && allow_natural_route) {
         stats->natural_row_candidate_count++;

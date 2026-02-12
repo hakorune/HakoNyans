@@ -38,7 +38,11 @@ inline bool try_decode_natural_row_wrapper(
     const std::vector<int16_t> zeros(width * height, 0);
 
     uint8_t mode = td[1];
-    if (mode != 0 && mode != 1) {
+    if (mode != 0 && mode != 1 && mode != 2) {
+        out = zeros;
+        return true;
+    }
+    if (mode == 2 && file_version < FileHeader::VERSION_NATURAL_GLOBAL_CHAIN_ROUTE) {
         out = zeros;
         return true;
     }

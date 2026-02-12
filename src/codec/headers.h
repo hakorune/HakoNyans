@@ -33,7 +33,7 @@ struct FileHeader {
     uint8_t  reserved[16];  // 将来拡張用
     
     static constexpr uint32_t MAGIC = 0x484B4E00;       // 'HKN\0'
-    static constexpr uint16_t VERSION = 0x0012;         // v0.18 (natural row residual route)
+    static constexpr uint16_t VERSION = 0x0013;         // v0.19 (natural global-chain LZ route)
     static constexpr uint16_t MIN_SUPPORTED_VERSION = 0x0003;
     static constexpr uint16_t VERSION_BAND_GROUP_CDF = 0x0004;
     static constexpr uint16_t VERSION_TILE_MATCH4 = 0x0005;
@@ -50,6 +50,7 @@ struct FileHeader {
     static constexpr uint16_t VERSION_FILTER_LO_LZ_RANS = 0x0010;
     static constexpr uint16_t VERSION_FILTER_LO_LZ_RANS_SHARED_CDF = 0x0011;
     static constexpr uint16_t VERSION_NATURAL_ROW_ROUTE = 0x0012;
+    static constexpr uint16_t VERSION_NATURAL_GLOBAL_CHAIN_ROUTE = 0x0013;
     
     enum class BlockType : uint8_t {
         DCT = 0,
