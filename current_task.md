@@ -1010,3 +1010,20 @@ MEDの効果（Photo/Natural）を維持しつつ、UI/Anime側の将来回帰�
 - [ ] Photo decode平均 `Dec(ms)` を現状比で有意改善
 - [ ] CfL色バグ再発なし（目視 + 回帰サンプル）
 - [ ] `paper/` の図表がワンコマンド再生成可能
+
+## Refactor Plan (2026-02-12)
+
+目的:
+- `encode.h` / `decode.h` の機能分離を進め、壊れにくい構造へ整理する
+- 仕様追加時の差分範囲を狭め、デバッグ速度を上げる
+
+今回の実施順:
+1. [x] `lossless_block_types_codec.h` へ block-types の encode/decode を移設
+2. [x] `lossless_profile_classifier.h` へ lossless profile 判定を移設
+3. [x] `lossless_palette_diagnostics.h` へ palette 診断集計を移設
+4. [x] `decode.h` の Natural row wrapper 復号分岐を helper 化
+5. [x] `ctest --output-on-failure` で回帰確認
+
+完了条件:
+- [x] 既存 17 テスト PASS 維持
+- [x] `encode.h`/`decode.h` の責務が helper 単位で追跡可能

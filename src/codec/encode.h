@@ -20,6 +20,9 @@
 #include "lossless_mode_select.h"
 #include "lossless_screen_route.h"
 #include "lossless_natural_route.h"
+#include "lossless_profile_classifier.h"
+#include "lossless_palette_diagnostics.h"
+#include "lossless_block_types_codec.h"
 #include <vector>
 #include <cstring>
 #include <stdexcept>
@@ -64,127 +67,12 @@ public:
     // Heuristic profile for applying lossless mode biases.
     // Classify from sampled exact-copy hit rate, local gradient, and histogram density.
     static LosslessProfile classify_lossless_profile(const int16_t* y_plane, uint32_t width, uint32_t height) {
-        if (!y_plane || width == 0 || height == 0) return LosslessProfile::PHOTO;
-
-        const int bx = (int)((width + 7) / 8);
-        const int by = (int)((height + 7) / 8);
-        if (bx * by < 64) return LosslessProfile::PHOTO; // avoid unstable decisions on tiny images
-
-        const CopyParams kCopyCandidates[4] = {
-            CopyParams(-8, 0), CopyParams(0, -8), CopyParams(-8, -8), CopyParams(8, -8)
-        };
-
-        auto sample_at = [&](int x, int y) -> int16_t {
-            int sx = std::clamp(x, 0, (int)width - 1);
-            int sy = std::clamp(y, 0, (int)height - 1);
-            return y_plane[(size_t)sy * width + (size_t)sx];
-        };
-
-        int step = 4; // sample every 4th block in X/Y
-        int total_blocks = bx * by;
-        if (total_blocks < 256) step = 1;
-        else if (total_blocks < 1024) step = 2;
-
-        int samples = 0;
-        int copy_hits = 0;
-        
-        uint64_t sum_abs_diff = 0;
-        uint64_t pixel_count = 0;
-        uint32_t hist[16] = {0};
-
-        for (int yb = 0; yb < by; yb += step) {
-            for (int xb = 0; xb < bx; xb += step) {
-                int cur_x = xb * 8;
-                int cur_y = yb * 8;
-                bool hit = false;
-
-                // Copy Check
-                for (const auto& cand : kCopyCandidates) {
-                    int src_x = cur_x + cand.dx;
-                    int src_y = cur_y + cand.dy;
-                    if (src_x < 0 || src_y < 0) continue;
-                    if (!(src_y < cur_y || (src_y == cur_y && src_x < cur_x))) continue;
-
-                    bool match = true;
-                    for (int y = 0; y < 8 && match; y++) {
-                        for (int x = 0; x < 8; x++) {
-                            if (sample_at(cur_x + x, cur_y + y) != sample_at(src_x + x, src_y + y)) {
-                                match = false;
-                                break;
-                            }
-                        }
-                    }
-                    if (match) {
-                        hit = true;
-                        break;
-                    }
-                }
-
-                if (hit) copy_hits++;
-                
-                // Stats (Gradient & Histogram)
-                for (int y = 0; y < 8; y++) {
-                    for (int x = 0; x < 8; x++) {
-                         int16_t val = sample_at(cur_x + x, cur_y + y);
-                         // Histogram (16 levels)
-                         int bin = std::clamp((int)val, 0, 255) / 16;
-                         if (bin >= 0 && bin < 16) hist[bin]++;
-                         
-                         // Gradient (adjacent diffs)
-                         if (x > 0) sum_abs_diff += (uint64_t)std::abs(val - sample_at(cur_x + x - 1, cur_y + y));
-                         if (y > 0) sum_abs_diff += (uint64_t)std::abs(val - sample_at(cur_x + x, cur_y + y - 1));
-                    }
-                }
-                
-                samples++;
-                pixel_count += 64;
-            }
-        }
-
-        if (samples < 32) return LosslessProfile::PHOTO;
-        
-        const double copy_hit_rate = (double)copy_hits / (double)samples;
-        double mean_abs_diff = 0.0;
-        if (pixel_count > 0) {
-             // Normalized by pixel count. Note: sum_abs_diff counts ~2 diffs per pixel (less on boundaries).
-             // We keep it simple: sum / pixels.
-             mean_abs_diff = (double)sum_abs_diff / (double)pixel_count;
-        }
-        
-        int active_bins = 0;
-        for(int k=0; k<16; k++) if(hist[k] > 0) active_bins++;
-
-        // Phase 9s-6: Telemetry
-        tl_lossless_mode_debug_stats_.class_eval_count++;
-        tl_lossless_mode_debug_stats_.class_copy_hit_x1000_sum += (uint64_t)(copy_hit_rate * 1000.0);
-        tl_lossless_mode_debug_stats_.class_mean_abs_diff_x1000_sum += (uint64_t)(mean_abs_diff * 1000.0);
-        tl_lossless_mode_debug_stats_.class_active_bins_sum += (uint64_t)active_bins;
-
-        // Flat anime scenes (large painted areas with very low local gradients)
-        // are easily mistaken as UI by coarse histogram-only rules.
-        if (copy_hit_rate >= 0.10 && active_bins <= 6 && mean_abs_diff <= 1.2) {
-            return LosslessProfile::ANIME;
-        }
-
-        int ui_score = 0;
-        int anime_score = 0;
-
-        // UI signals
-        if (copy_hit_rate >= 0.90) ui_score += 3;
-        if (active_bins <= 10)     ui_score += 2;
-        if (mean_abs_diff <= 12)   ui_score += 1;
-
-        // Anime signals
-        if (copy_hit_rate >= 0.60 && copy_hit_rate < 0.95) anime_score += 2;
-        if (active_bins >= 8 && active_bins <= 24)         anime_score += 2;
-        if (mean_abs_diff <= 28)                           anime_score += 2;
-
-        // Decision
-        LosslessProfile result = LosslessProfile::PHOTO;
-        if (ui_score >= anime_score + 2) result = LosslessProfile::UI;
-        else if (anime_score >= 3)       result = LosslessProfile::ANIME;
-
-        return result;
+        auto p = lossless_profile_classifier::classify(
+            y_plane, width, height, &tl_lossless_mode_debug_stats_
+        );
+        if (p == lossless_profile_classifier::Profile::UI) return LosslessProfile::UI;
+        if (p == lossless_profile_classifier::Profile::ANIME) return LosslessProfile::ANIME;
+        return LosslessProfile::PHOTO;
     }
 
     static uint32_t extract_tile_cfl_size(const std::vector<uint8_t>& tile_data, bool use_band_group_cdf) {
@@ -777,191 +665,24 @@ public:
         const std::vector<FileHeader::BlockType>& types,
         bool allow_compact = false
     ) {
-        std::vector<uint8_t> raw;
-        // Loop generating `raw` (RLE bytes)
-        int current_type = -1;
-        int current_run = 0;
-        for (auto t : types) {
-            int type = (int)t;
-            if (type != current_type) {
-                if (current_run > 0) {
-                    while (current_run > 0) {
-                        int run = std::min(current_run, 64);
-                        raw.push_back((uint8_t)((current_type & 0x03) | ((run - 1) << 2)));
-                        current_run -= run;
-                    }
-                }
-                current_type = type;
-                current_run = 1;
-            } else {
-                current_run++;
-            }
-        }
-        if (current_run > 0) {
-            while (current_run > 0) {
-                int run = std::min(current_run, 64);
-                raw.push_back((uint8_t)((current_type & 0x03) | ((run - 1) << 2)));
-                current_run -= run;
-            }
-        }
-        
-        if (!allow_compact) return raw;
-
-        // Candidate 1: Raw RLE (Legacy) -> `raw`
-        // Candidate 2: Mode 1 (rANS)
-        // Replaced encode_tokens with encode_byte_stream (Fixes H1)
-        auto mode1_payload = encode_byte_stream(raw);
-        
-        // Candidate 3: Mode 2 (LZ)
-        std::vector<uint8_t> mode2_payload = TileLZ::compress(raw);
-        
-        size_t size_raw = raw.size();
-        size_t size_mode1 = 6 + mode1_payload.size(); // [0xA6][1][raw_cnt][payload]
-        size_t size_mode2 = 6 + mode2_payload.size(); // [0xA6][2][raw_cnt][payload]
-        
-        // Select Best
-        // Bias: LZ/rANS must be < Raw * 0.98 ?
-        size_t best_size = size_raw;
-        int best_mode = 0; // 0=Raw
-        
-        if (size_mode1 < best_size && size_mode1 * 100 <= size_raw * 98) {
-            best_size = size_mode1;
-            best_mode = 1;
-        }
-        if (size_mode2 < best_size && size_mode2 * 100 <= size_raw * 98) {
-             best_size = size_mode2;
-             best_mode = 2;
-        }
-        
-        // Apply
-        if (best_mode == 1) {
-             std::vector<uint8_t> out;
-             out.resize(6);
-             out[0] = FileHeader::WRAPPER_MAGIC_BLOCK_TYPES;
-             out[1] = 1;
-             uint32_t rc = (uint32_t)size_raw;
-             std::memcpy(&out[2], &rc, 4);
-             out.insert(out.end(), mode1_payload.begin(), mode1_payload.end());
-             return out;
-        } else if (best_mode == 2) {
-             std::vector<uint8_t> out;
-             out.resize(6);
-             out[0] = FileHeader::WRAPPER_MAGIC_BLOCK_TYPES;
-             out[1] = 2;
-             uint32_t rc = (uint32_t)size_raw;
-             std::memcpy(&out[2], &rc, 4);
-             out.insert(out.end(), mode2_payload.begin(), mode2_payload.end());
-             
-             tl_lossless_mode_debug_stats_.block_types_lz_used_count++;
-             tl_lossless_mode_debug_stats_.block_types_lz_saved_bytes_sum += (size_raw - out.size());
-             
-             return out;
-        }
-        
-        return raw;
+        return lossless_block_types_codec::encode_block_types(
+            types,
+            allow_compact,
+            [](const std::vector<uint8_t>& raw) {
+                return GrayscaleEncoder::encode_byte_stream(raw);
+            },
+            [](const std::vector<uint8_t>& raw) {
+                return TileLZ::compress(raw);
+            },
+            &tl_lossless_mode_debug_stats_
+        );
     }
-
 
     static void accumulate_palette_stream_diagnostics(
         const std::vector<uint8_t>& pal_raw,
         LosslessModeDebugStats& s
     ) {
-        if (pal_raw.empty()) return;
-
-        s.palette_stream_raw_bytes_sum += pal_raw.size();
-
-        size_t pos = 0;
-        bool is_v2 = false;
-        bool is_v3 = false;
-        bool is_v4 = false;
-        uint8_t flags = 0;
-        auto bits_for_palette_size = [](int p_size) -> int {
-            if (p_size <= 1) return 0;
-            if (p_size <= 2) return 1;
-            if (p_size <= 4) return 2;
-            return 3;
-        };
-
-        auto fail = [&]() {
-            s.palette_parse_errors++;
-            return;
-        };
-
-        if (pal_raw[0] == 0x40 || pal_raw[0] == 0x41 || pal_raw[0] == 0x42) {
-            is_v2 = true;
-            is_v3 = (pal_raw[0] == 0x41 || pal_raw[0] == 0x42);
-            is_v4 = (pal_raw[0] == 0x42);
-            if (is_v3) s.palette_stream_v3_count++;
-            else s.palette_stream_v2_count++;
-            pos = 1;
-            if (pos >= pal_raw.size()) return fail();
-            flags = pal_raw[pos++];
-
-            if (flags & 0x01) {
-                if (pos >= pal_raw.size()) return fail();
-                uint8_t dict_count = pal_raw[pos++];
-                s.palette_stream_mask_dict_count++;
-                s.palette_stream_mask_dict_entries += dict_count;
-                size_t need = (size_t)dict_count * 8;
-                if (pos + need > pal_raw.size()) return fail();
-                pos += need;
-            }
-
-            if (is_v3 && (flags & 0x02)) {
-                if (pos >= pal_raw.size()) return fail();
-                uint8_t pal_dict_count = pal_raw[pos++];
-                s.palette_stream_palette_dict_count++;
-                s.palette_stream_palette_dict_entries += pal_dict_count;
-                for (uint8_t i = 0; i < pal_dict_count; i++) {
-                    if (pos >= pal_raw.size()) return fail();
-                    uint8_t psz = pal_raw[pos++];
-                    if (psz == 0 || psz > 8) return fail();
-                    size_t color_bytes = (size_t)psz * (is_v4 ? 2 : 1);
-                    if (pos + color_bytes > pal_raw.size()) return fail();
-                    pos += color_bytes;
-                }
-            }
-        }
-
-        while (pos < pal_raw.size()) {
-            uint8_t head = pal_raw[pos++];
-            bool use_prev = (head & 0x80) != 0;
-            bool use_dict_ref = is_v3 && !use_prev && ((head & 0x40) != 0);
-            int p_size = (head & 0x07) + 1;
-
-            s.palette_blocks_parsed++;
-            if (use_prev) s.palette_blocks_prev_reuse++;
-            else if (use_dict_ref) s.palette_blocks_dict_ref++;
-            else s.palette_blocks_raw_colors++;
-
-            if (p_size <= 2) s.palette_blocks_two_color++;
-            else s.palette_blocks_multi_color++;
-
-            if (!use_prev) {
-                if (use_dict_ref) {
-                    if (pos >= pal_raw.size()) return fail();
-                    pos += 1;
-                } else {
-                    size_t color_bytes = (size_t)p_size * (is_v4 ? 2 : 1);
-                    if (pos + color_bytes > pal_raw.size()) return fail();
-                    pos += color_bytes;
-                }
-            }
-
-            if (!is_v2 || p_size <= 1) continue;
-
-            if (p_size == 2) {
-                size_t need = (flags & 0x01) ? 1 : 8;
-                if (pos + need > pal_raw.size()) return fail();
-                pos += need;
-                continue;
-            }
-
-            int bits = bits_for_palette_size(p_size);
-            size_t idx_bytes = (size_t)((64 * bits + 7) / 8);
-            if (pos + idx_bytes > pal_raw.size()) return fail();
-            pos += idx_bytes;
-        }
+        lossless_palette_diagnostics::accumulate(pal_raw, s);
     }
 
     // ========================================================================

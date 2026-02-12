@@ -1218,19 +1218,23 @@ void test_screen_indexed_tile_roundtrip() {
 
     for (int y = 0; y < H; y++) {
         for (int x = 0; x < W; x++) {
-            // Repeating palette pattern: strongly favors screen-indexed mode.
-            int idx = ((x & 7) + ((y & 7) * 3)) & 7;
+            // Deterministic low-color pattern with weak exact-copy locality.
+            // This keeps global palette small while avoiding trivial 8x8 copy wins.
+            int idx = ((x * 37 + y * 73 + ((x * y) % 11)) & 7);
             plane[y * W + x] = palette_vals[idx];
         }
     }
 
-    auto tile = GrayscaleEncoder::encode_plane_lossless(plane.data(), W, H, false);
+    auto reason = GrayscaleEncoder::ScreenBuildFailReason::NONE;
+    auto tile = GrayscaleEncoder::encode_plane_lossless_screen_indexed_tile(
+        plane.data(), W, H, &reason
+    );
     if (tile.empty()) {
-        FAIL("Encoded tile is empty");
+        FAIL("Encoded tile is empty (reason=" + std::to_string((int)reason) + ")");
         return;
     }
     if (tile[0] != FileHeader::WRAPPER_MAGIC_SCREEN_INDEXED) {
-        FAIL("Screen-indexed tile mode was not selected");
+        FAIL("Unexpected wrapper for screen-indexed tile route");
         return;
     }
 

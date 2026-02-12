@@ -23,6 +23,8 @@
 #include "band_groups.h"
 #include "lz_tile.h"
 #include "shared_cdf.h"
+#include "lossless_block_types_codec.h"
+#include "lossless_natural_decode.h"
 
 namespace hakonyans {
 
@@ -531,51 +533,18 @@ public:
         const uint8_t* val, size_t sz, int nb,
         uint16_t file_version = FileHeader::MIN_SUPPORTED_VERSION
     ) {
-        std::vector<FileHeader::BlockType> out;
-        out.reserve(nb);
-        const uint8_t* runs = val;
-        size_t runs_size = sz;
-
-        // Optional compact envelope for v0.6+:
-        // [BLOCK_MAGIC][mode][raw_count:u32][encoded_raw_runs]
-        std::vector<uint8_t> decoded_runs;
-        if (file_version >= FileHeader::VERSION_BLOCK_TYPES_V2 && sz >= 6) {
-            bool is_v2 = (val[0] == 0xA6); // Or check WRAPPER_MAGIC_BLOCK_TYPES
-            // But we might be using 0xA6 correctly. Let's use flexible check.
-            if (val[0] == FileHeader::WRAPPER_MAGIC_BLOCK_TYPES) {
-                uint8_t mode = val[1];
-                uint32_t raw_count = 0;
-                std::memcpy(&raw_count, val + 2, 4);
-                const uint8_t* enc_ptr = val + 6;
-                size_t enc_size = sz - 6;
-                
-                if (mode == 1) { // Mode 1: rANS
-                    decoded_runs = decode_byte_stream(enc_ptr, enc_size, raw_count);
-                } else if (mode == 2) { // Mode 2: LZ (Phase 9l-2)
-                    decoded_runs = TileLZ::decompress(enc_ptr, enc_size, raw_count);
-                }
-
-                if (!decoded_runs.empty()) {
-                    runs = decoded_runs.data();
-                    runs_size = decoded_runs.size();
-                }
+        return lossless_block_types_codec::decode_block_types(
+            val,
+            sz,
+            nb,
+            file_version,
+            [](const uint8_t* data, size_t size, size_t raw_count) {
+                return GrayscaleDecoder::decode_byte_stream(data, size, raw_count);
+            },
+            [](const uint8_t* data, size_t size, size_t raw_count) {
+                return TileLZ::decompress(data, size, raw_count);
             }
-        }
-
-        for (size_t i = 0; i < runs_size; i++) {
-            uint8_t v = runs[i];
-            uint8_t type = v & 0x03;
-            int run = ((v >> 2) & 0x3F) + 1;
-            for (int k = 0; k < run; k++) {
-                if (out.size() < (size_t)nb) {
-                    out.push_back((FileHeader::BlockType)type);
-                }
-            }
-        }
-        if (out.size() < (size_t)nb) {
-            out.resize(nb, FileHeader::BlockType::DCT);
-        }
-        return out;
+        );
     }
 
     static std::vector<Token> decode_stream(const uint8_t* s, size_t sz) {
@@ -672,108 +641,23 @@ public:
         uint32_t pad_w = ((width + 7) / 8) * 8;
         uint32_t pad_h = ((height + 7) / 8) * 8;
         int nx = pad_w / 8, ny = pad_h / 8, nb = nx * ny;
-
-        if (ts >= 18 &&
-            file_version >= FileHeader::VERSION_NATURAL_ROW_ROUTE &&
-            td[0] == FileHeader::WRAPPER_MAGIC_NATURAL_ROW) {
-            auto read_u32 = [](const uint8_t* p) -> uint32_t {
-                return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
-                       ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-            };
-
-            uint8_t mode = td[1];
-            if (mode != 0 && mode != 1) return std::vector<int16_t>(width * height, 0);
-
-            uint32_t pixel_count = read_u32(td + 2);
-            uint32_t pred_count = read_u32(td + 6);
-            uint32_t resid_raw_count = read_u32(td + 10);
-            uint32_t resid_payload_size = read_u32(td + 14);
-            uint32_t expected_pixels = pad_w * pad_h;
-            uint32_t expected_resid_raw = expected_pixels * 2;
-
-            if (pixel_count != expected_pixels || pred_count != pad_h || resid_raw_count != expected_resid_raw) {
-                return std::vector<int16_t>(width * height, 0);
-            }
-
-            std::vector<uint8_t> pred_ids;
-            pred_ids.resize(pred_count, 0);
-
-            size_t resid_off = 0;
-            if (mode == 0) {
-                size_t pred_off = 18;
-                resid_off = pred_off + pred_count;
-                if (resid_off > ts || resid_payload_size > ts - resid_off) {
-                    return std::vector<int16_t>(width * height, 0);
-                }
-                std::memcpy(pred_ids.data(), td + pred_off, pred_count);
-            } else {
-                if (ts < 27) return std::vector<int16_t>(width * height, 0);
-                uint8_t pred_mode = td[18];
-                uint32_t pred_raw_count = read_u32(td + 19);
-                uint32_t pred_payload_size = read_u32(td + 23);
-                if (pred_raw_count != pred_count) return std::vector<int16_t>(width * height, 0);
-                size_t pred_payload_off = 27;
-                if (pred_payload_off > ts || pred_payload_size > ts - pred_payload_off) {
-                    return std::vector<int16_t>(width * height, 0);
-                }
-                const uint8_t* pred_payload_ptr = td + pred_payload_off;
-                if (pred_mode == 0) {
-                    if (pred_payload_size < pred_count) return std::vector<int16_t>(width * height, 0);
-                    std::memcpy(pred_ids.data(), pred_payload_ptr, pred_count);
-                } else if (pred_mode == 1) {
-                    pred_ids = decode_byte_stream(pred_payload_ptr, pred_payload_size, pred_count);
-                    if (pred_ids.size() != pred_count) return std::vector<int16_t>(width * height, 0);
-                } else {
-                    return std::vector<int16_t>(width * height, 0);
-                }
-                resid_off = pred_payload_off + pred_payload_size;
-                if (resid_off > ts || resid_payload_size > ts - resid_off) {
-                    return std::vector<int16_t>(width * height, 0);
-                }
-            }
-
-            const uint8_t* resid_ptr = td + resid_off;
-
-            auto lz_payload = decode_byte_stream_shared_lz(resid_ptr, resid_payload_size, 0);
-            if (lz_payload.empty()) return std::vector<int16_t>(width * height, 0);
-
-            auto resid_bytes = TileLZ::decompress(lz_payload.data(), lz_payload.size(), resid_raw_count);
-            if (resid_bytes.size() != resid_raw_count) return std::vector<int16_t>(width * height, 0);
-
-            std::vector<int16_t> padded(expected_pixels, 0);
-            size_t rb = 0;
-            for (uint32_t y = 0; y < pad_h; y++) {
-                uint8_t pid = pred_ids[y];
-                for (uint32_t x = 0; x < pad_w; x++) {
-                    int16_t left = (x > 0) ? padded[(size_t)y * pad_w + (x - 1)] : 0;
-                    int16_t up = (y > 0) ? padded[(size_t)(y - 1) * pad_w + x] : 0;
-                    int16_t ul = (x > 0 && y > 0) ? padded[(size_t)(y - 1) * pad_w + (x - 1)] : 0;
-                    int16_t pred = 0;
-                    if (mode == 0) {
-                        if (pid == 0) pred = left;
-                        else if (pid == 1) pred = up;
-                        else pred = (int16_t)(((int)left + (int)up) / 2);
-                    } else {
-                        if (pid == 0) pred = left;
-                        else if (pid == 1) pred = up;
-                        else if (pid == 2) pred = (int16_t)(((int)left + (int)up) / 2);
-                        else if (pid == 3) pred = LosslessFilter::paeth_predictor(left, up, ul);
-                        else if (pid == 4) pred = LosslessFilter::med_predictor(left, up, ul);
-                        else pred = 0;
-                    }
-
-                    uint16_t zz = (uint16_t)resid_bytes[rb] | ((uint16_t)resid_bytes[rb + 1] << 8);
-                    rb += 2;
-                    int16_t resid = zigzag_decode_val(zz);
-                    padded[(size_t)y * pad_w + x] = (int16_t)(pred + resid);
-                }
-            }
-
-            std::vector<int16_t> result(width * height, 0);
-            for (uint32_t y = 0; y < height; y++) {
-                std::memcpy(&result[y * width], &padded[y * pad_w], width * sizeof(int16_t));
-            }
-            return result;
+        std::vector<int16_t> natural_decoded;
+        if (lossless_natural_decode::try_decode_natural_row_wrapper(
+                td,
+                ts,
+                width,
+                height,
+                pad_w,
+                pad_h,
+                file_version,
+                [](const uint8_t* data, size_t size, size_t raw_count) {
+                    return GrayscaleDecoder::decode_byte_stream_shared_lz(data, size, raw_count);
+                },
+                [](const uint8_t* data, size_t size, size_t raw_count) {
+                    return GrayscaleDecoder::decode_byte_stream(data, size, raw_count);
+                },
+                natural_decoded)) {
+            return natural_decoded;
         }
 
         if (ts >= 14 &&

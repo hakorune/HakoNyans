@@ -1404,3 +1404,18 @@ MIT License (予定)
 **最終更新**: 2026-02-12  
 **バージョン**: Phase 9u-1（palette値域拡張 + stream v4）  
 **ステータス**: 🚀 Active Development
+
+## 2026-02-12 Refactor Plan (Encode/Decode Split)
+
+背景:
+- `src/codec/encode.h` と `src/codec/decode.h` が肥大化し、機能追加時の影響範囲が広くなっていた。
+
+計画:
+1. block-types codec の encode/decode を helper に分離
+2. lossless profile classifier を helper に分離
+3. palette diagnostics parser を helper に分離
+4. decode 側の natural row wrapper 復号分岐を helper に分離
+
+狙い:
+- 機能責務を小さなヘッダに分割し、デバッグとレビューを容易にする。
+- 将来のアルゴリズム分岐追加時に、`encode.h`/`decode.h` への直書きを減らす。
