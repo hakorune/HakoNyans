@@ -1096,6 +1096,13 @@ public:
         return lossless_screen_route::analyze_screen_indexed_preflight(plane, width, height);
     }
 
+    static bool is_natural_like(const ScreenPreflightMetrics& m) {
+        // Natural-like textures: many unique samples, short runs, non-trivial gradients.
+        return (m.unique_sample >= 128) &&
+               (m.avg_run_x100 <= 260) &&
+               (m.mean_abs_diff_x100 >= 120);
+    }
+
     static std::vector<uint8_t> encode_plane_lossless_screen_indexed_tile(
         const int16_t* plane, uint32_t width, uint32_t height,
         ScreenBuildFailReason* fail_reason = nullptr
@@ -2273,6 +2280,7 @@ public:
 
         // Phase 9u-3: Screen-indexed selection by direct competition.
         size_t selected_screen_size = 0;
+        ScreenPreflightMetrics screen_prefilter_metrics{};
         bool screen_prefilter_valid = false;
         bool screen_prefilter_likely_screen = false;
         tl_lossless_mode_debug_stats_.screen_candidate_count++;
@@ -2282,6 +2290,7 @@ public:
             tl_lossless_mode_debug_stats_.screen_rejected_small_tile++;
         } else {
             const auto pre = analyze_screen_indexed_preflight(data, width, height);
+            screen_prefilter_metrics = pre;
             screen_prefilter_valid = true;
             screen_prefilter_likely_screen = pre.likely_screen;
             tl_lossless_mode_debug_stats_.screen_prefilter_eval_count++;
@@ -2372,8 +2381,21 @@ public:
         // Phase 9v (Natural route): row residual + LZ+rANS(shared CDF)
         size_t natural_size = 0;
         const bool large_image = ((uint64_t)width * (uint64_t)height >= 262144ull);
+        bool natural_prefilter_ok = false;
+        if (screen_prefilter_valid) {
+            auto& ns = tl_lossless_mode_debug_stats_;
+            ns.natural_prefilter_eval_count++;
+            ns.natural_prefilter_unique_sum += screen_prefilter_metrics.unique_sample;
+            ns.natural_prefilter_avg_run_x100_sum += screen_prefilter_metrics.avg_run_x100;
+            ns.natural_prefilter_mad_x100_sum += screen_prefilter_metrics.mean_abs_diff_x100;
+            ns.natural_prefilter_entropy_x100_sum += screen_prefilter_metrics.run_entropy_hint_x100;
+            natural_prefilter_ok = is_natural_like(screen_prefilter_metrics);
+            if (natural_prefilter_ok) ns.natural_prefilter_pass_count++;
+            else ns.natural_prefilter_reject_count++;
+        }
         const bool allow_natural_route =
             (profile == LosslessProfile::PHOTO) ||
+            natural_prefilter_ok ||
             (screen_prefilter_valid && !screen_prefilter_likely_screen);
 
         if (large_image && allow_natural_route) {

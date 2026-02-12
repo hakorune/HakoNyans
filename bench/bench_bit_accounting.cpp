@@ -733,6 +733,23 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
             if (s.natural_row_loss_bytes_sum > 0) {
                 std::cout << "  natural_loss_bytes     " << s.natural_row_loss_bytes_sum << "\n";
             }
+            if (s.natural_prefilter_eval_count > 0) {
+                double avg_unique = (double)s.natural_prefilter_unique_sum /
+                                    (double)s.natural_prefilter_eval_count;
+                double avg_run = ((double)s.natural_prefilter_avg_run_x100_sum /
+                                  (double)s.natural_prefilter_eval_count) / 100.0;
+                double avg_mad = ((double)s.natural_prefilter_mad_x100_sum /
+                                  (double)s.natural_prefilter_eval_count) / 100.0;
+                double avg_entropy = ((double)s.natural_prefilter_entropy_x100_sum /
+                                      (double)s.natural_prefilter_eval_count) / 100.0;
+                std::cout << "  natural_prefilter      pass/rej="
+                          << s.natural_prefilter_pass_count << "/"
+                          << s.natural_prefilter_reject_count << "\n";
+                std::cout << "  natural_prefilter_avg  unique/run/mad/entropy="
+                          << std::fixed << std::setprecision(1)
+                          << avg_unique << " / " << avg_run << " / "
+                          << avg_mad << " / " << avg_entropy << "\n";
+            }
         }
 
         std::cout << "\n  Lossless profile diagnostics\n";

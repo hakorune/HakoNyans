@@ -187,6 +187,13 @@ struct LosslessModeDebugStats {
     uint64_t natural_row_build_fail_count;
     uint64_t natural_row_gain_bytes_sum;
     uint64_t natural_row_loss_bytes_sum;
+    uint64_t natural_prefilter_eval_count;
+    uint64_t natural_prefilter_pass_count;
+    uint64_t natural_prefilter_reject_count;
+    uint64_t natural_prefilter_unique_sum;
+    uint64_t natural_prefilter_avg_run_x100_sum;
+    uint64_t natural_prefilter_mad_x100_sum;
+    uint64_t natural_prefilter_entropy_x100_sum;
 
     uint64_t palette_reorder_trials;
     uint64_t palette_reorder_adopted;
