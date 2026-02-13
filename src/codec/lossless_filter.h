@@ -29,13 +29,15 @@ namespace hakonyans {
 class LosslessFilter {
 public:
     enum FilterType : uint8_t {
-        FILTER_NONE    = 0,
-        FILTER_SUB     = 1,
-        FILTER_UP      = 2,
-        FILTER_AVERAGE = 3,
-        FILTER_PAETH   = 4,
-        FILTER_MED     = 5,
-        FILTER_COUNT   = 6
+        FILTER_NONE       = 0,
+        FILTER_SUB        = 1,
+        FILTER_UP         = 2,
+        FILTER_AVERAGE    = 3,
+        FILTER_PAETH      = 4,
+        FILTER_MED        = 5,
+        FILTER_WEIGHTED_A = 6, // 0.75*a + 0.25*b
+        FILTER_WEIGHTED_B = 7, // 0.25*a + 0.75*b
+        FILTER_COUNT      = 8
     };
 
     /**
@@ -99,6 +101,8 @@ public:
                 candidates[FILTER_AVERAGE][x] = row[x] - (int16_t)((int)(a + b) / 2);
                 candidates[FILTER_PAETH][x]   = row[x] - paeth_predictor(a, b, c);
                 candidates[FILTER_MED][x]     = row[x] - med_predictor(a, b, c);
+                candidates[FILTER_WEIGHTED_A][x] = row[x] - (int16_t)(((int)a * 3 + (int)b) / 4);
+                candidates[FILTER_WEIGHTED_B][x] = row[x] - (int16_t)(((int)a + (int)b * 3) / 4);
             }
 
             // Select filter with minimal sum of absolute residuals
@@ -167,6 +171,12 @@ public:
                 case FILTER_MED:
                     orow[x] = frow[x] + med_predictor(a, b, c);
                     break;
+                case FILTER_WEIGHTED_A:
+                    orow[x] = frow[x] + (int16_t)(((int)a * 3 + (int)b) / 4);
+                    break;
+                case FILTER_WEIGHTED_B:
+                    orow[x] = frow[x] + (int16_t)(((int)a + (int)b * 3) / 4);
+                    break;
                 default:
                     orow[x] = frow[x];
                     break;
@@ -196,6 +206,8 @@ public:
             case FILTER_AVERAGE: out[x] = row[x] - (int16_t)((int)(a + b) / 2); break;
             case FILTER_PAETH:   out[x] = row[x] - paeth_predictor(a, b, c); break;
             case FILTER_MED:     out[x] = row[x] - med_predictor(a, b, c); break;
+            case FILTER_WEIGHTED_A: out[x] = row[x] - (int16_t)(((int)a * 3 + (int)b) / 4); break;
+            case FILTER_WEIGHTED_B: out[x] = row[x] - (int16_t)(((int)a + (int)b * 3) / 4); break;
             default:             out[x] = row[x]; break;
             }
         }

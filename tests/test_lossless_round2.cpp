@@ -291,7 +291,7 @@ void test_tile_match4_roundtrip() {
     const int CW = W / 4, CH = H / 4; // 4x4 cell grid
     bool found_tile4_case = false;
 
-    for (int seed = 1; seed <= 128 && !found_tile4_case; seed++) {
+    for (int seed = 1; seed <= 1024 && !found_tile4_case; seed++) {
         std::mt19937 rng(seed);
         std::uniform_int_distribution<int> byte_dist(0, 255);
         std::uniform_int_distribution<int> mode_dist(0, 3);

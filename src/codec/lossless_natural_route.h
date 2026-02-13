@@ -5,6 +5,7 @@
 #include "lossless_filter.h"
 #include "lossless_mode_debug_stats.h"
 #include "../platform/thread_budget.h"
+#include "zigzag.h"
 
 #include <algorithm>
 #include <array>
@@ -457,14 +458,14 @@ inline bool compress_global_chain_lz_optparse(
 
     out->clear();
     out->reserve((size_t)dp_bytes[src_size] + 8u);
-    size_t pos = 0;
+    size_t pos_idx = 0;
     for (const auto& tok : tokens) {
-        const size_t start_pos = pos;
+        const size_t start_pos = pos_idx;
         if (tok.kind == 0) {
             out->push_back(0);
             out->push_back(tok.len);
-            out->insert(out->end(), s + pos, s + pos + tok.len);
-            pos += (size_t)tok.len;
+            out->insert(out->end(), s + pos_idx, s + pos_idx + tok.len);
+            pos_idx += (size_t)tok.len;
             if (counters) {
                 counters->literal_bytes += (uint64_t)tok.len;
                 counters->optparse_tokens_litrun++;
@@ -474,7 +475,7 @@ inline bool compress_global_chain_lz_optparse(
             out->push_back(tok.len);
             out->push_back((uint8_t)(tok.dist & 0xFF));
             out->push_back((uint8_t)(tok.dist >> 8));
-            pos += (size_t)tok.len;
+            pos_idx += (size_t)tok.len;
             if (counters) {
                 counters->match_count++;
                 counters->match_bytes += (uint64_t)tok.len;
@@ -487,7 +488,7 @@ inline bool compress_global_chain_lz_optparse(
         }
     }
 
-    if (pos != src_size) {
+    if (pos_idx != src_size) {
         if (counters) {
             counters->optparse_fallback_count++;
             counters->optparse_fallback_unreachable++;
@@ -518,32 +519,32 @@ inline std::vector<uint8_t> compress_global_chain_lz(
         counters->src_bytes += (uint64_t)src_size;
     }
 
-    auto accumulate_non_io_counters = [&](const GlobalChainLzCounters& s) {
+    auto accumulate_non_io_counters = [&](const GlobalChainLzCounters& sc) {
         if (!counters) return;
-        counters->match_count += s.match_count;
-        counters->match_bytes += s.match_bytes;
-        counters->literal_bytes += s.literal_bytes;
-        counters->chain_steps += s.chain_steps;
-        counters->depth_limit_hits += s.depth_limit_hits;
-        counters->early_maxlen_hits += s.early_maxlen_hits;
-        counters->nice_cutoff_hits += s.nice_cutoff_hits;
-        counters->len3_reject_dist += s.len3_reject_dist;
-        counters->optparse_enabled += s.optparse_enabled;
-        counters->optparse_fallback_count += s.optparse_fallback_count;
-        counters->optparse_fallback_memcap += s.optparse_fallback_memcap;
-        counters->optparse_fallback_allocfail += s.optparse_fallback_allocfail;
-        counters->optparse_fallback_unreachable += s.optparse_fallback_unreachable;
-        counters->optparse_dp_positions += s.optparse_dp_positions;
-        counters->optparse_lit_edges_eval += s.optparse_lit_edges_eval;
-        counters->optparse_match_edges_eval += s.optparse_match_edges_eval;
-        counters->optparse_tokens_litrun += s.optparse_tokens_litrun;
-        counters->optparse_tokens_match += s.optparse_tokens_match;
+        counters->match_count += sc.match_count;
+        counters->match_bytes += sc.match_bytes;
+        counters->literal_bytes += sc.literal_bytes;
+        counters->chain_steps += sc.chain_steps;
+        counters->depth_limit_hits += sc.depth_limit_hits;
+        counters->early_maxlen_hits += sc.early_maxlen_hits;
+        counters->nice_cutoff_hits += sc.nice_cutoff_hits;
+        counters->len3_reject_dist += sc.len3_reject_dist;
+        counters->optparse_enabled += sc.optparse_enabled;
+        counters->optparse_fallback_count += sc.optparse_fallback_count;
+        counters->optparse_fallback_memcap += sc.optparse_fallback_memcap;
+        counters->optparse_fallback_allocfail += sc.optparse_fallback_allocfail;
+        counters->optparse_fallback_unreachable += sc.optparse_fallback_unreachable;
+        counters->optparse_dp_positions += sc.optparse_dp_positions;
+        counters->optparse_lit_edges_eval += sc.optparse_lit_edges_eval;
+        counters->optparse_match_edges_eval += sc.optparse_match_edges_eval;
+        counters->optparse_tokens_litrun += sc.optparse_tokens_litrun;
+        counters->optparse_tokens_match += sc.optparse_tokens_match;
         counters->optparse_chose_shorter_than_longest +=
-            s.optparse_chose_shorter_than_longest;
-        counters->optparse_probe_accept += s.optparse_probe_accept;
-        counters->optparse_probe_reject += s.optparse_probe_reject;
-        counters->optparse_adopt += s.optparse_adopt;
-        counters->optparse_reject_small_gain += s.optparse_reject_small_gain;
+            sc.optparse_chose_shorter_than_longest;
+        counters->optparse_probe_accept += sc.optparse_probe_accept;
+        counters->optparse_probe_reject += sc.optparse_probe_reject;
+        counters->optparse_adopt += sc.optparse_adopt;
+        counters->optparse_reject_small_gain += sc.optparse_reject_small_gain;
     };
 
     if (p.match_strategy == 2) {
@@ -624,15 +625,13 @@ inline std::vector<uint8_t> compress_global_chain_lz(
         head[h] = pos;
     };
 
-    // `prev` is written for every position inserted into the current epoch chain.
-    // We intentionally avoid full reinitialization and reuse capacity per thread.
     thread_local std::vector<int> prev;
     if (prev.size() < src_size) prev.resize(src_size);
 
-    auto hash3 = [&](size_t p) -> uint32_t {
-        uint32_t v = ((uint32_t)s[p] << 16) |
-                     ((uint32_t)s[p + 1] << 8) |
-                     (uint32_t)s[p + 2];
+    auto hash3 = [&](size_t p_pos) -> uint32_t {
+        uint32_t v = ((uint32_t)s[p_pos] << 16) |
+                     ((uint32_t)s[p_pos + 1] << 8) |
+                     (uint32_t)s[p_pos + 2];
         return (v * 0x1e35a7bdu) >> (32 - HASH_BITS);
     };
 
@@ -906,6 +905,7 @@ inline std::vector<uint8_t> build_mode0_payload(
 
 struct Mode1Prepared {
     std::vector<uint8_t> row_pred_ids;
+    std::vector<int16_t> residuals;
     std::vector<uint8_t> residual_bytes;
 };
 
@@ -948,8 +948,11 @@ inline Mode1Prepared build_mode1_prepared(
 ) {
     Mode1Prepared prepared;
     prepared.row_pred_ids.resize(pad_h, 0);
+    prepared.residuals.resize(pixel_count);
     prepared.residual_bytes.resize((size_t)pixel_count * 2);
     uint8_t* resid_dst = prepared.residual_bytes.data();
+
+    std::vector<int16_t> recon(pixel_count, 0);
 
     for (uint32_t y = 0; y < pad_h; y++) {
         const int16_t* row = padded + (size_t)y * pad_w;
@@ -960,18 +963,25 @@ inline Mode1Prepared build_mode1_prepared(
         uint64_t cost2 = 0; // AVG(left=0,up)
         uint64_t cost3 = 0; // PAETH
         uint64_t cost4 = 0; // MED
+        uint64_t cost5 = 0; // WEIGHTED_A
+        uint64_t cost6 = 0; // WEIGHTED_B
         for (uint32_t x = 0; x < pad_w; x++) {
             const int cur = (int)row[x];
             const int16_t b = up_row ? up_row[x] : 0;
             const int16_t c = (up_row && x > 0) ? up_row[x - 1] : 0;
-            const int pred2 = ((int)b / 2);
-            const int pred3 = (int)LosslessFilter::paeth_predictor(0, b, c);
-            const int pred4 = (int)LosslessFilter::med_predictor(0, b, c);
-            cost0 += (uint64_t)std::abs(cur);
+            const int16_t a = (x > 0) ? row[x - 1] : 0;
+            const int pred2 = ((int)a + (int)b) / 2;
+            const int pred3 = (int)LosslessFilter::paeth_predictor(a, b, c);
+            const int pred4 = (int)LosslessFilter::med_predictor(a, b, c);
+            const int pred5 = ((int)a * 3 + (int)b) / 4;
+            const int pred6 = ((int)a + (int)b * 3) / 4;
+            cost0 += (uint64_t)std::abs(cur - (int)a);
             cost1 += (uint64_t)std::abs(cur - (int)b);
             cost2 += (uint64_t)std::abs(cur - pred2);
             cost3 += (uint64_t)std::abs(cur - pred3);
             cost4 += (uint64_t)std::abs(cur - pred4);
+            cost5 += (uint64_t)std::abs(cur - pred5);
+            cost6 += (uint64_t)std::abs(cur - pred6);
         }
 
         int best_p = 0;
@@ -989,63 +999,40 @@ inline Mode1Prepared build_mode1_prepared(
             best_p = 3;
         }
         if (cost4 < best_cost) {
+            best_cost = cost4;
             best_p = 4;
+        }
+        if (cost5 < best_cost) {
+            best_cost = cost5;
+            best_p = 5;
+        }
+        if (cost6 < best_cost) {
+            best_p = 6;
         }
         prepared.row_pred_ids[y] = (uint8_t)best_p;
 
-        if (best_p == 0) {
-            for (uint32_t x = 0; x < pad_w; x++) {
-                const int16_t a = (x > 0) ? row[x - 1] : 0;
-                const int16_t resid = (int16_t)((int)row[x] - (int)a);
-                const uint16_t zz = zigzag_encode_val(resid);
-                resid_dst[0] = (uint8_t)(zz & 0xFF);
-                resid_dst[1] = (uint8_t)((zz >> 8) & 0xFF);
-                resid_dst += 2;
-            }
-        } else if (best_p == 1) {
-            for (uint32_t x = 0; x < pad_w; x++) {
-                const int16_t b = up_row ? up_row[x] : 0;
-                const int16_t resid = (int16_t)((int)row[x] - (int)b);
-                const uint16_t zz = zigzag_encode_val(resid);
-                resid_dst[0] = (uint8_t)(zz & 0xFF);
-                resid_dst[1] = (uint8_t)((zz >> 8) & 0xFF);
-                resid_dst += 2;
-            }
-        } else if (best_p == 2) {
-            for (uint32_t x = 0; x < pad_w; x++) {
-                const int16_t a = (x > 0) ? row[x - 1] : 0;
-                const int16_t b = up_row ? up_row[x] : 0;
-                const int16_t pred = (int16_t)(((int)a + (int)b) / 2);
-                const int16_t resid = (int16_t)((int)row[x] - (int)pred);
-                const uint16_t zz = zigzag_encode_val(resid);
-                resid_dst[0] = (uint8_t)(zz & 0xFF);
-                resid_dst[1] = (uint8_t)((zz >> 8) & 0xFF);
-                resid_dst += 2;
-            }
-        } else if (best_p == 3) {
-            for (uint32_t x = 0; x < pad_w; x++) {
-                const int16_t a = (x > 0) ? row[x - 1] : 0;
-                const int16_t b = up_row ? up_row[x] : 0;
-                const int16_t c = (up_row && x > 0) ? up_row[x - 1] : 0;
-                const int16_t pred = LosslessFilter::paeth_predictor(a, b, c);
-                const int16_t resid = (int16_t)((int)row[x] - (int)pred);
-                const uint16_t zz = zigzag_encode_val(resid);
-                resid_dst[0] = (uint8_t)(zz & 0xFF);
-                resid_dst[1] = (uint8_t)((zz >> 8) & 0xFF);
-                resid_dst += 2;
-            }
-        } else {
-            for (uint32_t x = 0; x < pad_w; x++) {
-                const int16_t a = (x > 0) ? row[x - 1] : 0;
-                const int16_t b = up_row ? up_row[x] : 0;
-                const int16_t c = (up_row && x > 0) ? up_row[x - 1] : 0;
-                const int16_t pred = LosslessFilter::med_predictor(a, b, c);
-                const int16_t resid = (int16_t)((int)row[x] - (int)pred);
-                const uint16_t zz = zigzag_encode_val(resid);
-                resid_dst[0] = (uint8_t)(zz & 0xFF);
-                resid_dst[1] = (uint8_t)((zz >> 8) & 0xFF);
-                resid_dst += 2;
-            }
+        for (uint32_t x = 0; x < pad_w; x++) {
+            int16_t a = (x > 0) ? recon[(size_t)y * pad_w + (x - 1)] : 0;
+            int16_t b = (y > 0) ? recon[(size_t)(y - 1) * pad_w + x] : 0;
+            int16_t c = (x > 0 && y > 0) ? recon[(size_t)(y - 1) * pad_w + (x - 1)] : 0;
+            int16_t pred = 0;
+            if (best_p == 0) pred = a;
+            else if (best_p == 1) pred = b;
+            else if (best_p == 2) pred = (int16_t)(((int)a + (int)b) / 2);
+            else if (best_p == 3) pred = LosslessFilter::paeth_predictor(a, b, c);
+            else if (best_p == 4) pred = LosslessFilter::med_predictor(a, b, c);
+            else if (best_p == 5) pred = (int16_t)(((int)a * 3 + (int)b) / 4);
+            else pred = (int16_t)(((int)a + (int)b * 3) / 4);
+
+            int16_t cur = row[x];
+            int16_t resid = (int16_t)(cur - pred);
+            recon[(size_t)y * pad_w + x] = (int16_t)(pred + resid);
+            prepared.residuals[(size_t)y * pad_w + x] = resid;
+
+            uint16_t zz = zigzag_encode_val(resid);
+            resid_dst[0] = (uint8_t)(zz & 0xFF);
+            resid_dst[1] = (uint8_t)((zz >> 8) & 0xFF);
+            resid_dst += 2;
         }
     }
     return prepared;
@@ -1098,31 +1085,84 @@ inline std::vector<uint8_t> build_mode1_payload_from_prepared(
     return out;
 }
 
-template <typename ZigzagEncodeFn,
-          typename EncodeSharedLzFn,
-          typename EncodeByteStreamFn,
-          typename CompressResidualFn>
-inline std::vector<uint8_t> build_mode1_payload(
+template <typename Mode1PreparedT,
+          typename PackedPredictorStreamT,
+          typename EncodeByteStreamFn>
+inline std::vector<uint8_t> build_mode3_payload_from_prepared(
     const int16_t* padded, uint32_t pad_w, uint32_t pad_h, uint32_t pixel_count,
-    ZigzagEncodeFn&& zigzag_encode_val, EncodeSharedLzFn&& encode_byte_stream_shared_lz,
-    EncodeByteStreamFn&& encode_byte_stream,
-    uint8_t out_mode,
-    CompressResidualFn&& compress_residual
+    const Mode1PreparedT& prepared,
+    const PackedPredictorStreamT& packed_pred,
+    EncodeByteStreamFn&& encode_byte_stream
 ) {
-    auto prepared = build_mode1_prepared(
-        padded, pad_w, pad_h, pixel_count,
-        std::forward<ZigzagEncodeFn>(zigzag_encode_val)
-    );
-    auto packed_pred = build_packed_predictor_stream(
-        prepared.row_pred_ids,
-        std::forward<EncodeByteStreamFn>(encode_byte_stream)
-    );
-    return build_mode1_payload_from_prepared(
-        prepared, packed_pred, pad_h, pixel_count,
-        std::forward<EncodeSharedLzFn>(encode_byte_stream_shared_lz),
-        out_mode,
-        std::forward<CompressResidualFn>(compress_residual)
-    );
+    if (!packed_pred.valid || packed_pred.payload.empty()) return {};
+
+    std::vector<uint8_t> flat_bytes;
+    std::vector<uint8_t> edge_bytes;
+    flat_bytes.reserve((size_t)pixel_count * 2);
+    edge_bytes.reserve((size_t)pixel_count * 2);
+
+    const std::vector<uint8_t>& pred_ids = prepared.row_pred_ids;
+    std::vector<int16_t> recon(pixel_count, 0);
+
+    for (uint32_t y = 0; y < pad_h; y++) {
+        uint8_t pid = pred_ids[y];
+        const int16_t* padded_row = padded + (size_t)y * pad_w;
+        for (uint32_t x = 0; x < pad_w; x++) {
+            int16_t a = (x > 0) ? recon[(size_t)y * pad_w + (x - 1)] : 0;
+            int16_t b = (y > 0) ? recon[(size_t)(y - 1) * pad_w + x] : 0;
+            int16_t c = (x > 0 && y > 0) ? recon[(size_t)(y - 1) * pad_w + (x - 1)] : 0;
+            int16_t pred = 0;
+            if (pid == 0) pred = a;
+            else if (pid == 1) pred = b;
+            else if (pid == 2) pred = (int16_t)(((int)a + (int)b) / 2);
+            else if (pid == 3) pred = LosslessFilter::paeth_predictor(a, b, c);
+            else if (pid == 4) pred = LosslessFilter::med_predictor(a, b, c);
+            else if (pid == 5) pred = (int16_t)(((int)a * 3 + (int)b) / 4);
+            else if (pid == 6) pred = (int16_t)(((int)a + (int)b * 3) / 4);
+
+            int16_t cur = padded_row[x];
+            int16_t resid = (int16_t)(cur - pred);
+            recon[(size_t)y * pad_w + x] = (int16_t)(pred + resid);
+
+            uint16_t zz = zigzag_encode_val(resid);
+            
+            int grad = std::max(std::abs(a - c), std::abs(b - c));
+            if (grad < 16) {
+                flat_bytes.push_back((uint8_t)(zz & 0xFF));
+                flat_bytes.push_back((uint8_t)((zz >> 8) & 0xFF));
+            } else {
+                edge_bytes.push_back((uint8_t)(zz & 0xFF));
+                edge_bytes.push_back((uint8_t)((zz >> 8) & 0xFF));
+            }
+        }
+    }
+
+    auto flat_rans = encode_byte_stream(flat_bytes);
+    auto edge_rans = encode_byte_stream(edge_bytes);
+
+    // [magic][mode=3][pixel_count:4][pred_count:4][flat_payload_size:4][edge_payload_size:4]
+    // [pred_mode:1][pred_raw_count:4][pred_payload_size:4][pred_payload][flat_payload][edge_payload]
+    std::vector<uint8_t> out;
+    out.reserve(27 + packed_pred.payload.size() + flat_rans.size() + edge_rans.size());
+    out.push_back(FileHeader::WRAPPER_MAGIC_NATURAL_ROW);
+    out.push_back(3);
+    auto push_u32 = [&](uint32_t v) {
+        out.push_back((uint8_t)(v & 0xFF));
+        out.push_back((uint8_t)((v >> 8) & 0xFF));
+        out.push_back((uint8_t)((v >> 16) & 0xFF));
+        out.push_back((uint8_t)((v >> 24) & 0xFF));
+    };
+    push_u32(pixel_count);
+    push_u32(pad_h); // pred_count
+    push_u32((uint32_t)flat_rans.size());
+    push_u32((uint32_t)edge_rans.size());
+    out.push_back(packed_pred.mode);
+    push_u32(pad_h); // pred_raw_count
+    push_u32((uint32_t)packed_pred.payload.size());
+    out.insert(out.end(), packed_pred.payload.begin(), packed_pred.payload.end());
+    out.insert(out.end(), flat_rans.begin(), flat_rans.end());
+    out.insert(out.end(), edge_rans.begin(), edge_rans.end());
+    return out;
 }
 
 } // namespace detail
@@ -1131,6 +1171,7 @@ inline std::vector<uint8_t> build_mode1_payload(
 // mode0: row SUB/UP/AVG + residual LZ+rANS(shared CDF)
 // mode1: row SUB/UP/AVG/PAETH/MED + compressed predictor stream
 // mode2: mode1 predictor set + natural-only global-chain LZ for residual stream
+// mode3: mode1 predictor set + 2-context adaptive rANS (flat/edge)
 template <typename ZigzagEncodeFn, typename EncodeSharedLzFn, typename EncodeByteStreamFn>
 inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
     const int16_t* padded, uint32_t pad_w, uint32_t pad_h,
@@ -1159,6 +1200,7 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
     std::vector<uint8_t> mode0;
     std::vector<uint8_t> mode1;
     std::vector<uint8_t> mode2;
+    std::vector<uint8_t> mode3;
     detail::Mode1Prepared mode1_prepared;
     detail::PackedPredictorStream mode1_pred;
     auto accumulate_mode2_lz = [&](const detail::GlobalChainLzCounters& c) {
@@ -1220,10 +1262,10 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
 
         std::promise<ReadyData> ready_promise;
         auto ready_future = ready_promise.get_future();
-        auto mode2_future = std::async(
+        auto mode23_future = std::async(
             std::launch::async,
             [&,
-             rp = std::move(ready_promise)]() mutable -> TimedPayload {
+             rp = std::move(ready_promise)]() mutable -> std::pair<TimedPayload, std::vector<uint8_t>> {
                 thread_budget::ScopedParallelRegion guard;
                 ReadyData ready;
                 const auto t_prep0 = Clock::now();
@@ -1247,9 +1289,9 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
                 rp.set_value(ready);
 
                 const auto t_mode2_0 = Clock::now();
-                TimedPayload out;
+                TimedPayload out2;
                 detail::GlobalChainLzCounters lz_counters;
-                out.payload = detail::build_mode1_payload_from_prepared(
+                out2.payload = detail::build_mode1_payload_from_prepared(
                     *ready.prepared,
                     *ready.pred,
                     pad_h,
@@ -1260,10 +1302,18 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
                         return detail::compress_global_chain_lz(bytes, lz_params, &lz_counters);
                     }
                 );
-                out.lz = lz_counters;
+                out2.lz = lz_counters;
                 const auto t_mode2_1 = Clock::now();
-                out.elapsed_ns = ns_since(t_mode2_0, t_mode2_1);
-                return out;
+                out2.elapsed_ns = ns_since(t_mode2_0, t_mode2_1);
+
+                std::vector<uint8_t> out3 = detail::build_mode3_payload_from_prepared(
+                    padded, pad_w, pad_h, pixel_count,
+                    *ready.prepared,
+                    *ready.pred,
+                    encode_byte_stream
+                );
+
+                return {out2, out3};
             }
         );
 
@@ -1298,10 +1348,11 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
         const auto t_mode1_1 = Clock::now();
         if (stats) stats->natural_row_mode1_build_ns += ns_since(t_mode1_0, t_mode1_1);
 
-        auto mode2_res = mode2_future.get();
-        mode2 = std::move(mode2_res.payload);
-        if (stats) stats->natural_row_mode2_build_ns += mode2_res.elapsed_ns;
-        accumulate_mode2_lz(mode2_res.lz);
+        auto mode23_res = mode23_future.get();
+        mode2 = std::move(mode23_res.first.payload);
+        mode3 = std::move(mode23_res.second);
+        if (stats) stats->natural_row_mode2_build_ns += mode23_res.first.elapsed_ns;
+        accumulate_mode2_lz(mode23_res.first.lz);
     } else {
         if (stats) stats->natural_row_prep_seq_count++;
         const auto t_mode0_0 = Clock::now();
@@ -1352,12 +1403,12 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
                 stats->natural_row_mode12_parallel_count++;
                 stats->natural_row_mode12_parallel_tokens_sum += (uint64_t)mode12_tokens.count();
             }
-            auto f_mode2 = std::async(std::launch::async, [&]() {
+            auto f_mode23 = std::async(std::launch::async, [&]() -> std::pair<TimedPayload, std::vector<uint8_t>> {
                 thread_budget::ScopedParallelRegion guard;
                 const auto t0 = Clock::now();
-                TimedPayload out;
+                TimedPayload out2;
                 detail::GlobalChainLzCounters lz_counters;
-                out.payload = detail::build_mode1_payload_from_prepared(
+                out2.payload = detail::build_mode1_payload_from_prepared(
                     mode1_prepared,
                     mode1_pred,
                     pad_h,
@@ -1368,10 +1419,17 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
                         return detail::compress_global_chain_lz(bytes, lz_params, &lz_counters);
                     }
                 );
-                out.lz = lz_counters;
+                out2.lz = lz_counters;
                 const auto t1 = Clock::now();
-                out.elapsed_ns = ns_since(t0, t1);
-                return out;
+                out2.elapsed_ns = ns_since(t0, t1);
+
+                std::vector<uint8_t> out3 = detail::build_mode3_payload_from_prepared(
+                    padded, pad_w, pad_h, pixel_count,
+                    mode1_prepared,
+                    mode1_pred,
+                    encode_byte_stream
+                );
+                return {out2, out3};
             });
             const auto t_mode1_0 = Clock::now();
             mode1 = detail::build_mode1_payload_from_prepared(
@@ -1387,10 +1445,11 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
             );
             const auto t_mode1_1 = Clock::now();
             if (stats) stats->natural_row_mode1_build_ns += ns_since(t_mode1_0, t_mode1_1);
-            auto mode2_res = f_mode2.get();
-            mode2 = std::move(mode2_res.payload);
-            if (stats) stats->natural_row_mode2_build_ns += mode2_res.elapsed_ns;
-            accumulate_mode2_lz(mode2_res.lz);
+            auto mode23_res = f_mode23.get();
+            mode2 = std::move(mode23_res.first.payload);
+            mode3 = std::move(mode23_res.second);
+            if (stats) stats->natural_row_mode2_build_ns += mode23_res.first.elapsed_ns;
+            accumulate_mode2_lz(mode23_res.first.lz);
             if (stats && mode2.empty()) stats->natural_row_mode2_bias_reject_count++;
         } else {
             if (stats) stats->natural_row_mode12_seq_count++;
@@ -1439,6 +1498,12 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
             } else if (stats) {
                 stats->natural_row_mode2_bias_reject_count++;
             }
+            mode3 = detail::build_mode3_payload_from_prepared(
+                padded, pad_w, pad_h, pixel_count,
+                mode1_prepared,
+                mode1_pred,
+                encode_byte_stream
+            );
         }
     }
     if (mode0.empty()) return {};
@@ -1446,6 +1511,7 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
         stats->natural_row_mode0_size_sum += (uint64_t)mode0.size();
         stats->natural_row_mode1_size_sum += (uint64_t)mode1.size();
         stats->natural_row_mode2_size_sum += (uint64_t)mode2.size();
+        stats->natural_row_mode3_size_sum += (uint64_t)mode3.size();
     }
 
     uint8_t selected_mode = 0;
@@ -1465,10 +1531,15 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
             stats->natural_row_mode2_bias_reject_count++;
         }
     }
+    if (!mode3.empty() && mode3.size() < best.size()) {
+        best = std::move(mode3);
+        selected_mode = 3;
+    }
     if (stats) {
         if (selected_mode == 0) stats->natural_row_mode0_selected_count++;
         else if (selected_mode == 1) stats->natural_row_mode1_selected_count++;
-        else stats->natural_row_mode2_selected_count++;
+        else if (selected_mode == 2) stats->natural_row_mode2_selected_count++;
+        else stats->natural_row_mode3_selected_count++;
     }
     return best;
 }

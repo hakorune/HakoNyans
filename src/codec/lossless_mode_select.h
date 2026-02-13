@@ -124,7 +124,8 @@ inline int estimate_filter_bits(
     const bool use_med = (filter_count == LosslessFilter::FILTER_COUNT);
     const auto& bits_lut = filter_symbol_bits2_lut(profile);
     auto fast_abs = [](int v) -> int { return (v < 0) ? -v : v; };
-    int bits2[LosslessFilter::FILTER_COUNT] = {10, 10, 10, 10, 10, 10};
+    int bits2[LosslessFilter::FILTER_COUNT];
+    for (int f = 0; f < LosslessFilter::FILTER_COUNT; f++) bits2[f] = 10;
 
     for (int y = 0; y < 8; y++) {
         const int py = cur_y + y;
@@ -152,6 +153,10 @@ inline int estimate_filter_bits(
                 const int r5 = (int)orig - (int)LosslessFilter::med_predictor(a, b, c);
                 bits2[5] += estimate_filter_symbol_bits2_fast(fast_abs(r5), bits_lut);
             }
+            const int r6 = (int)orig - (int16_t)(((int)a * 3 + (int)b) / 4);
+            const int r7 = (int)orig - (int16_t)(((int)a + (int)b * 3) / 4);
+            bits2[6] += estimate_filter_symbol_bits2_fast(fast_abs(r6), bits_lut);
+            bits2[7] += estimate_filter_symbol_bits2_fast(fast_abs(r7), bits_lut);
 
             a = orig;
             c = b;

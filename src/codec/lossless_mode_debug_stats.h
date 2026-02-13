@@ -208,9 +208,11 @@ struct LosslessModeDebugStats {
     uint64_t natural_row_mode0_size_sum;
     uint64_t natural_row_mode1_size_sum;
     uint64_t natural_row_mode2_size_sum;
+    uint64_t natural_row_mode3_size_sum;
     uint64_t natural_row_mode0_selected_count;
     uint64_t natural_row_mode1_selected_count;
     uint64_t natural_row_mode2_selected_count;
+    uint64_t natural_row_mode3_selected_count;
     uint64_t natural_row_pred_mode_raw_count;
     uint64_t natural_row_pred_mode_rans_count;
     uint64_t natural_row_mode2_bias_adopt_count;

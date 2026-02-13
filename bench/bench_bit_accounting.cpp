@@ -761,6 +761,11 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
             if (s.natural_row_loss_bytes_sum > 0) {
                 std::cout << "  natural_loss_bytes     " << s.natural_row_loss_bytes_sum << "\n";
             }
+            std::cout << "  natural_row_mode0/1/2/3 " 
+                      << s.natural_row_mode0_selected_count << "/"
+                      << s.natural_row_mode1_selected_count << "/"
+                      << s.natural_row_mode2_selected_count << "/"
+                      << s.natural_row_mode3_selected_count << "\n";
             if (s.natural_prefilter_eval_count > 0) {
                 double avg_unique = (double)s.natural_prefilter_unique_sum /
                                     (double)s.natural_prefilter_eval_count;
