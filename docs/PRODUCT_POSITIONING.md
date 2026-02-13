@@ -1,6 +1,6 @@
 # HakoNyans Product Positioning
 
-**Date**: 2026-02-11  
+**Date**: 2026-02-13  
 **Scope**: Strategic positioning and measurable goals
 
 ## 1. North Star
@@ -59,17 +59,31 @@ This is not a direct "maximum compression ratio at any cost" race.
 - Quality metric consistency (PSNR/SSIM/MS-SSIM in RD evaluation)
 - Compatibility and reliability (tests + cross-version decode)
 
-## Current baseline (as of 2026-02-11)
+## Current baseline (as of 2026-02-13)
 
 - Full HD decode: ~19.2 ms class
 - 17/17 tests passing
 - CfL safety update: tile-level on/off choose-smaller and compatibility maintained
 
+### Phase 9w lossless fixed-6 anchor (as of 2026-02-13)
+
+- source: `bench_results/tmp_isolate_default_step12_20260213_runs5.csv`
+- PNG reference:
+  - median Enc: `108.231 ms`
+  - median Dec: `6.409 ms`
+  - total bytes (fixed-6): `2,864,560`
+- current HKN:
+  - median Enc: `102.309 ms`
+  - median Dec: `8.626 ms`
+  - total bytes (fixed-6): `2,977,544`
+
 ## Stage goals
 
 ### P1 (next)
 
-- Decode: **< 18 ms** (no regressions above +5% per feature)
+- Decode: **<= PNG median 6.409 ms** on fixed-6 benchmark
+- Encode: **<= PNG median 108.231 ms** on fixed-6 benchmark
+- Size: **<= PNG total 2,864,560 bytes** on fixed-6 benchmark
 - Compression:
   - Photo: **-5% to -15%** via MED-class prediction improvements
   - UI/Anime: **-3% to -7%** via CfL tuning and mode policy

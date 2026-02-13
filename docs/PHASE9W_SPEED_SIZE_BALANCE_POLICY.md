@@ -26,6 +26,20 @@ Note:
 - Stage counters are CPU-time sums and can exceed wall time under parallel execution.
 - Go/no-go decisions must use wall-clock metrics, not CPU-sum.
 
+## PNG-Anchored Absolute Targets (2026-02-13)
+Reference dataset/command:
+- fixed 6 images
+- `./build/bench_png_compare --runs 5 --warmup 1 --out bench_results/tmp_isolate_default_step12_20260213_runs5.csv`
+
+Absolute target values are pinned to current PNG measurements:
+1. median `Enc(ms)` target: `<= 108.231`
+2. median `Dec(ms)` target: `<= 6.409`
+3. total `HKN_bytes` target: `<= 2,864,560`
+4. median `PNG/HKN` target: `>= 1.0000`
+
+Use these as milestone goals (PNG parity), while keeping the baseline non-regression
+gate below for day-to-day landing safety.
+
 ## Fixed Acceptance Gate (default)
 All conditions must pass to promote as mainline tuning:
 1. `ctest --test-dir build --output-on-failure` is `17/17 PASS`
@@ -91,4 +105,3 @@ Hotspots (cpu_sum median):
 - encode: ...
 - decode: ...
 ```
-

@@ -119,12 +119,19 @@ ctest --test-dir build --output-on-failure
 - `median Dec(ms) HKN/PNG`
 - `HKN Stage Breakdown (median over fixed 6)`
 
-現状の観測結果:
-- Enc: `HKN/PNG = 1.539x`（`168.179 / 109.246 ms`）
-- Dec: `HKN/PNG = 2.860x`（`18.511 / 6.472 ms`）
-- `cpu_sum / wall`:
-  - Encode: `1.915`
-  - Decode: `1.862`
+現状の観測結果（最新 baseline）:
+- source:
+  - `bench_results/tmp_isolate_default_step12_20260213_runs5.csv`
+- Enc: `HKN/PNG = 0.945x`（`102.309 / 108.231 ms`）
+- Dec: `HKN/PNG = 1.346x`（`8.626 / 6.409 ms`）
+- サイズ合計:
+  - `HKN=2,977,544`, `PNG=2,864,560`（`HKN/PNG=1.0394x`）
+
+Phase 9w の固定ターゲット（PNGアンカー）:
+- median `Enc(ms)` `<= 108.231`
+- median `Dec(ms)` `<= 6.409`
+- total `HKN_bytes` `<= 2,864,560`
+- median `PNG/HKN` `>= 1.0000`
 - Encode主ボトルネック:
   - `plane_route_comp`（route競合）
   - `plane_block_class`（block分類）
