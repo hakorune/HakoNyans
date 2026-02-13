@@ -1289,3 +1289,43 @@ Interpretation:
 ### Notes
 - This step is API/policy scaffolding and does not change bitstream format.
 - `balanced` remains the promotion baseline lane for Phase 9w gates.
+
+## 2026-02-13: Preset Lane Comparison (`runs=3`, `warmup=1`)
+
+### Objective
+- Evaluate the new preset lanes under identical conditions.
+- Use `balanced` as the reference lane for speed/size tradeoff decisions.
+
+### Benchmark Artifacts
+- `bench_results/phase9w_preset_balanced_20260213_runs3.csv`
+- `bench_results/phase9w_preset_fast_20260213_runs3.csv`
+- `bench_results/phase9w_preset_max_20260213_runs3.csv`
+
+### Result Summary
+| preset | total HKN bytes | median PNG/HKN | median Enc(ms) | median Dec(ms) | natural selected/candidates |
+|---|---:|---:|---:|---:|---:|
+| balanced | 2,977,544 | 0.2610 | 107.806 | 6.183 | 3/10 |
+| fast | 3,043,572 | 0.2610 | 78.607 | 6.068 | 0/0 |
+| max | 2,977,544 | 0.2610 | 116.973 | 6.122 | 3/12 |
+
+Delta vs `balanced`:
+- `fast`
+  - `total HKN bytes`: `+66,028` (size regression)
+  - `median Enc(ms)`: `-29.199` (faster)
+  - `median Dec(ms)`: `-0.116` (slightly faster)
+- `max`
+  - `total HKN bytes`: `0` (size parity with balanced on fixed 6)
+  - `median Enc(ms)`: `+9.166` (slower)
+  - `median Dec(ms)`: `-0.062` (slightly faster)
+
+Per-image size deltas (`fast - balanced`):
+- `kodim01`: `+22,326`
+- `hd_01`: `+43,702`
+- others: `0`
+
+### Decision
+- Keep `balanced` as default/promoted lane.
+- `fast` is useful as throughput-focused experimental lane, but is outside
+  non-regression size gate on fixed 6.
+- `max` currently provides no size gain over `balanced` on fixed 6 while
+  increasing encode wall time.
