@@ -198,7 +198,10 @@ inline std::vector<uint8_t> compress_global_chain_lz(
                 if (s[ref_pos] == s[pos] &&
                     s[ref_pos + 1] == s[pos + 1] &&
                     s[ref_pos + 2] == s[pos + 2]) {
-                    const int len = match_len_from(ref_pos, pos);
+                    int len = 3;
+                    if (pos + 3 < src_size && s[ref_pos + 3] == s[pos + 3]) {
+                        len = match_len_from(ref_pos, pos);
+                    }
                     const bool acceptable = (len >= 4) || (len == 3 && dist <= min_dist_len3);
                     if (!acceptable && len == 3 && dist > min_dist_len3 && counters) {
                         counters->len3_reject_dist++;
