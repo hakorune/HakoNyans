@@ -5,6 +5,7 @@
 #include "lossless_filter.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -85,6 +86,32 @@ inline int estimate_filter_symbol_bits2(int abs_residual, int profile) {
     return 20;
 }
 
+inline const std::array<uint8_t, 256>& filter_symbol_bits2_lut(int profile) {
+    static const std::array<uint8_t, 256> kLutDefault = []() {
+        std::array<uint8_t, 256> lut{};
+        for (int i = 0; i < 256; i++) {
+            lut[(size_t)i] = (uint8_t)estimate_filter_symbol_bits2(i, PROFILE_UI);
+        }
+        return lut;
+    }();
+    static const std::array<uint8_t, 256> kLutPhoto = []() {
+        std::array<uint8_t, 256> lut{};
+        for (int i = 0; i < 256; i++) {
+            lut[(size_t)i] = (uint8_t)estimate_filter_symbol_bits2(i, PROFILE_PHOTO);
+        }
+        return lut;
+    }();
+    return (profile == PROFILE_PHOTO) ? kLutPhoto : kLutDefault;
+}
+
+inline int estimate_filter_symbol_bits2_fast(
+    int abs_residual,
+    const std::array<uint8_t, 256>& lut
+) {
+    if (abs_residual < 256) return lut[(size_t)abs_residual];
+    return 20;
+}
+
 inline int lossless_filter_candidates(int profile) {
     return (profile == PROFILE_PHOTO) ? LosslessFilter::FILTER_COUNT : LosslessFilter::FILTER_MED;
 }
@@ -94,6 +121,9 @@ inline int estimate_filter_bits(
 ) {
     (void)pad_h;
     const int filter_count = lossless_filter_candidates(profile);
+    const bool use_med = (filter_count == LosslessFilter::FILTER_COUNT);
+    const auto& bits_lut = filter_symbol_bits2_lut(profile);
+    auto fast_abs = [](int v) -> int { return (v < 0) ? -v : v; };
     int bits2[LosslessFilter::FILTER_COUNT] = {10, 10, 10, 10, 10, 10};
 
     for (int y = 0; y < 8; y++) {
@@ -113,14 +143,14 @@ inline int estimate_filter_bits(
             const int r2 = (int)orig - (int)b;
             const int r3 = (int)orig - (((int)a + (int)b) / 2);
             const int r4 = (int)orig - (int)LosslessFilter::paeth_predictor(a, b, c);
-            bits2[0] += estimate_filter_symbol_bits2(std::abs(r0), profile);
-            bits2[1] += estimate_filter_symbol_bits2(std::abs(r1), profile);
-            bits2[2] += estimate_filter_symbol_bits2(std::abs(r2), profile);
-            bits2[3] += estimate_filter_symbol_bits2(std::abs(r3), profile);
-            bits2[4] += estimate_filter_symbol_bits2(std::abs(r4), profile);
-            if (filter_count == LosslessFilter::FILTER_COUNT) {
+            bits2[0] += estimate_filter_symbol_bits2_fast(fast_abs(r0), bits_lut);
+            bits2[1] += estimate_filter_symbol_bits2_fast(fast_abs(r1), bits_lut);
+            bits2[2] += estimate_filter_symbol_bits2_fast(fast_abs(r2), bits_lut);
+            bits2[3] += estimate_filter_symbol_bits2_fast(fast_abs(r3), bits_lut);
+            bits2[4] += estimate_filter_symbol_bits2_fast(fast_abs(r4), bits_lut);
+            if (use_med) {
                 const int r5 = (int)orig - (int)LosslessFilter::med_predictor(a, b, c);
-                bits2[5] += estimate_filter_symbol_bits2(std::abs(r5), profile);
+                bits2[5] += estimate_filter_symbol_bits2_fast(fast_abs(r5), bits_lut);
             }
 
             a = orig;

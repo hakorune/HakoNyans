@@ -1071,3 +1071,28 @@ ctest --test-dir build --output-on-failure
 ### 参照ドキュメント
 - 詳細指示書: `docs/PHASE9W_NATURAL_GLOBAL_LZ_INSTRUCTIONS.md`
 - 直前分析: `docs/PHASE9U_NATURAL_PNG_ANALYSIS.md`
+
+---
+
+## 2026-02-14 追撃順（single-core最優先）
+
+固定ゲート（毎回）:
+- [ ] `total HKN bytes <= 2,977,544`
+- [ ] `median PNG/HKN >= 0.2610`
+- [ ] `ctest` 17/17 PASS
+- [ ] `HAKONYANS_THREADS=1 taskset -c 0` の fixed6 で `Enc(ms)` を主判定
+
+実装順（この順で実施）:
+1. [x] `plane_block_class` スカラー最適化（`estimate_filter_bits` のLUT化、挙動不変）
+   - 実装: `src/codec/lossless_mode_select.h`
+   - 計測:
+     - single-core: `bench_results/phase9w_singlecore_blockclass_step2_scalar_final_vs_afterfix_20260214_runs3.csv`
+       - `Enc(ms) 190.005 -> 176.646`
+       - `plane_block_class(ms) 39.790 -> 27.356`
+     - size/ratio維持: `total=2,977,544`, `median PNG/HKN=0.261035`
+2. [x] `plane_block_class` AVX2 fast-path（内側ブロック限定）→ no-goでrevert
+   - 記録: `docs/archive/2026-02-14_blockclass_avx2_inner_nogo.md`
+3. [x] `plane_block_class` AVX512 fast-path（`HKN_EXPERIMENTAL_AVX512=1` opt-in）→ no-goでrevert
+   - 記録: `docs/archive/2026-02-14_blockclass_avx512_optin_nogo.md`
+4. [x] 単芯/複芯でA/B計測し、採否を確定
+5. [x] no-go は `docs/archive/` に必ず保存して次へ進む

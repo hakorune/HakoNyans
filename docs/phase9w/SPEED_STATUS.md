@@ -69,6 +69,11 @@ Rationale:
 - no stable end-to-end encode gain across reruns.
 - details: `docs/phase9w/logs/2026-02-13.md`
 
+12. `mode2` beat-offset prune: no-go (reverted)
+- size invariants preserved.
+- stage/wall encode regressed in trial measurements.
+- details: `docs/phase9w/logs/2026-02-13.md`
+
 ## Single-Core Snapshot (`HAKONYANS_THREADS=1`)
 - source: `bench_results/phase9w_singlecore_threads1_balanced_20260213_runs3.csv`
 - median Enc(ms) HKN/PNG: `206.949 / 105.919` (`HKN/PNG=1.954`)
