@@ -1,6 +1,6 @@
 # Phase 9w Speed Status
 
-Last updated: 2026-02-14 (post Trial F)
+Last updated: 2026-02-14 (post Trial G)
 
 ## Current Lane
 - Default lane: `balanced`
@@ -104,6 +104,13 @@ Rationale:
 - archive: `docs/archive/2026-02-14_mode2_nice64_nogo.md`
 - details: `docs/phase9w/logs/2026-02-14.md`
 
+19. `fast` lane binding for `mode2 nice_length`: kept (infra)
+- `fast` preset now carries `natural_route_mode2_nice_length_override`
+  via `HKN_FAST_LZ_NICE_LENGTH` (default `64`).
+- current `fast` policy keeps route competition OFF, so default fast path
+  does not execute natural route yet.
+- details: `docs/phase9w/logs/2026-02-14.md`
+
 ## Single-Core Snapshot (`HAKONYANS_THREADS=1`)
 - source: `bench_results/phase9w_singlecore_tilelz_compress_fast_vs_step2_20260214_runs3_rerun2.csv`
 - median Enc(ms) HKN/PNG: `175.056 / 107.321` (`HKN/PNG=1.631`)
@@ -118,16 +125,20 @@ Interpretation:
 - Next optimization should prioritize single-core hotspots.
 
 ## Next Tasks
-1. Sweep `HKN_LZ_NICE_LENGTH` with strict size gate
+1. Sweep `HKN_LZ_NICE_LENGTH` with strict size gate (`balanced`)
 - target range: `128, 160, 192, 224, 255`
 - promote only if fixed6 total bytes is non-worsening
 
-2. Re-run fixed low-noise validation for each candidate
+2. Optional: fast route-competition opt-in experiment
+- evaluate whether enabling fast-lane route competition plus
+  `HKN_FAST_LZ_NICE_LENGTH` improves fast lane Pareto
+
+3. Re-run fixed low-noise validation for each candidate
 - fixed condition: `HAKONYANS_THREADS=1` + `taskset -c 0`, fixed6, `runs=3`, `warmup=1`.
 
-3. Resume `plane_lo_stream` mode2 optimization after Trial F
+4. Resume `plane_lo_stream` mode2 optimization after Trial F
 - keep prior no-go constraints (`out_limit` path gating remains disabled)
 
-4. Keep promote protocol and archive-by-default
+5. Keep promote protocol and archive-by-default
 - repeated fixed-condition reruns required for promotion.
 - all no-go and hold outcomes must be recorded with CSV links.

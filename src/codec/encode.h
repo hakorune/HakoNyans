@@ -99,6 +99,7 @@ private:
         bool route_compete_luma = true;
         bool route_compete_chroma = true;
         bool conservative_chroma_route_policy = false;
+        int natural_route_mode2_nice_length_override = -1;
     };
 
 public:
@@ -475,7 +476,13 @@ public:
         auto preset_plan = build_lossless_preset_plan(preset, profile);
         const auto t_plane0 = Clock::now();
         auto tile_data = encode_plane_lossless(
-            plane.data(), width, height, profile, preset_plan.route_compete_luma, false
+            plane.data(),
+            width,
+            height,
+            profile,
+            preset_plan.route_compete_luma,
+            false,
+            preset_plan.natural_route_mode2_nice_length_override
         );
         const auto t_plane1 = Clock::now();
         tl_lossless_mode_debug_stats_.perf_encode_plane_y_ns +=
@@ -543,14 +550,22 @@ public:
         const bool enable_y_route_compete = preset_plan.route_compete_luma;
         const bool allow_chroma_route_compete = preset_plan.route_compete_chroma;
         const bool conservative_chroma_route_policy = preset_plan.conservative_chroma_route_policy;
-        auto run_plane_task = [width, height, profile](
+        const int natural_route_mode2_nice_length_override =
+            preset_plan.natural_route_mode2_nice_length_override;
+        auto run_plane_task = [width, height, profile, natural_route_mode2_nice_length_override](
             const int16_t* plane, bool enable_route_compete, bool conservative_chroma_policy
         ) -> PlaneEncodeTaskResult {
             using TaskClock = std::chrono::steady_clock;
             GrayscaleEncoder::reset_lossless_mode_debug_stats();
             const auto t0 = TaskClock::now();
             auto tile = GrayscaleEncoder::encode_plane_lossless(
-                plane, width, height, profile, enable_route_compete, conservative_chroma_policy
+                plane,
+                width,
+                height,
+                profile,
+                enable_route_compete,
+                conservative_chroma_policy,
+                natural_route_mode2_nice_length_override
             );
             const auto t1 = TaskClock::now();
 
@@ -622,7 +637,13 @@ public:
         } else {
             const auto t_plane_y0 = Clock::now();
             tile_y = encode_plane_lossless(
-                y_plane.data(), width, height, profile, enable_y_route_compete, false
+                y_plane.data(),
+                width,
+                height,
+                profile,
+                enable_y_route_compete,
+                false,
+                natural_route_mode2_nice_length_override
             );
             const auto t_plane_y1 = Clock::now();
             tl_lossless_mode_debug_stats_.perf_encode_plane_y_ns +=
@@ -630,8 +651,13 @@ public:
 
             const auto t_plane_co0 = Clock::now();
             tile_co = encode_plane_lossless(
-                co_plane.data(), width, height, profile,
-                allow_chroma_route_compete, conservative_chroma_route_policy
+                co_plane.data(),
+                width,
+                height,
+                profile,
+                allow_chroma_route_compete,
+                conservative_chroma_route_policy,
+                natural_route_mode2_nice_length_override
             );
             const auto t_plane_co1 = Clock::now();
             tl_lossless_mode_debug_stats_.perf_encode_plane_co_ns +=
@@ -639,8 +665,13 @@ public:
 
             const auto t_plane_cg0 = Clock::now();
             tile_cg = encode_plane_lossless(
-                cg_plane.data(), width, height, profile,
-                allow_chroma_route_compete, conservative_chroma_route_policy
+                cg_plane.data(),
+                width,
+                height,
+                profile,
+                allow_chroma_route_compete,
+                conservative_chroma_route_policy,
+                natural_route_mode2_nice_length_override
             );
             const auto t_plane_cg1 = Clock::now();
             tl_lossless_mode_debug_stats_.perf_encode_plane_cg_ns +=
@@ -777,6 +808,13 @@ public:
         return kEnabled;
     }
 
+    static uint16_t route_fast_lz_nice_length() {
+        static const uint16_t kV = parse_natural_threshold_env(
+            "HKN_FAST_LZ_NICE_LENGTH", 64, 4, 255
+        );
+        return kV;
+    }
+
     static LosslessPresetPlan build_lossless_preset_plan(
         LosslessPreset preset, LosslessProfile profile
     ) {
@@ -786,6 +824,8 @@ public:
                 plan.route_compete_luma = false;
                 plan.route_compete_chroma = false;
                 plan.conservative_chroma_route_policy = false;
+                plan.natural_route_mode2_nice_length_override =
+                    (int)route_fast_lz_nice_length();
                 break;
             case LosslessPreset::BALANCED:
                 plan.route_compete_luma = true;
@@ -795,12 +835,14 @@ public:
                 }
                 plan.conservative_chroma_route_policy =
                     parse_bool_env("HKN_ROUTE_COMPETE_CHROMA_CONSERVATIVE", false);
+                plan.natural_route_mode2_nice_length_override = -1;
                 break;
             case LosslessPreset::MAX:
                 // Max mode favors compression: always evaluate route competition on all planes.
                 plan.route_compete_luma = true;
                 plan.route_compete_chroma = true;
                 plan.conservative_chroma_route_policy = false;
+                plan.natural_route_mode2_nice_length_override = -1;
                 break;
         }
         return plan;
@@ -880,7 +922,8 @@ public:
 
     static std::vector<uint8_t> encode_plane_lossless_natural_row_tile(
         const int16_t* plane, uint32_t width, uint32_t height,
-        LosslessModeDebugStats* stats = nullptr
+        LosslessModeDebugStats* stats = nullptr,
+        int mode2_nice_length_override = -1
     ) {
         return lossless_natural_route::encode_plane_lossless_natural_row_tile(
             plane, width, height,
@@ -891,13 +934,15 @@ public:
             [](const std::vector<uint8_t>& bytes) {
                 return GrayscaleEncoder::encode_byte_stream(bytes);
             },
-            stats
+            stats,
+            mode2_nice_length_override
         );
     }
 
     static std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
         const int16_t* padded, uint32_t pad_w, uint32_t pad_h,
-        LosslessModeDebugStats* stats = nullptr
+        LosslessModeDebugStats* stats = nullptr,
+        int mode2_nice_length_override = -1
     ) {
         return lossless_natural_route::encode_plane_lossless_natural_row_tile_padded(
             padded, pad_w, pad_h,
@@ -908,7 +953,8 @@ public:
             [](const std::vector<uint8_t>& bytes) {
                 return GrayscaleEncoder::encode_byte_stream(bytes);
             },
-            stats
+            stats,
+            mode2_nice_length_override
         );
     }
 
@@ -932,14 +978,16 @@ public:
         return encode_plane_lossless(data, width, height,
             use_photo_mode_bias ? LosslessProfile::PHOTO : LosslessProfile::UI,
             true,
-            false);
+            false,
+            -1);
     }
 
     static std::vector<uint8_t> encode_plane_lossless(
         const int16_t* data, uint32_t width, uint32_t height,
         LosslessProfile profile = LosslessProfile::UI,
         bool enable_route_competition = true,
-        bool conservative_chroma_route_policy = false
+        bool conservative_chroma_route_policy = false,
+        int natural_route_mode2_nice_length_override = -1
     ) {
         using Clock = std::chrono::steady_clock;
         const auto t_plane_total0 = Clock::now();
@@ -1187,9 +1235,15 @@ public:
             [](const ScreenPreflightMetrics& m) {
                 return GrayscaleEncoder::is_natural_like(m);
             },
-            [&padded, pad_w, pad_h](const int16_t*, uint32_t, uint32_t) {
+            [&padded, pad_w, pad_h, natural_route_mode2_nice_length_override](
+                const int16_t*, uint32_t, uint32_t
+            ) {
                 return GrayscaleEncoder::encode_plane_lossless_natural_row_tile_padded(
-                    padded.data(), pad_w, pad_h, &tl_lossless_mode_debug_stats_
+                    padded.data(),
+                    pad_w,
+                    pad_h,
+                    &tl_lossless_mode_debug_stats_,
+                    natural_route_mode2_nice_length_override
                 );
             }
         );

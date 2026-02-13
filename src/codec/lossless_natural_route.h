@@ -602,7 +602,8 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
     ZigzagEncodeFn&& zigzag_encode_val,
     EncodeSharedLzFn&& encode_byte_stream_shared_lz,
     EncodeByteStreamFn&& encode_byte_stream,
-    LosslessModeDebugStats* stats = nullptr
+    LosslessModeDebugStats* stats = nullptr,
+    int mode2_nice_length_override = -1
 ) {
     using Clock = std::chrono::steady_clock;
     auto ns_since = [](const Clock::time_point& t0, const Clock::time_point& t1) -> uint64_t {
@@ -612,7 +613,10 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
     const uint32_t pixel_count = pad_w * pad_h;
     if (pixel_count == 0) return {};
 
-    const auto& lz_params = detail::global_chain_lz_runtime_params();
+    auto lz_params = detail::global_chain_lz_runtime_params();
+    if (mode2_nice_length_override >= 4 && mode2_nice_length_override <= 255) {
+        lz_params.nice_length = mode2_nice_length_override;
+    }
     std::vector<uint8_t> mode0;
     std::vector<uint8_t> mode1;
     std::vector<uint8_t> mode2;
@@ -918,7 +922,8 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile(
     ZigzagEncodeFn&& zigzag_encode_val,
     EncodeSharedLzFn&& encode_byte_stream_shared_lz,
     EncodeByteStreamFn&& encode_byte_stream,
-    LosslessModeDebugStats* stats = nullptr
+    LosslessModeDebugStats* stats = nullptr,
+    int mode2_nice_length_override = -1
 ) {
     if (!plane || width == 0 || height == 0) return {};
     const uint32_t pad_w = ((width + 7) / 8) * 8;
@@ -937,7 +942,11 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile(
 
     return encode_plane_lossless_natural_row_tile_padded(
         padded.data(), pad_w, pad_h,
-        zigzag_encode_val, encode_byte_stream_shared_lz, encode_byte_stream, stats
+        zigzag_encode_val,
+        encode_byte_stream_shared_lz,
+        encode_byte_stream,
+        stats,
+        mode2_nice_length_override
     );
 }
 

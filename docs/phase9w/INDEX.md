@@ -44,6 +44,7 @@
 | 2026-02-13 | Box Definition - mode2 len3 Fast-Path (4th-byte gate) | `docs/phase9w/logs/2026-02-13.md` |
 | 2026-02-14 | `filter_lo` mode3/4 Safe Lower-Bound Skip + Encode Adoption CSV | `docs/phase9w/logs/2026-02-14.md` |
 | 2026-02-14 | `route_natural mode2` Nice-Length Cutoff (`nice=64` No-Go, infra kept) | `docs/phase9w/logs/2026-02-14.md` |
+| 2026-02-14 | `fast` Lane Binding for `mode2 nice_length` Override | `docs/phase9w/logs/2026-02-14.md` |
 
 ## No-Go Archive
 
