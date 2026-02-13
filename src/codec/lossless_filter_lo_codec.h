@@ -10,6 +10,7 @@
 #include <cstring>
 #include <future>
 #include <limits>
+#include <chrono>
 #include <vector>
 
 namespace hakonyans::lossless_filter_lo_codec {
@@ -36,6 +37,10 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
 ) {
     ThreadPool& worker_pool = lo_codec_worker_pool();
     if (lo_bytes.empty()) return {};
+    using Clock = std::chrono::steady_clock;
+    auto ns_since = [](const Clock::time_point& t0, const Clock::time_point& t1) -> uint64_t {
+        return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+    };
 
     const unsigned int hw_threads = thread_budget::max_threads();
     thread_budget::ScopedThreadTokens base_parallel_tokens;
@@ -49,6 +54,7 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
     std::future<std::vector<uint8_t>> fut_legacy;
     std::future<std::vector<uint8_t>> fut_lz;
 
+    Clock::time_point t_mode2_eval0 = Clock::now();
     if (allow_parallel_base) {
         fut_legacy = worker_pool.submit([&]() {
             thread_budget::ScopedParallelRegion guard;
@@ -83,6 +89,9 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
     } else {
         lo_lz = compress_lz(lo_bytes);
     }
+    if (stats) {
+        stats->filter_lo_mode2_eval_ns += ns_since(t_mode2_eval0, Clock::now());
+    }
 
     size_t legacy_size = lo_legacy.size();
     size_t lz_wrapped = 6 + lo_lz.size();
@@ -91,7 +100,9 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
     size_t lz_rans_wrapped = std::numeric_limits<size_t>::max();
     if (lo_bytes.size() >= kFilterLoMode5MinRawBytes && lo_lz.size() >= kFilterLoMode5MinLZBytes) {
         if (stats) stats->filter_lo_mode5_candidates++;
+        const auto t_mode5_eval0 = Clock::now();
         lo_lz_rans = encode_byte_stream_shared_lz(lo_lz);
+        if (stats) stats->filter_lo_mode5_eval_ns += ns_since(t_mode5_eval0, Clock::now());
         lz_rans_wrapped = 6 + lo_lz_rans.size();
         if (stats) {
             stats->filter_lo_mode5_candidate_bytes_sum += lo_lz.size();
@@ -146,6 +157,7 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
 
     const bool enable_mode3_mode4 = ((profile_code == 1 || profile_code == 2) && lo_bytes.size() > 256);
     if (enable_mode3_mode4) {
+        const auto t_mode3_eval0 = Clock::now();
         std::vector<int> dct_row_lens(std::max(1u, pad_h / 8u), 0);
         for (uint32_t by = 0; by < pad_h / 8u; by++) {
             int dct_cols = 0;
@@ -228,6 +240,7 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
         auto preds_enc = encode_byte_stream(preds);
         auto resids_enc = encode_byte_stream(resids);
         size_t total_sz = 1 + 1 + 4 + 4 + preds_enc.size() + resids_enc.size();
+        if (stats) stats->filter_lo_mode3_eval_ns += ns_since(t_mode3_eval0, Clock::now());
 
         if (total_sz < best_size && total_sz * 1000 <= legacy_size * kFilterLoModeWrapperGainPermilleDefault) {
             best_size = total_sz;
@@ -237,6 +250,7 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
             mode3_preds = std::move(preds);
         }
 
+        const auto t_mode4_eval0 = Clock::now();
         std::vector<std::vector<uint8_t>> lo_ctx(6);
         std::array<uint32_t, 6> ctx_reserved = {0, 0, 0, 0, 0, 0};
         for (uint32_t y = 0; y < pad_h; y++) {
@@ -323,6 +337,7 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
         } else if (nonempty_ctx >= 2) {
             if (stats) stats->filter_lo_mode4_reject_gate++;
         }
+        if (stats) stats->filter_lo_mode4_eval_ns += ns_since(t_mode4_eval0, Clock::now());
     }
 
     std::vector<uint8_t> lo_stream;

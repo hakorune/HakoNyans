@@ -10,6 +10,10 @@ Last updated: 2026-02-13
 
 ## Current Working Baseline CSV
 - `bench_results/phase9w_mode2_ctz_balanced_20260213_runs3_rerun2.csv`
+- Single-core reference:
+  - `bench_results/phase9w_singlecore_threads1_balanced_20260213_runs3.csv`
+- Latest observation run (mode-wise `lo_stream` counters):
+  - `bench_results/phase9w_lostream_obs_final_vs_ctz_20260213_runs3.csv`
 
 Rationale:
 - Preserves size invariants.
@@ -45,15 +49,40 @@ Rationale:
 - observation counter `hkn_enc_class_copy_shortcut_selected` added to CSV
 - details: `docs/phase9w/logs/2026-02-13.md`
 
+8. `plane_lo_stream` mode-wise counters: completed and kept
+- added `hkn_enc_lo_mode{2,3,4,5}_eval_ms` to CSV and stage summary.
+- latest observation: mode2/mode3 dominate lo-stream compute.
+- details: `docs/phase9w/logs/2026-02-13.md`
+
+9. `TileLZ::compress` cost reduction + mode3 one-pass predictor cost: no-go (reverted)
+- stage trend was partially positive, but wall-clock variance remained too high
+  to justify promotion.
+- reverted for now; keep observation-only state.
+- details: `docs/phase9w/logs/2026-02-13.md`
+
+## Single-Core Snapshot (`HAKONYANS_THREADS=1`)
+- source: `bench_results/phase9w_singlecore_threads1_balanced_20260213_runs3.csv`
+- median Enc(ms) HKN/PNG: `206.949 / 105.919` (`HKN/PNG=1.954`)
+- median Dec(ms) HKN/PNG: `12.702 / 6.192` (`HKN/PNG=2.051`)
+- median encode stage hotspots:
+  - `plane_block_class: 60.116 ms`
+  - `plane_route_comp: 58.235 ms`
+  - `plane_lo_stream: 56.664 ms`
+
+Interpretation:
+- Multicore wall metrics are competitive, but per-core efficiency is still behind PNG.
+- Next optimization should prioritize single-core hotspots.
+
 ## Next Tasks
-1. Reduce host-noise sensitivity for promote decisions
-- use repeated fixed-condition reruns for route-level promotion
+1. Investigate single-core size drift before further promotion
+- `HAKONYANS_THREADS=1` run shows `hd_01` size delta (`+7,879 bytes`) vs prior single-core baseline; isolate root cause first.
 
-2. Continue high-ROI encode work in `plane_block_classify` / `route_natural`
-- prioritize isolated single-change runs for clearer attribution
+2. Re-run low-noise single-core measurement after drift isolation
+- fixed condition: `HAKONYANS_THREADS=1` + `taskset -c 0`, fixed6, `runs=3`, `warmup=1`.
 
-3. Isolate side-effects of copy forced shortcut
-- re-run with current host lock conditions and verify whether `lo_stream` drift is noise
+3. Resume `plane_lo_stream` mode2 optimization only after drift is resolved
+- preserve bitstream; avoid thread-count dependent output differences.
 
-4. Keep archive-by-default
-- all no-go and hold outcomes must be recorded with CSV links
+4. Keep promote protocol and archive-by-default
+- repeated fixed-condition reruns required for promotion.
+- all no-go and hold outcomes must be recorded with CSV links.

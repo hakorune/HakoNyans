@@ -93,36 +93,44 @@ inline int estimate_filter_bits(
     const int16_t* padded, uint32_t pad_w, uint32_t pad_h, int cur_x, int cur_y, int profile
 ) {
     (void)pad_h;
-    int best_bits2 = std::numeric_limits<int>::max();
     const int filter_count = lossless_filter_candidates(profile);
-    for (int f = 0; f < filter_count; f++) {
-        int bits2 = 4; // block_type (2 bits * 2)
-        bits2 += 6;    // effective filter_id overhead (3 bits * 2)
-        for (int y = 0; y < 8; y++) {
-            for (int x = 0; x < 8; x++) {
-                int px = cur_x + x;
-                int py = cur_y + y;
-                int16_t orig = padded[py * (int)pad_w + px];
-                int16_t a = (px > 0) ? padded[py * (int)pad_w + (px - 1)] : 0;
-                int16_t b = (py > 0) ? padded[(py - 1) * (int)pad_w + px] : 0;
-                int16_t c = (px > 0 && py > 0) ? padded[(py - 1) * (int)pad_w + (px - 1)] : 0;
-                int16_t pred = 0;
-                switch (f) {
-                    case 0: pred = 0; break;
-                    case 1: pred = a; break;
-                    case 2: pred = b; break;
-                    case 3: pred = (int16_t)(((int)a + (int)b) / 2); break;
-                    case 4: pred = LosslessFilter::paeth_predictor(a, b, c); break;
-                    case 5: pred = LosslessFilter::med_predictor(a, b, c); break;
-                }
-                int abs_r = std::abs((int)orig - (int)pred);
-                bits2 += estimate_filter_symbol_bits2(abs_r, profile);
+    int bits2[LosslessFilter::FILTER_COUNT] = {10, 10, 10, 10, 10, 10};
+
+    for (int y = 0; y < 8; y++) {
+        const int py = cur_y + y;
+        const int16_t* row = padded + (size_t)py * (size_t)pad_w + (size_t)cur_x;
+        const int16_t* up_row = (py > 0) ? (padded + (size_t)(py - 1) * (size_t)pad_w + (size_t)cur_x) : nullptr;
+
+        int16_t a = (cur_x > 0) ? row[-1] : 0;
+        int16_t c = (up_row && cur_x > 0) ? up_row[-1] : 0;
+
+        for (int x = 0; x < 8; x++) {
+            const int16_t orig = row[x];
+            const int16_t b = up_row ? up_row[x] : 0;
+
+            const int r0 = (int)orig;
+            const int r1 = (int)orig - (int)a;
+            const int r2 = (int)orig - (int)b;
+            const int r3 = (int)orig - (((int)a + (int)b) / 2);
+            const int r4 = (int)orig - (int)LosslessFilter::paeth_predictor(a, b, c);
+            bits2[0] += estimate_filter_symbol_bits2(std::abs(r0), profile);
+            bits2[1] += estimate_filter_symbol_bits2(std::abs(r1), profile);
+            bits2[2] += estimate_filter_symbol_bits2(std::abs(r2), profile);
+            bits2[3] += estimate_filter_symbol_bits2(std::abs(r3), profile);
+            bits2[4] += estimate_filter_symbol_bits2(std::abs(r4), profile);
+            if (filter_count == LosslessFilter::FILTER_COUNT) {
+                const int r5 = (int)orig - (int)LosslessFilter::med_predictor(a, b, c);
+                bits2[5] += estimate_filter_symbol_bits2(std::abs(r5), profile);
             }
+
+            a = orig;
+            c = b;
         }
-        best_bits2 = std::min(best_bits2, bits2);
     }
+
+    int best_bits2 = bits2[0];
+    for (int f = 1; f < filter_count; f++) best_bits2 = std::min(best_bits2, bits2[f]);
     return best_bits2;
 }
 
 } // namespace hakonyans::lossless_mode_select
-
