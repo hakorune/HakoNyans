@@ -211,6 +211,17 @@ struct LosslessModeDebugStats {
     uint64_t natural_row_pred_mode_rans_count;
     uint64_t natural_row_mode2_bias_adopt_count;
     uint64_t natural_row_mode2_bias_reject_count;
+    // mode2 global-chain LZ deep counters
+    uint64_t natural_row_mode2_lz_calls;
+    uint64_t natural_row_mode2_lz_src_bytes_sum;
+    uint64_t natural_row_mode2_lz_out_bytes_sum;
+    uint64_t natural_row_mode2_lz_match_count;
+    uint64_t natural_row_mode2_lz_match_bytes_sum;
+    uint64_t natural_row_mode2_lz_literal_bytes_sum;
+    uint64_t natural_row_mode2_lz_chain_steps_sum;
+    uint64_t natural_row_mode2_lz_depth_limit_hits;
+    uint64_t natural_row_mode2_lz_early_maxlen_hits;
+    uint64_t natural_row_mode2_lz_len3_reject_dist;
     uint64_t natural_row_prep_parallel_count;
     uint64_t natural_row_prep_seq_count;
     uint64_t natural_row_prep_parallel_tokens_sum;

@@ -30,6 +30,19 @@ struct GlobalChainLzParams {
     int bias_permille = 990;
 };
 
+struct GlobalChainLzCounters {
+    uint64_t calls = 0;
+    uint64_t src_bytes = 0;
+    uint64_t out_bytes = 0;
+    uint64_t match_count = 0;
+    uint64_t match_bytes = 0;
+    uint64_t literal_bytes = 0;
+    uint64_t chain_steps = 0;
+    uint64_t depth_limit_hits = 0;
+    uint64_t early_maxlen_hits = 0;
+    uint64_t len3_reject_dist = 0;
+};
+
 inline int parse_lz_env_int(const char* key, int fallback, int min_v, int max_v) {
     const char* raw = std::getenv(key);
     if (!raw || raw[0] == '\0') return fallback;
@@ -54,7 +67,8 @@ inline const GlobalChainLzParams& global_chain_lz_runtime_params() {
 }
 
 inline std::vector<uint8_t> compress_global_chain_lz(
-    const std::vector<uint8_t>& src, const GlobalChainLzParams& p
+    const std::vector<uint8_t>& src, const GlobalChainLzParams& p,
+    GlobalChainLzCounters* counters = nullptr
 ) {
     if (src.empty()) return {};
 
@@ -66,6 +80,10 @@ inline std::vector<uint8_t> compress_global_chain_lz(
 
     const size_t src_size = src.size();
     const uint8_t* s = src.data();
+    if (counters) {
+        counters->calls++;
+        counters->src_bytes += (uint64_t)src_size;
+    }
     std::vector<uint8_t> out;
     const size_t worst_lit_chunks = (src_size + 254) / 255;
     out.reserve(src_size + (worst_lit_chunks * 2) + 64);
@@ -109,6 +127,7 @@ inline std::vector<uint8_t> compress_global_chain_lz(
             dst[0] = 0; // LITRUN
             dst[1] = (uint8_t)chunk;
             std::memcpy(dst + 2, s + cur, chunk);
+            if (counters) counters->literal_bytes += (uint64_t)chunk;
             cur += chunk;
         }
     };
@@ -149,7 +168,10 @@ inline std::vector<uint8_t> compress_global_chain_lz(
         int best_len = 0;
         int best_dist = 0;
         int depth = 0;
+        bool depth_limit_hit = false;
+        bool early_maxlen_hit = false;
         while (ref >= 0 && depth < chain_depth) {
+            if (counters) counters->chain_steps++;
             size_t ref_pos = (size_t)ref;
             int dist = (int)(pos - ref_pos);
             if (dist > 0 && dist <= window_size) {
@@ -158,10 +180,16 @@ inline std::vector<uint8_t> compress_global_chain_lz(
                     s[ref_pos + 2] == s[pos + 2]) {
                     const int len = match_len_from(ref_pos, pos);
                     const bool acceptable = (len >= 4) || (len == 3 && dist <= min_dist_len3);
+                    if (!acceptable && len == 3 && dist > min_dist_len3 && counters) {
+                        counters->len3_reject_dist++;
+                    }
                     if (acceptable && (len > best_len || (len == best_len && dist < best_dist))) {
                         best_len = len;
                         best_dist = dist;
-                        if (best_len == 255) break;
+                        if (best_len == 255) {
+                            early_maxlen_hit = true;
+                            break;
+                        }
                     }
                 }
             } else if (dist > window_size) {
@@ -170,6 +198,11 @@ inline std::vector<uint8_t> compress_global_chain_lz(
             ref = prev[ref_pos];
             depth++;
         }
+        if (!early_maxlen_hit && ref >= 0 && depth >= chain_depth) {
+            depth_limit_hit = true;
+        }
+        if (depth_limit_hit && counters) counters->depth_limit_hits++;
+        if (early_maxlen_hit && counters) counters->early_maxlen_hits++;
 
         prev[pos] = head_get(h);
         head_set(h, (int)pos);
@@ -183,6 +216,10 @@ inline std::vector<uint8_t> compress_global_chain_lz(
             dst[1] = (uint8_t)best_len;
             dst[2] = (uint8_t)(best_dist & 0xFF);
             dst[3] = (uint8_t)((best_dist >> 8) & 0xFF);
+            if (counters) {
+                counters->match_count++;
+                counters->match_bytes += (uint64_t)best_len;
+            }
 
             for (int i = 1; i < best_len && pos + (size_t)i + 2 < src_size; i++) {
                 size_t p = pos + (size_t)i;
@@ -199,6 +236,7 @@ inline std::vector<uint8_t> compress_global_chain_lz(
     }
 
     flush_literals(lit_start, src_size);
+    if (counters) counters->out_bytes += (uint64_t)out.size();
     return out;
 }
 
@@ -539,6 +577,19 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
     std::vector<uint8_t> mode2;
     detail::Mode1Prepared mode1_prepared;
     detail::PackedPredictorStream mode1_pred;
+    auto accumulate_mode2_lz = [&](const detail::GlobalChainLzCounters& c) {
+        if (!stats) return;
+        stats->natural_row_mode2_lz_calls += c.calls;
+        stats->natural_row_mode2_lz_src_bytes_sum += c.src_bytes;
+        stats->natural_row_mode2_lz_out_bytes_sum += c.out_bytes;
+        stats->natural_row_mode2_lz_match_count += c.match_count;
+        stats->natural_row_mode2_lz_match_bytes_sum += c.match_bytes;
+        stats->natural_row_mode2_lz_literal_bytes_sum += c.literal_bytes;
+        stats->natural_row_mode2_lz_chain_steps_sum += c.chain_steps;
+        stats->natural_row_mode2_lz_depth_limit_hits += c.depth_limit_hits;
+        stats->natural_row_mode2_lz_early_maxlen_hits += c.early_maxlen_hits;
+        stats->natural_row_mode2_lz_len3_reject_dist += c.len3_reject_dist;
+    };
     constexpr uint32_t kPrepParallelPixelThreshold = 262144u;
     thread_budget::ScopedThreadTokens pipeline_tokens;
     if (pixel_count >= kPrepParallelPixelThreshold) {
@@ -555,6 +606,7 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
         struct TimedPayload {
             std::vector<uint8_t> payload;
             uint64_t elapsed_ns = 0;
+            detail::GlobalChainLzCounters lz;
         };
         if (stats) {
             stats->natural_row_prep_parallel_count++;
@@ -593,6 +645,7 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
 
                 const auto t_mode2_0 = Clock::now();
                 TimedPayload out;
+                detail::GlobalChainLzCounters lz_counters;
                 out.payload = detail::build_mode1_payload_from_prepared(
                     *ready.prepared,
                     *ready.pred,
@@ -600,10 +653,11 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
                     pixel_count,
                     encode_byte_stream_shared_lz,
                     2,
-                    [&](const std::vector<uint8_t>& bytes) {
-                        return detail::compress_global_chain_lz(bytes, lz_params);
+                    [&](const std::vector<uint8_t>& bytes) -> std::vector<uint8_t> {
+                        return detail::compress_global_chain_lz(bytes, lz_params, &lz_counters);
                     }
                 );
+                out.lz = lz_counters;
                 const auto t_mode2_1 = Clock::now();
                 out.elapsed_ns = ns_since(t_mode2_0, t_mode2_1);
                 return out;
@@ -644,6 +698,7 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
         auto mode2_res = mode2_future.get();
         mode2 = std::move(mode2_res.payload);
         if (stats) stats->natural_row_mode2_build_ns += mode2_res.elapsed_ns;
+        accumulate_mode2_lz(mode2_res.lz);
     } else {
         if (stats) stats->natural_row_prep_seq_count++;
         const auto t_mode0_0 = Clock::now();
@@ -680,6 +735,7 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
         struct TimedPayload {
             std::vector<uint8_t> payload;
             uint64_t elapsed_ns = 0;
+            detail::GlobalChainLzCounters lz;
         };
         if (mode12_tokens.acquired()) {
             if (stats) {
@@ -690,6 +746,7 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
                 thread_budget::ScopedParallelRegion guard;
                 const auto t0 = Clock::now();
                 TimedPayload out;
+                detail::GlobalChainLzCounters lz_counters;
                 out.payload = detail::build_mode1_payload_from_prepared(
                     mode1_prepared,
                     mode1_pred,
@@ -697,10 +754,11 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
                     pixel_count,
                     encode_byte_stream_shared_lz,
                     2,
-                    [&](const std::vector<uint8_t>& bytes) {
-                        return detail::compress_global_chain_lz(bytes, lz_params);
+                    [&](const std::vector<uint8_t>& bytes) -> std::vector<uint8_t> {
+                        return detail::compress_global_chain_lz(bytes, lz_params, &lz_counters);
                     }
                 );
+                out.lz = lz_counters;
                 const auto t1 = Clock::now();
                 out.elapsed_ns = ns_since(t0, t1);
                 return out;
@@ -722,6 +780,7 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
             auto mode2_res = f_mode2.get();
             mode2 = std::move(mode2_res.payload);
             if (stats) stats->natural_row_mode2_build_ns += mode2_res.elapsed_ns;
+            accumulate_mode2_lz(mode2_res.lz);
         } else {
             if (stats) stats->natural_row_mode12_seq_count++;
             const auto t_mode1_0 = Clock::now();
@@ -739,6 +798,7 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
             const auto t_mode1_1 = Clock::now();
             if (stats) stats->natural_row_mode1_build_ns += ns_since(t_mode1_0, t_mode1_1);
             const auto t_mode2_0 = Clock::now();
+            detail::GlobalChainLzCounters lz_counters;
             mode2 = detail::build_mode1_payload_from_prepared(
                 mode1_prepared,
                 mode1_pred,
@@ -746,12 +806,13 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
                 pixel_count,
                 encode_byte_stream_shared_lz,
                 2,
-                [&](const std::vector<uint8_t>& bytes) {
-                    return detail::compress_global_chain_lz(bytes, lz_params);
+                [&](const std::vector<uint8_t>& bytes) -> std::vector<uint8_t> {
+                    return detail::compress_global_chain_lz(bytes, lz_params, &lz_counters);
                 }
             );
             const auto t_mode2_1 = Clock::now();
             if (stats) stats->natural_row_mode2_build_ns += ns_since(t_mode2_0, t_mode2_1);
+            accumulate_mode2_lz(lz_counters);
         }
     }
     if (mode0.empty()) return {};

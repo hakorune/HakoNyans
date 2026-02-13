@@ -1329,3 +1329,49 @@ Per-image size deltas (`fast - balanced`):
   non-regression size gate on fixed 6.
 - `max` currently provides no size gain over `balanced` on fixed 6 while
   increasing encode wall time.
+
+## 2026-02-13: `route_natural mode2` Deep Counters
+
+### Objective
+- Add deeper observability inside `mode2` global-chain LZ before the next
+  optimization step and external consultation.
+
+### Implementation
+- `src/codec/lossless_mode_debug_stats.h`
+  - Added `mode2` LZ counters:
+    - calls / src bytes / out bytes
+    - match count / match bytes / literal bytes
+    - chain steps
+    - depth-limit hits
+    - max-len(255) early hits
+    - len=3 reject-by-distance count
+- `src/codec/lossless_natural_route.h`
+  - Added `detail::GlobalChainLzCounters`.
+  - Instrumented `compress_global_chain_lz(...)` internals with the counters.
+  - Wired counter accumulation for all mode2 execution paths:
+    - pipeline mode2 async
+    - mode1/mode2 parallel path
+    - sequential mode2 path
+- `bench/bench_png_compare.cpp`
+  - Added new CSV columns for mode2 LZ counters.
+  - Added stage-breakdown print lines under `nat_mode2`.
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `ctest --test-dir build --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifact
+- `bench_results/phase9w_mode2_counters_balanced_20260213_runs3.csv`
+
+### Observation Snapshot (median over fixed 6)
+- `nat_mode2_lz calls/src/out`: `1 / 3,253,248 / 764,271`
+- `nat_mode2_lz match/literal bytes`: `3,203,428 / 159`
+- `nat_mode2_lz matches`: `177,906`
+- `nat_mode2_lz chain/depth/maxlen/len3rej`:
+  `3,530,143 / 68,325 / 2,303 / 38,993`
+
+Per-image highlights:
+- `hd_01` and `nature_*` dominate mode2 cost with very large
+  `chain_steps` and non-trivial `len3_reject_dist`.
+- `kodim01` remains a high-compression, low-literal case (near-all match bytes).

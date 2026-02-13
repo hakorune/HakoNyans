@@ -95,6 +95,16 @@ struct ResultRow {
     uint64_t hkn_enc_route_nat_pred_rans = 0;
     uint64_t hkn_enc_route_nat_mode2_bias_adopt = 0;
     uint64_t hkn_enc_route_nat_mode2_bias_reject = 0;
+    uint64_t hkn_enc_route_nat_mode2_lz_calls = 0;
+    uint64_t hkn_enc_route_nat_mode2_lz_src_bytes = 0;
+    uint64_t hkn_enc_route_nat_mode2_lz_out_bytes = 0;
+    uint64_t hkn_enc_route_nat_mode2_lz_match_count = 0;
+    uint64_t hkn_enc_route_nat_mode2_lz_match_bytes = 0;
+    uint64_t hkn_enc_route_nat_mode2_lz_literal_bytes = 0;
+    uint64_t hkn_enc_route_nat_mode2_lz_chain_steps = 0;
+    uint64_t hkn_enc_route_nat_mode2_lz_depth_limit_hits = 0;
+    uint64_t hkn_enc_route_nat_mode2_lz_early_maxlen_hits = 0;
+    uint64_t hkn_enc_route_nat_mode2_lz_len3_reject_dist = 0;
     uint64_t hkn_enc_route_nat_prep_parallel = 0;
     uint64_t hkn_enc_route_nat_prep_seq = 0;
     uint64_t hkn_enc_route_nat_prep_tokens_sum = 0;
@@ -327,7 +337,7 @@ void write_results_csv(const std::string& path, const std::vector<ResultRow>& ro
         throw std::runtime_error("Failed to write CSV: " + path);
     }
 
-    ofs << "image_id,image_name,width,height,hkn_bytes,png_bytes,png_over_hkn,dec_ms,natural_row_selected,natural_row_candidates,natural_row_selected_rate,gain_bytes,loss_bytes,hkn_enc_images_per_s,hkn_dec_images_per_s,png_enc_images_per_s,png_dec_images_per_s,hkn_enc_cpu_over_wall,hkn_dec_cpu_over_wall,hkn_enc_ms,hkn_dec_ms,png_enc_ms,png_dec_ms,hkn_enc_rgb_to_ycocg_ms,hkn_enc_profile_ms,hkn_enc_plane_total_ms,hkn_enc_plane_block_classify_ms,hkn_enc_plane_filter_rows_ms,hkn_enc_plane_lo_stream_ms,hkn_enc_plane_hi_stream_ms,hkn_enc_plane_stream_wrap_ms,hkn_enc_plane_route_ms,hkn_enc_plane_route_prefilter_ms,hkn_enc_plane_route_screen_candidate_ms,hkn_enc_plane_route_natural_candidate_ms,hkn_enc_plane_route_parallel,hkn_enc_plane_route_seq,hkn_enc_plane_route_parallel_tokens_sum,hkn_enc_route_nat_mode0_ms,hkn_enc_route_nat_mode1prep_ms,hkn_enc_route_nat_predpack_ms,hkn_enc_route_nat_mode1_ms,hkn_enc_route_nat_mode2_ms,hkn_enc_route_nat_mode0_selected,hkn_enc_route_nat_mode1_selected,hkn_enc_route_nat_mode2_selected,hkn_enc_route_nat_pred_raw,hkn_enc_route_nat_pred_rans,hkn_enc_route_nat_mode2_bias_adopt,hkn_enc_route_nat_mode2_bias_reject,hkn_enc_route_nat_prep_parallel,hkn_enc_route_nat_prep_seq,hkn_enc_route_nat_prep_tokens_sum,hkn_enc_route_nat_mode12_parallel,hkn_enc_route_nat_mode12_seq,hkn_enc_route_nat_mode12_tokens_sum,hkn_enc_container_pack_ms,hkn_dec_header_ms,hkn_dec_plane_total_ms,hkn_dec_ycocg_to_rgb_ms,hkn_dec_plane_dispatch_ms,hkn_dec_plane_wait_ms,hkn_dec_ycocg_dispatch_ms,hkn_dec_ycocg_kernel_ms,hkn_dec_ycocg_wait_ms,hkn_dec_ycocg_rows_sum,hkn_dec_ycocg_pixels_sum,hkn_dec_plane_try_natural_ms,hkn_dec_plane_screen_wrapper_ms,hkn_dec_plane_block_types_ms,hkn_dec_plane_filter_ids_ms,hkn_dec_plane_filter_lo_ms,hkn_dec_plane_filter_hi_ms,hkn_dec_plane_reconstruct_ms,hkn_enc_plane_y_ms,hkn_enc_plane_co_ms,hkn_enc_plane_cg_ms,hkn_dec_plane_y_ms,hkn_dec_plane_co_ms,hkn_dec_plane_cg_ms,hkn_enc_plane_parallel_3way,hkn_enc_plane_parallel_2way,hkn_enc_plane_parallel_seq,hkn_enc_plane_parallel_tokens_sum,hkn_dec_plane_parallel_3way,hkn_dec_plane_parallel_seq,hkn_dec_plane_parallel_tokens_sum,hkn_dec_ycocg_parallel,hkn_dec_ycocg_sequential,hkn_dec_ycocg_parallel_threads_sum,hkn_dec_filter_lo_mode_raw,hkn_dec_filter_lo_mode1,hkn_dec_filter_lo_mode2,hkn_dec_filter_lo_mode3,hkn_dec_filter_lo_mode4,hkn_dec_filter_lo_mode5,hkn_dec_filter_lo_mode_invalid,hkn_dec_filter_lo_fallback_zero_fill,hkn_dec_filter_lo_mode4_parallel_tiles,hkn_dec_filter_lo_mode4_sequential_tiles,hkn_dec_filter_lo_decode_rans_ms,hkn_dec_filter_lo_decode_shared_rans_ms,hkn_dec_filter_lo_tilelz_ms,hkn_dec_recon_copy_fast_rows,hkn_dec_recon_copy_slow_rows,hkn_dec_recon_tile4_fast_quads,hkn_dec_recon_tile4_slow_quads,hkn_dec_recon_residual_missing\n";
+    ofs << "image_id,image_name,width,height,hkn_bytes,png_bytes,png_over_hkn,dec_ms,natural_row_selected,natural_row_candidates,natural_row_selected_rate,gain_bytes,loss_bytes,hkn_enc_images_per_s,hkn_dec_images_per_s,png_enc_images_per_s,png_dec_images_per_s,hkn_enc_cpu_over_wall,hkn_dec_cpu_over_wall,hkn_enc_ms,hkn_dec_ms,png_enc_ms,png_dec_ms,hkn_enc_rgb_to_ycocg_ms,hkn_enc_profile_ms,hkn_enc_plane_total_ms,hkn_enc_plane_block_classify_ms,hkn_enc_plane_filter_rows_ms,hkn_enc_plane_lo_stream_ms,hkn_enc_plane_hi_stream_ms,hkn_enc_plane_stream_wrap_ms,hkn_enc_plane_route_ms,hkn_enc_plane_route_prefilter_ms,hkn_enc_plane_route_screen_candidate_ms,hkn_enc_plane_route_natural_candidate_ms,hkn_enc_plane_route_parallel,hkn_enc_plane_route_seq,hkn_enc_plane_route_parallel_tokens_sum,hkn_enc_route_nat_mode0_ms,hkn_enc_route_nat_mode1prep_ms,hkn_enc_route_nat_predpack_ms,hkn_enc_route_nat_mode1_ms,hkn_enc_route_nat_mode2_ms,hkn_enc_route_nat_mode0_selected,hkn_enc_route_nat_mode1_selected,hkn_enc_route_nat_mode2_selected,hkn_enc_route_nat_pred_raw,hkn_enc_route_nat_pred_rans,hkn_enc_route_nat_mode2_bias_adopt,hkn_enc_route_nat_mode2_bias_reject,hkn_enc_route_nat_mode2_lz_calls,hkn_enc_route_nat_mode2_lz_src_bytes,hkn_enc_route_nat_mode2_lz_out_bytes,hkn_enc_route_nat_mode2_lz_match_count,hkn_enc_route_nat_mode2_lz_match_bytes,hkn_enc_route_nat_mode2_lz_literal_bytes,hkn_enc_route_nat_mode2_lz_chain_steps,hkn_enc_route_nat_mode2_lz_depth_limit_hits,hkn_enc_route_nat_mode2_lz_early_maxlen_hits,hkn_enc_route_nat_mode2_lz_len3_reject_dist,hkn_enc_route_nat_prep_parallel,hkn_enc_route_nat_prep_seq,hkn_enc_route_nat_prep_tokens_sum,hkn_enc_route_nat_mode12_parallel,hkn_enc_route_nat_mode12_seq,hkn_enc_route_nat_mode12_tokens_sum,hkn_enc_container_pack_ms,hkn_dec_header_ms,hkn_dec_plane_total_ms,hkn_dec_ycocg_to_rgb_ms,hkn_dec_plane_dispatch_ms,hkn_dec_plane_wait_ms,hkn_dec_ycocg_dispatch_ms,hkn_dec_ycocg_kernel_ms,hkn_dec_ycocg_wait_ms,hkn_dec_ycocg_rows_sum,hkn_dec_ycocg_pixels_sum,hkn_dec_plane_try_natural_ms,hkn_dec_plane_screen_wrapper_ms,hkn_dec_plane_block_types_ms,hkn_dec_plane_filter_ids_ms,hkn_dec_plane_filter_lo_ms,hkn_dec_plane_filter_hi_ms,hkn_dec_plane_reconstruct_ms,hkn_enc_plane_y_ms,hkn_enc_plane_co_ms,hkn_enc_plane_cg_ms,hkn_dec_plane_y_ms,hkn_dec_plane_co_ms,hkn_dec_plane_cg_ms,hkn_enc_plane_parallel_3way,hkn_enc_plane_parallel_2way,hkn_enc_plane_parallel_seq,hkn_enc_plane_parallel_tokens_sum,hkn_dec_plane_parallel_3way,hkn_dec_plane_parallel_seq,hkn_dec_plane_parallel_tokens_sum,hkn_dec_ycocg_parallel,hkn_dec_ycocg_sequential,hkn_dec_ycocg_parallel_threads_sum,hkn_dec_filter_lo_mode_raw,hkn_dec_filter_lo_mode1,hkn_dec_filter_lo_mode2,hkn_dec_filter_lo_mode3,hkn_dec_filter_lo_mode4,hkn_dec_filter_lo_mode5,hkn_dec_filter_lo_mode_invalid,hkn_dec_filter_lo_fallback_zero_fill,hkn_dec_filter_lo_mode4_parallel_tiles,hkn_dec_filter_lo_mode4_sequential_tiles,hkn_dec_filter_lo_decode_rans_ms,hkn_dec_filter_lo_decode_shared_rans_ms,hkn_dec_filter_lo_tilelz_ms,hkn_dec_recon_copy_fast_rows,hkn_dec_recon_copy_slow_rows,hkn_dec_recon_tile4_fast_quads,hkn_dec_recon_tile4_slow_quads,hkn_dec_recon_residual_missing\n";
     ofs << std::fixed << std::setprecision(6);
     for (const auto& r : rows) {
         ofs << r.image_id << ","
@@ -380,6 +390,16 @@ void write_results_csv(const std::string& path, const std::vector<ResultRow>& ro
             << r.hkn_enc_route_nat_pred_rans << ","
             << r.hkn_enc_route_nat_mode2_bias_adopt << ","
             << r.hkn_enc_route_nat_mode2_bias_reject << ","
+            << r.hkn_enc_route_nat_mode2_lz_calls << ","
+            << r.hkn_enc_route_nat_mode2_lz_src_bytes << ","
+            << r.hkn_enc_route_nat_mode2_lz_out_bytes << ","
+            << r.hkn_enc_route_nat_mode2_lz_match_count << ","
+            << r.hkn_enc_route_nat_mode2_lz_match_bytes << ","
+            << r.hkn_enc_route_nat_mode2_lz_literal_bytes << ","
+            << r.hkn_enc_route_nat_mode2_lz_chain_steps << ","
+            << r.hkn_enc_route_nat_mode2_lz_depth_limit_hits << ","
+            << r.hkn_enc_route_nat_mode2_lz_early_maxlen_hits << ","
+            << r.hkn_enc_route_nat_mode2_lz_len3_reject_dist << ","
             << r.hkn_enc_route_nat_prep_parallel << ","
             << r.hkn_enc_route_nat_prep_seq << ","
             << r.hkn_enc_route_nat_prep_tokens_sum << ","
@@ -486,6 +506,16 @@ ResultRow benchmark_one(const EvalImage& img, const Args& args) {
     std::vector<uint64_t> hkn_enc_route_nat_pred_rans_samples;
     std::vector<uint64_t> hkn_enc_route_nat_mode2_bias_adopt_samples;
     std::vector<uint64_t> hkn_enc_route_nat_mode2_bias_reject_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_mode2_lz_calls_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_mode2_lz_src_bytes_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_mode2_lz_out_bytes_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_mode2_lz_match_count_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_mode2_lz_match_bytes_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_mode2_lz_literal_bytes_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_mode2_lz_chain_steps_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_mode2_lz_depth_limit_hits_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_mode2_lz_early_maxlen_hits_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_mode2_lz_len3_reject_dist_samples;
     std::vector<uint64_t> hkn_enc_route_nat_prep_parallel_samples;
     std::vector<uint64_t> hkn_enc_route_nat_prep_seq_samples;
     std::vector<uint64_t> hkn_enc_route_nat_prep_tokens_sum_samples;
@@ -613,6 +643,16 @@ ResultRow benchmark_one(const EvalImage& img, const Args& args) {
             hkn_enc_route_nat_pred_rans_samples.push_back(enc_stats.natural_row_pred_mode_rans_count);
             hkn_enc_route_nat_mode2_bias_adopt_samples.push_back(enc_stats.natural_row_mode2_bias_adopt_count);
             hkn_enc_route_nat_mode2_bias_reject_samples.push_back(enc_stats.natural_row_mode2_bias_reject_count);
+            hkn_enc_route_nat_mode2_lz_calls_samples.push_back(enc_stats.natural_row_mode2_lz_calls);
+            hkn_enc_route_nat_mode2_lz_src_bytes_samples.push_back(enc_stats.natural_row_mode2_lz_src_bytes_sum);
+            hkn_enc_route_nat_mode2_lz_out_bytes_samples.push_back(enc_stats.natural_row_mode2_lz_out_bytes_sum);
+            hkn_enc_route_nat_mode2_lz_match_count_samples.push_back(enc_stats.natural_row_mode2_lz_match_count);
+            hkn_enc_route_nat_mode2_lz_match_bytes_samples.push_back(enc_stats.natural_row_mode2_lz_match_bytes_sum);
+            hkn_enc_route_nat_mode2_lz_literal_bytes_samples.push_back(enc_stats.natural_row_mode2_lz_literal_bytes_sum);
+            hkn_enc_route_nat_mode2_lz_chain_steps_samples.push_back(enc_stats.natural_row_mode2_lz_chain_steps_sum);
+            hkn_enc_route_nat_mode2_lz_depth_limit_hits_samples.push_back(enc_stats.natural_row_mode2_lz_depth_limit_hits);
+            hkn_enc_route_nat_mode2_lz_early_maxlen_hits_samples.push_back(enc_stats.natural_row_mode2_lz_early_maxlen_hits);
+            hkn_enc_route_nat_mode2_lz_len3_reject_dist_samples.push_back(enc_stats.natural_row_mode2_lz_len3_reject_dist);
             hkn_enc_route_nat_prep_parallel_samples.push_back(enc_stats.natural_row_prep_parallel_count);
             hkn_enc_route_nat_prep_seq_samples.push_back(enc_stats.natural_row_prep_seq_count);
             hkn_enc_route_nat_prep_tokens_sum_samples.push_back(enc_stats.natural_row_prep_parallel_tokens_sum);
@@ -711,6 +751,16 @@ ResultRow benchmark_one(const EvalImage& img, const Args& args) {
     row.hkn_enc_route_nat_pred_rans = median_value(hkn_enc_route_nat_pred_rans_samples);
     row.hkn_enc_route_nat_mode2_bias_adopt = median_value(hkn_enc_route_nat_mode2_bias_adopt_samples);
     row.hkn_enc_route_nat_mode2_bias_reject = median_value(hkn_enc_route_nat_mode2_bias_reject_samples);
+    row.hkn_enc_route_nat_mode2_lz_calls = median_value(hkn_enc_route_nat_mode2_lz_calls_samples);
+    row.hkn_enc_route_nat_mode2_lz_src_bytes = median_value(hkn_enc_route_nat_mode2_lz_src_bytes_samples);
+    row.hkn_enc_route_nat_mode2_lz_out_bytes = median_value(hkn_enc_route_nat_mode2_lz_out_bytes_samples);
+    row.hkn_enc_route_nat_mode2_lz_match_count = median_value(hkn_enc_route_nat_mode2_lz_match_count_samples);
+    row.hkn_enc_route_nat_mode2_lz_match_bytes = median_value(hkn_enc_route_nat_mode2_lz_match_bytes_samples);
+    row.hkn_enc_route_nat_mode2_lz_literal_bytes = median_value(hkn_enc_route_nat_mode2_lz_literal_bytes_samples);
+    row.hkn_enc_route_nat_mode2_lz_chain_steps = median_value(hkn_enc_route_nat_mode2_lz_chain_steps_samples);
+    row.hkn_enc_route_nat_mode2_lz_depth_limit_hits = median_value(hkn_enc_route_nat_mode2_lz_depth_limit_hits_samples);
+    row.hkn_enc_route_nat_mode2_lz_early_maxlen_hits = median_value(hkn_enc_route_nat_mode2_lz_early_maxlen_hits_samples);
+    row.hkn_enc_route_nat_mode2_lz_len3_reject_dist = median_value(hkn_enc_route_nat_mode2_lz_len3_reject_dist_samples);
     row.hkn_enc_route_nat_prep_parallel = median_value(hkn_enc_route_nat_prep_parallel_samples);
     row.hkn_enc_route_nat_prep_seq = median_value(hkn_enc_route_nat_prep_seq_samples);
     row.hkn_enc_route_nat_prep_tokens_sum = median_value(hkn_enc_route_nat_prep_tokens_sum_samples);
@@ -936,6 +986,7 @@ int main(int argc, char** argv) {
         std::vector<double> v_dec_py, v_dec_pco, v_dec_pcg;
         std::vector<double> v_dec_lo_rans, v_dec_lo_shared_rans, v_dec_lo_lz;
         std::vector<uint64_t> v_enc_p3, v_enc_p2, v_enc_ps, v_enc_ptok, v_enc_route_par, v_enc_route_seq, v_enc_route_tok, v_nat_mode0_sel, v_nat_mode1_sel, v_nat_mode2_sel, v_nat_pred_raw, v_nat_pred_rans, v_nat_bias_adopt, v_nat_bias_reject, v_nat_prep_par, v_nat_prep_seq, v_nat_prep_tok, v_nat_mode12_par, v_nat_mode12_seq, v_nat_mode12_tok;
+        std::vector<uint64_t> v_nat_m2_lz_calls, v_nat_m2_lz_src, v_nat_m2_lz_out, v_nat_m2_lz_match_count, v_nat_m2_lz_match_bytes, v_nat_m2_lz_literal_bytes, v_nat_m2_lz_chain_steps, v_nat_m2_lz_depth_hits, v_nat_m2_lz_maxlen_hits, v_nat_m2_lz_len3_reject;
         std::vector<uint64_t> v_dec_p3, v_dec_ps, v_dec_ptok, v_dec_rgb_p, v_dec_rgb_s, v_dec_rgb_thr, v_dec_rgb_rows, v_dec_rgb_pixels;
         std::vector<uint64_t> v_lo_raw, v_lo_m1, v_lo_m2, v_lo_m3, v_lo_m4, v_lo_m5, v_lo_inv, v_lo_fb;
         std::vector<uint64_t> v_lo_m4_par, v_lo_m4_seq;
@@ -1002,6 +1053,16 @@ int main(int argc, char** argv) {
         v_nat_mode12_par.reserve(rows.size());
         v_nat_mode12_seq.reserve(rows.size());
         v_nat_mode12_tok.reserve(rows.size());
+        v_nat_m2_lz_calls.reserve(rows.size());
+        v_nat_m2_lz_src.reserve(rows.size());
+        v_nat_m2_lz_out.reserve(rows.size());
+        v_nat_m2_lz_match_count.reserve(rows.size());
+        v_nat_m2_lz_match_bytes.reserve(rows.size());
+        v_nat_m2_lz_literal_bytes.reserve(rows.size());
+        v_nat_m2_lz_chain_steps.reserve(rows.size());
+        v_nat_m2_lz_depth_hits.reserve(rows.size());
+        v_nat_m2_lz_maxlen_hits.reserve(rows.size());
+        v_nat_m2_lz_len3_reject.reserve(rows.size());
         v_dec_p3.reserve(rows.size());
         v_dec_ps.reserve(rows.size());
         v_dec_ptok.reserve(rows.size());
@@ -1088,6 +1149,16 @@ int main(int argc, char** argv) {
             v_nat_mode12_par.push_back(r.hkn_enc_route_nat_mode12_parallel);
             v_nat_mode12_seq.push_back(r.hkn_enc_route_nat_mode12_seq);
             v_nat_mode12_tok.push_back(r.hkn_enc_route_nat_mode12_tokens_sum);
+            v_nat_m2_lz_calls.push_back(r.hkn_enc_route_nat_mode2_lz_calls);
+            v_nat_m2_lz_src.push_back(r.hkn_enc_route_nat_mode2_lz_src_bytes);
+            v_nat_m2_lz_out.push_back(r.hkn_enc_route_nat_mode2_lz_out_bytes);
+            v_nat_m2_lz_match_count.push_back(r.hkn_enc_route_nat_mode2_lz_match_count);
+            v_nat_m2_lz_match_bytes.push_back(r.hkn_enc_route_nat_mode2_lz_match_bytes);
+            v_nat_m2_lz_literal_bytes.push_back(r.hkn_enc_route_nat_mode2_lz_literal_bytes);
+            v_nat_m2_lz_chain_steps.push_back(r.hkn_enc_route_nat_mode2_lz_chain_steps);
+            v_nat_m2_lz_depth_hits.push_back(r.hkn_enc_route_nat_mode2_lz_depth_limit_hits);
+            v_nat_m2_lz_maxlen_hits.push_back(r.hkn_enc_route_nat_mode2_lz_early_maxlen_hits);
+            v_nat_m2_lz_len3_reject.push_back(r.hkn_enc_route_nat_mode2_lz_len3_reject_dist);
             v_dec_p3.push_back(r.hkn_dec_plane_parallel_3way);
             v_dec_ps.push_back(r.hkn_dec_plane_parallel_seq);
             v_dec_ptok.push_back(r.hkn_dec_plane_parallel_tokens_sum);
@@ -1174,6 +1245,16 @@ int main(int argc, char** argv) {
         const uint64_t med_nat_mode12_par = median_value(v_nat_mode12_par);
         const uint64_t med_nat_mode12_seq = median_value(v_nat_mode12_seq);
         const uint64_t med_nat_mode12_tok = median_value(v_nat_mode12_tok);
+        const uint64_t med_nat_m2_lz_calls = median_value(v_nat_m2_lz_calls);
+        const uint64_t med_nat_m2_lz_src = median_value(v_nat_m2_lz_src);
+        const uint64_t med_nat_m2_lz_out = median_value(v_nat_m2_lz_out);
+        const uint64_t med_nat_m2_lz_match_count = median_value(v_nat_m2_lz_match_count);
+        const uint64_t med_nat_m2_lz_match_bytes = median_value(v_nat_m2_lz_match_bytes);
+        const uint64_t med_nat_m2_lz_literal_bytes = median_value(v_nat_m2_lz_literal_bytes);
+        const uint64_t med_nat_m2_lz_chain_steps = median_value(v_nat_m2_lz_chain_steps);
+        const uint64_t med_nat_m2_lz_depth_hits = median_value(v_nat_m2_lz_depth_hits);
+        const uint64_t med_nat_m2_lz_maxlen_hits = median_value(v_nat_m2_lz_maxlen_hits);
+        const uint64_t med_nat_m2_lz_len3_reject = median_value(v_nat_m2_lz_len3_reject);
         const uint64_t med_dec_p3 = median_value(v_dec_p3);
         const uint64_t med_dec_ps = median_value(v_dec_ps);
         const uint64_t med_dec_ptok = median_value(v_dec_ptok);
@@ -1224,6 +1305,16 @@ int main(int argc, char** argv) {
         std::cout << "      nat_pred_pack: " << med_enc_route_nat_predpack << "\n";
         std::cout << "      nat_mode1:     " << med_enc_route_nat_m1 << "\n";
         std::cout << "      nat_mode2:     " << med_enc_route_nat_m2 << "\n";
+        std::cout << "      nat_mode2_lz calls/src/out: "
+                  << med_nat_m2_lz_calls << "/" << med_nat_m2_lz_src << "/" << med_nat_m2_lz_out << "\n";
+        std::cout << "      nat_mode2_lz match/literal bytes: "
+                  << med_nat_m2_lz_match_bytes << "/" << med_nat_m2_lz_literal_bytes
+                  << " (matches=" << med_nat_m2_lz_match_count << ")\n";
+        std::cout << "      nat_mode2_lz chain/depth/maxlen/len3rej: "
+                  << med_nat_m2_lz_chain_steps << "/"
+                  << med_nat_m2_lz_depth_hits << "/"
+                  << med_nat_m2_lz_maxlen_hits << "/"
+                  << med_nat_m2_lz_len3_reject << "\n";
         std::cout << "  container_pack:    " << med_enc_pack << " [cpu]\n";
         std::cout << "  plane_y/co/cg:     " << med_enc_py << " / " << med_enc_pco
                   << " / " << med_enc_pcg << " [cpu]\n";
