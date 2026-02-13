@@ -14,6 +14,17 @@ Optimize on the Pareto frontier of:
 
 Do not optimize a single axis in isolation.
 
+## Lossless Preset Lanes (Fixed API)
+Lossless encode now has three explicit lanes for speed/size trade-off experiments:
+1. `fast`: route competition off (luma/chroma) for maximum throughput exploration.
+2. `balanced`: default lane, keeps current promoted behavior and env-policy gates.
+3. `max`: route competition on for all planes (including photo chroma) for compression-first exploration.
+
+Rules:
+- `balanced` is the compatibility anchor and baseline for day-to-day promotion.
+- `fast`/`max` are opt-in experiment lanes and must be compared against `balanced`.
+- All lanes must remain format-compatible and lossless.
+
 ## Fixed Metrics
 Use these metrics only:
 1. `median(PNG_bytes/HKN_bytes)` over fixed 6 images
@@ -58,6 +69,7 @@ If any gate fails:
 ```bash
 ./build/bench_png_compare \
   --runs 3 --warmup 1 \
+  --preset balanced \
   --out bench_results/phase9w_speed_stage_profile.csv
 ```
 
@@ -66,6 +78,7 @@ If any gate fails:
 ```bash
 ./build/bench_png_compare \
   --runs 3 --warmup 1 \
+  --preset balanced \
   --baseline bench_results/phase9w_current.csv \
   --out bench_results/phase9w_speed_stage_profile_ab.csv
 ```

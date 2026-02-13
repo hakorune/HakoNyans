@@ -1245,3 +1245,47 @@ Interpretation:
   counters improved consistently in all three runs.
 - The implemented changes are low-risk and maintain size behavior while reducing
   persistent encode hotspot costs.
+
+## 2026-02-13: Lossless Preset Lanes (`fast` / `balanced` / `max`)
+
+### Objective
+- Add explicit lossless speed/size lanes without format change.
+- Keep existing behavior as default (`balanced`) for compatibility.
+- Enable controlled A/B for future lane-specific tuning.
+
+### Implementation
+- `src/codec/encode.h`
+  - Added `GrayscaleEncoder::LosslessPreset`:
+    - `FAST`, `BALANCED`, `MAX`
+  - Added `lossless_preset_name(...)` helper.
+  - Added internal preset plan builder:
+    - `fast`: route competition off (luma/chroma)
+    - `balanced`: current env-driven policy (existing behavior)
+    - `max`: route competition on for all planes (compression-first lane)
+  - Extended APIs with preset argument (default `balanced`):
+    - `encode_lossless(...)`
+    - `encode_color_lossless(...)`
+- `bench/bench_png_compare.cpp`
+  - Added `--preset fast|balanced|max`.
+  - Benchmark encode path now passes selected preset into
+    `encode_color_lossless(...)`.
+- `tests/test_lossless_round2.cpp`
+  - Added preset compatibility/validity tests:
+    - default output equals explicit `balanced`
+    - `fast` and `max` both keep lossless roundtrip.
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `ctest --test-dir build --output-on-failure`
+- Result: PASS (includes new preset tests)
+
+### Benchmark Smoke (runs=1, warmup=0)
+- `bench_results/tmp_preset_balanced_smoke_20260213.csv`
+- `bench_results/tmp_preset_fast_smoke_20260213.csv`
+- `bench_results/tmp_preset_max_smoke_20260213.csv`
+- Intent: verify `--preset` end-to-end wiring and lane behavior only
+  (not promotion-quality numbers).
+
+### Notes
+- This step is API/policy scaffolding and does not change bitstream format.
+- `balanced` remains the promotion baseline lane for Phase 9w gates.

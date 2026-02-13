@@ -83,6 +83,23 @@ private:
 
 public:
     enum class LosslessProfile : uint8_t { UI = 0, ANIME = 1, PHOTO = 2 };
+    enum class LosslessPreset : uint8_t { FAST = 0, BALANCED = 1, MAX = 2 };
+
+    static const char* lossless_preset_name(LosslessPreset preset) {
+        switch (preset) {
+            case LosslessPreset::FAST: return "fast";
+            case LosslessPreset::BALANCED: return "balanced";
+            case LosslessPreset::MAX: return "max";
+        }
+        return "balanced";
+    }
+
+private:
+    struct LosslessPresetPlan {
+        bool route_compete_luma = true;
+        bool route_compete_chroma = true;
+        bool conservative_chroma_route_policy = false;
+    };
 
 public:
     // Heuristic profile for applying lossless mode biases.
@@ -426,7 +443,10 @@ public:
     /**
      * Encode a grayscale image losslessly.
      */
-    static std::vector<uint8_t> encode_lossless(const uint8_t* pixels, uint32_t width, uint32_t height) {
+    static std::vector<uint8_t> encode_lossless(
+        const uint8_t* pixels, uint32_t width, uint32_t height,
+        LosslessPreset preset = LosslessPreset::BALANCED
+    ) {
         reset_lossless_mode_debug_stats();
         using Clock = std::chrono::steady_clock;
         const auto t_total0 = Clock::now();
@@ -452,8 +472,11 @@ public:
         tl_lossless_mode_debug_stats_.perf_encode_profile_classify_ns +=
             (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_cls1 - t_cls0).count();
 
+        auto preset_plan = build_lossless_preset_plan(preset, profile);
         const auto t_plane0 = Clock::now();
-        auto tile_data = encode_plane_lossless(plane.data(), width, height, profile);
+        auto tile_data = encode_plane_lossless(
+            plane.data(), width, height, profile, preset_plan.route_compete_luma, false
+        );
         const auto t_plane1 = Clock::now();
         tl_lossless_mode_debug_stats_.perf_encode_plane_y_ns +=
             (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_plane1 - t_plane0).count();
@@ -482,7 +505,10 @@ public:
     /**
      * Encode a color image losslessly using YCoCg-R.
      */
-    static std::vector<uint8_t> encode_color_lossless(const uint8_t* rgb_data, uint32_t width, uint32_t height) {
+    static std::vector<uint8_t> encode_color_lossless(
+        const uint8_t* rgb_data, uint32_t width, uint32_t height,
+        LosslessPreset preset = LosslessPreset::BALANCED
+    ) {
         reset_lossless_mode_debug_stats();
         using Clock = std::chrono::steady_clock;
         const auto t_total0 = Clock::now();
@@ -513,12 +539,10 @@ public:
             uint64_t elapsed_ns = 0;
         };
 
-        bool allow_chroma_route_compete = route_compete_chroma_enabled();
-        if (profile == LosslessProfile::PHOTO && !route_compete_photo_chroma_enabled()) {
-            allow_chroma_route_compete = false;
-        }
-        const bool conservative_chroma_route_policy =
-            parse_bool_env("HKN_ROUTE_COMPETE_CHROMA_CONSERVATIVE", false);
+        auto preset_plan = build_lossless_preset_plan(preset, profile);
+        const bool enable_y_route_compete = preset_plan.route_compete_luma;
+        const bool allow_chroma_route_compete = preset_plan.route_compete_chroma;
+        const bool conservative_chroma_route_policy = preset_plan.conservative_chroma_route_policy;
         auto run_plane_task = [width, height, profile](
             const int16_t* plane, bool enable_route_compete, bool conservative_chroma_policy
         ) -> PlaneEncodeTaskResult {
@@ -554,7 +578,7 @@ public:
         if (plane_tokens.acquired()) {
             auto fy = std::async(std::launch::async, [&]() {
                 thread_budget::ScopedParallelRegion guard;
-                return run_plane_task(y_plane.data(), true, false);
+                return run_plane_task(y_plane.data(), enable_y_route_compete, false);
             });
             auto fco = std::async(std::launch::async, [&]() {
                 thread_budget::ScopedParallelRegion guard;
@@ -597,7 +621,9 @@ public:
             tl_lossless_mode_debug_stats_.perf_encode_plane_cg_ns += cg_res.elapsed_ns;
         } else {
             const auto t_plane_y0 = Clock::now();
-            tile_y = encode_plane_lossless(y_plane.data(), width, height, profile, true, false);
+            tile_y = encode_plane_lossless(
+                y_plane.data(), width, height, profile, enable_y_route_compete, false
+            );
             const auto t_plane_y1 = Clock::now();
             tl_lossless_mode_debug_stats_.perf_encode_plane_y_ns +=
                 (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_plane_y1 - t_plane_y0).count();
@@ -749,6 +775,35 @@ public:
     static bool route_compete_photo_chroma_enabled() {
         static const bool kEnabled = parse_bool_env("HKN_ROUTE_COMPETE_PHOTO_CHROMA", false);
         return kEnabled;
+    }
+
+    static LosslessPresetPlan build_lossless_preset_plan(
+        LosslessPreset preset, LosslessProfile profile
+    ) {
+        LosslessPresetPlan plan{};
+        switch (preset) {
+            case LosslessPreset::FAST:
+                plan.route_compete_luma = false;
+                plan.route_compete_chroma = false;
+                plan.conservative_chroma_route_policy = false;
+                break;
+            case LosslessPreset::BALANCED:
+                plan.route_compete_luma = true;
+                plan.route_compete_chroma = route_compete_chroma_enabled();
+                if (profile == LosslessProfile::PHOTO && !route_compete_photo_chroma_enabled()) {
+                    plan.route_compete_chroma = false;
+                }
+                plan.conservative_chroma_route_policy =
+                    parse_bool_env("HKN_ROUTE_COMPETE_CHROMA_CONSERVATIVE", false);
+                break;
+            case LosslessPreset::MAX:
+                // Max mode favors compression: always evaluate route competition on all planes.
+                plan.route_compete_luma = true;
+                plan.route_compete_chroma = true;
+                plan.conservative_chroma_route_policy = false;
+                break;
+        }
+        return plan;
     }
 
     static uint16_t route_chroma_mad_max_x100() {

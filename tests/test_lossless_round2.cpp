@@ -1660,6 +1660,57 @@ static void test_natural_row_route_roundtrip() {
     PASS();
 }
 
+static void test_lossless_preset_balanced_compat() {
+    TEST("test_lossless_preset_balanced_compat");
+
+    const int W = 48, H = 40;
+    std::mt19937 rng(20260213);
+    std::uniform_int_distribution<int> dist(0, 255);
+    std::vector<uint8_t> rgb(W * H * 3);
+    for (auto& v : rgb) v = (uint8_t)dist(rng);
+
+    auto hkn_default = GrayscaleEncoder::encode_color_lossless(rgb.data(), W, H);
+    auto hkn_balanced = GrayscaleEncoder::encode_color_lossless(
+        rgb.data(), W, H, GrayscaleEncoder::LosslessPreset::BALANCED
+    );
+
+    if (hkn_default == hkn_balanced) {
+        PASS();
+    } else {
+        FAIL("default lossless preset output differs from balanced");
+    }
+}
+
+static void test_lossless_preset_fast_max_roundtrip() {
+    TEST("test_lossless_preset_fast_max_roundtrip");
+
+    const int W = 96, H = 96;
+    std::mt19937 rng(404);
+    std::uniform_int_distribution<int> dist(0, 255);
+    std::vector<uint8_t> rgb(W * H * 3);
+    for (auto& v : rgb) v = (uint8_t)dist(rng);
+
+    auto hkn_fast = GrayscaleEncoder::encode_color_lossless(
+        rgb.data(), W, H, GrayscaleEncoder::LosslessPreset::FAST
+    );
+    auto hkn_max = GrayscaleEncoder::encode_color_lossless(
+        rgb.data(), W, H, GrayscaleEncoder::LosslessPreset::MAX
+    );
+
+    int fast_w = 0, fast_h = 0;
+    auto dec_fast = GrayscaleDecoder::decode_color(hkn_fast, fast_w, fast_h);
+    int max_w = 0, max_h = 0;
+    auto dec_max = GrayscaleDecoder::decode_color(hkn_max, max_w, max_h);
+
+    const bool fast_ok = (fast_w == W && fast_h == H && dec_fast == rgb);
+    const bool max_ok = (max_w == W && max_h == H && dec_max == rgb);
+    if (fast_ok && max_ok) {
+        PASS();
+    } else {
+        FAIL("fast/max preset roundtrip mismatch");
+    }
+}
+
 int main() {
     std::cout << "=== Phase 8 Round 2: Lossless Codec Tests ===" << std::endl;
 
@@ -1704,6 +1755,8 @@ int main() {
     test_filter_lo_mode5_selection_path();
     test_filter_lo_mode5_fallback_logic();
     test_natural_row_route_roundtrip();
+    test_lossless_preset_balanced_compat();
+    test_lossless_preset_fast_max_roundtrip();
 
     std::cout << "\n=== Results: " << tests_passed << "/" << tests_run << " passed ===" << std::endl;
     return (tests_passed == tests_run) ? 0 : 1;

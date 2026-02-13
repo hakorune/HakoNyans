@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -41,6 +42,7 @@ struct Args {
     std::string baseline_csv;
     int warmup = 1;
     int runs = 3;
+    GrayscaleEncoder::LosslessPreset preset = GrayscaleEncoder::LosslessPreset::BALANCED;
 };
 
 struct ResultRow {
@@ -205,6 +207,29 @@ bool parse_int_arg(const std::string& s, int* out) {
     }
 }
 
+bool parse_lossless_preset_arg(
+    const std::string& s, GrayscaleEncoder::LosslessPreset* out
+) {
+    std::string lower;
+    lower.reserve(s.size());
+    for (char c : s) {
+        lower.push_back((char)std::tolower((unsigned char)c));
+    }
+    if (lower == "fast") {
+        *out = GrayscaleEncoder::LosslessPreset::FAST;
+        return true;
+    }
+    if (lower == "balanced") {
+        *out = GrayscaleEncoder::LosslessPreset::BALANCED;
+        return true;
+    }
+    if (lower == "max") {
+        *out = GrayscaleEncoder::LosslessPreset::MAX;
+        return true;
+    }
+    return false;
+}
+
 Args parse_args(int argc, char** argv) {
     Args args;
     for (int i = 1; i < argc; i++) {
@@ -227,9 +252,15 @@ Args parse_args(int argc, char** argv) {
                 throw std::runtime_error("--warmup must be a non-negative integer");
             }
             args.warmup = v;
+        } else if (a == "--preset" && i + 1 < argc) {
+            GrayscaleEncoder::LosslessPreset preset{};
+            if (!parse_lossless_preset_arg(argv[++i], &preset)) {
+                throw std::runtime_error("--preset must be one of: fast, balanced, max");
+            }
+            args.preset = preset;
         } else if (a == "--help" || a == "-h") {
             std::cout << "Usage: " << argv[0]
-                      << " [--base-dir DIR] [--out CSV] [--baseline CSV] [--runs N] [--warmup N]\n";
+                      << " [--base-dir DIR] [--out CSV] [--baseline CSV] [--runs N] [--warmup N] [--preset fast|balanced|max]\n";
             std::exit(0);
         } else {
             throw std::runtime_error("Unknown argument: " + a);
@@ -523,7 +554,8 @@ ResultRow benchmark_one(const EvalImage& img, const Args& args) {
         auto hkn = GrayscaleEncoder::encode_color_lossless(
             ppm.rgb_data.data(),
             (uint32_t)ppm.width,
-            (uint32_t)ppm.height
+            (uint32_t)ppm.height,
+            args.preset
         );
         auto hkn_t1 = std::chrono::steady_clock::now();
         double hkn_enc_ms = std::chrono::duration<double, std::milli>(hkn_t1 - hkn_t0).count();
@@ -783,6 +815,7 @@ int main(int argc, char** argv) {
         std::cout << "=== Phase 9w Fixed 6-image A/B Evaluation ===\n";
         std::cout << "base_dir: " << args.base_dir << "\n";
         std::cout << "runs: " << args.runs << " (warmup=" << args.warmup << ")\n";
+        std::cout << "preset: " << GrayscaleEncoder::lossless_preset_name(args.preset) << "\n";
         if (!args.baseline_csv.empty()) {
             std::cout << "baseline: " << args.baseline_csv << "\n";
         }
