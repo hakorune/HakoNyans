@@ -4,6 +4,7 @@
 #include "lossless_mode_debug_stats.h"
 #include "lossless_screen_route.h"
 #include "../platform/thread_budget.h"
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <future>
@@ -33,6 +34,10 @@ inline std::vector<uint8_t> choose_best_tile(
     if (!stats) {
         return legacy_tile;
     }
+    using Clock = std::chrono::steady_clock;
+    auto ns_since = [](const Clock::time_point& t0, const Clock::time_point& t1) -> uint64_t {
+        return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+    };
 
     std::vector<uint8_t> best_tile = legacy_tile;
     ExtraRoute chosen_route = ExtraRoute::LEGACY;
@@ -49,6 +54,7 @@ inline std::vector<uint8_t> choose_best_tile(
     const bool large_image = ((uint64_t)width * (uint64_t)height >= 262144ull);
     stats->screen_candidate_count++;
 
+    const auto t_prefilter0 = Clock::now();
     if (width * height >= 4096) {
         pre_metrics = analyze_screen_preflight(data, width, height);
         screen_prefilter_valid = true;
@@ -65,6 +71,8 @@ inline std::vector<uint8_t> choose_best_tile(
         if (natural_prefilter_ok) stats->natural_prefilter_pass_count++;
         else stats->natural_prefilter_reject_count++;
     }
+    const auto t_prefilter1 = Clock::now();
+    stats->perf_encode_plane_route_prefilter_ns += ns_since(t_prefilter0, t_prefilter1);
 
     const bool screen_like = screen_prefilter_valid && screen_prefilter_likely_screen;
     const bool natural_like = screen_prefilter_valid && natural_prefilter_ok;
@@ -92,29 +100,43 @@ inline std::vector<uint8_t> choose_best_tile(
     }
     const bool can_parallel_compete =
         allow_screen_route && try_natural_route && compete_tokens.acquired();
+    if (can_parallel_compete) {
+        stats->perf_encode_plane_route_parallel_count++;
+        stats->perf_encode_plane_route_parallel_tokens_sum += (uint64_t)compete_tokens.count();
+    } else {
+        stats->perf_encode_plane_route_seq_count++;
+    }
 
     struct ScreenCandidateResult {
         bool attempted = false;
         ScreenBuildFailReason fail_reason = ScreenBuildFailReason::NONE;
         std::vector<uint8_t> tile;
+        uint64_t elapsed_ns = 0;
     };
     struct NaturalCandidateResult {
         bool attempted = false;
         std::vector<uint8_t> tile;
+        uint64_t elapsed_ns = 0;
     };
 
     auto run_screen_candidate = [&]() -> ScreenCandidateResult {
         ScreenCandidateResult out;
         out.attempted = allow_screen_route;
         if (!out.attempted) return out;
+        const auto t0 = Clock::now();
         out.tile = encode_screen_tile(data, width, height, &out.fail_reason);
+        const auto t1 = Clock::now();
+        out.elapsed_ns = ns_since(t0, t1);
         return out;
     };
     auto run_natural_candidate = [&]() -> NaturalCandidateResult {
         NaturalCandidateResult out;
         out.attempted = try_natural_route;
         if (!out.attempted) return out;
+        const auto t0 = Clock::now();
         out.tile = encode_natural_tile(data, width, height);
+        const auto t1 = Clock::now();
+        out.elapsed_ns = ns_since(t0, t1);
         return out;
     };
 
@@ -135,6 +157,8 @@ inline std::vector<uint8_t> choose_best_tile(
         screen_res = run_screen_candidate();
         natural_res = run_natural_candidate();
     }
+    stats->perf_encode_plane_route_screen_candidate_ns += screen_res.elapsed_ns;
+    stats->perf_encode_plane_route_natural_candidate_ns += natural_res.elapsed_ns;
 
     if (screen_res.attempted) {
         auto& screen_tile = screen_res.tile;

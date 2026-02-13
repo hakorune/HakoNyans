@@ -237,6 +237,12 @@ struct LosslessModeDebugStats {
     uint64_t perf_encode_plane_filter_ids_ns;
     uint64_t perf_encode_plane_pack_ns;
     uint64_t perf_encode_plane_route_compete_ns;
+    uint64_t perf_encode_plane_route_prefilter_ns;
+    uint64_t perf_encode_plane_route_screen_candidate_ns;
+    uint64_t perf_encode_plane_route_natural_candidate_ns;
+    uint64_t perf_encode_plane_route_parallel_count;
+    uint64_t perf_encode_plane_route_seq_count;
+    uint64_t perf_encode_plane_route_parallel_tokens_sum;
 
     LosslessModeDebugStats() { reset(); }
     void reset() { std::memset(this, 0, sizeof(*this)); }

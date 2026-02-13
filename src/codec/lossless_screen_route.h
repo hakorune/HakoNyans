@@ -102,8 +102,7 @@ inline std::vector<uint8_t> encode_plane_lossless_screen_indexed_tile_padded(
     }
 
     const int bits_per_index = lossless_screen::bits_for_symbol_count((int)palette_vals.size());
-    std::vector<uint8_t> indices;
-    indices.reserve(pixel_count);
+    std::vector<uint8_t> indices(pixel_count, 0);
     for (uint32_t i = 0; i < pixel_count; i++) {
         int16_t v = padded[i];
         uint16_t key = (uint16_t)v;
@@ -111,7 +110,7 @@ inline std::vector<uint8_t> encode_plane_lossless_screen_indexed_tile_padded(
             if (fail_reason) *fail_reason = ScreenBuildFailReason::INDEX_MISS;
             return {};
         }
-        indices.push_back(value_index[key]);
+        indices[i] = value_index[key];
     }
 
     auto packed = lossless_screen::pack_index_bits(indices, bits_per_index);

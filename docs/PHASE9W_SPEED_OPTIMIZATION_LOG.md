@@ -405,3 +405,70 @@ Observed:
 ### Decision
 - Keep this change (safe compute dedupe, no compression impact).
 - Continue with additional route-comp pruning where measurement noise can be reduced by tighter benchmark control.
+
+## 2026-02-13: Route-Comp Deep Counters + Natural Mode1/Mode2 Parallel
+
+### Objective
+- Make `plane_route_comp` bottlenecks directly observable (prefilter vs screen vs natural).
+- Reduce natural candidate wall-time without changing container format or size policy.
+
+### Implementation
+- `src/codec/lossless_mode_debug_stats.h`
+  - Added route-comp deep encode counters:
+    - `perf_encode_plane_route_prefilter_ns`
+    - `perf_encode_plane_route_screen_candidate_ns`
+    - `perf_encode_plane_route_natural_candidate_ns`
+    - `perf_encode_plane_route_parallel_count`
+    - `perf_encode_plane_route_seq_count`
+    - `perf_encode_plane_route_parallel_tokens_sum`
+- `src/codec/lossless_route_competition.h`
+  - Instrumented route-comp stages with nanosecond counters.
+  - Added scheduler counters for parallel-vs-sequential route candidate execution.
+- `src/codec/lossless_natural_route.h`
+  - Added conditional parallel build for mode1/mode2 payload generation
+    (`pixel_count >= 262144` and worker token available).
+  - Optimized mode2 global-chain LZ hash-head initialization using thread-local epoch table
+    (remove per-call full head reset cost).
+- `src/codec/lossless_screen_route.h`
+  - Replaced index `push_back` loop with direct write into pre-sized vector
+    (small allocation/branch reduction).
+- `bench/bench_png_compare.cpp`
+  - Exported new route-comp deep counters to CSV and console stage breakdown.
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `cd build && ctest --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- `bench_results/tmp_next_move_route_obs_opt.csv`
+- `bench_results/tmp_next_move_route_obs_opt_rerun.csv`
+- `bench_results/tmp_next_move_route_obs_opt_rerun2.csv`
+
+### Result Summary
+- Baseline:
+  - `bench_results/tmp_current_lossless_status.csv`
+- Latest rerun:
+  - `bench_results/tmp_next_move_route_obs_opt_rerun2.csv`
+
+| Metric | Baseline | Latest rerun | Delta |
+|---|---:|---:|---:|
+| median PNG/HKN | 0.2610 | 0.2610 | 0.0000 |
+| total HKN bytes | 2,977,544 | 2,977,544 | 0 |
+| median Enc(ms) | 138.985 | 136.398 | -2.587 |
+| median `plane_route_comp`(ms) | 85.747 | 65.545 | -20.202 |
+| median Dec(ms) | 11.593 | 13.519 | +1.926 |
+
+Route-comp deep breakdown (latest rerun):
+- `route_prefilter`: `0.190 ms`
+- `route_screen`: `0.000 ms`
+- `route_natural`: `56.346 ms`
+- route scheduler median: `parallel/seq/tokens = 0/3/0`
+
+Interpretation:
+- The dominant encode hotspot inside route-comp is now explicitly confirmed as
+  natural candidate construction/compression.
+- Compression invariants are preserved.
+- Decode median remained unstable vs the earlier baseline run; because most images
+  did not adopt alternate routes and size stayed identical, this needs controlled
+  reruns (CPU pinning / fixed governor) before attributing causality.

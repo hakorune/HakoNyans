@@ -3,11 +3,14 @@
 #include "headers.h"
 #include "lz_tile.h"
 #include "lossless_filter.h"
+#include "../platform/thread_budget.h"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
+#include <future>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -51,8 +54,8 @@ inline std::vector<uint8_t> compress_global_chain_lz(
 ) {
     if (src.empty()) return {};
 
-    const int HASH_BITS = 16;
-    const int HASH_SIZE = 1 << HASH_BITS;
+    constexpr int HASH_BITS = 16;
+    constexpr int HASH_SIZE = 1 << HASH_BITS;
     const int window_size = p.window_size;
     const int chain_depth = p.chain_depth;
     const int min_dist_len3 = p.min_dist_len3;
@@ -61,7 +64,23 @@ inline std::vector<uint8_t> compress_global_chain_lz(
     std::vector<uint8_t> out;
     out.reserve(src_size);
 
-    std::vector<int> head(HASH_SIZE, -1);
+    thread_local std::array<int, HASH_SIZE> head{};
+    thread_local std::array<uint32_t, HASH_SIZE> head_epoch{};
+    thread_local uint32_t epoch = 1;
+    epoch++;
+    if (epoch == 0) {
+        head_epoch.fill(0);
+        epoch = 1;
+    }
+
+    auto head_get = [&](uint32_t h) -> int {
+        return (head_epoch[h] == epoch) ? head[h] : -1;
+    };
+    auto head_set = [&](uint32_t h, int pos) {
+        head_epoch[h] = epoch;
+        head[h] = pos;
+    };
+
     std::vector<int> prev(src_size, -1);
 
     auto hash3 = [&](size_t p) -> uint32_t {
@@ -86,7 +105,7 @@ inline std::vector<uint8_t> compress_global_chain_lz(
     size_t lit_start = 0;
     while (pos + 2 < src_size) {
         const uint32_t h = hash3(pos);
-        int ref = head[h];
+        int ref = head_get(h);
 
         int best_len = 0;
         int best_dist = 0;
@@ -119,8 +138,8 @@ inline std::vector<uint8_t> compress_global_chain_lz(
             depth++;
         }
 
-        prev[pos] = head[h];
-        head[h] = (int)pos;
+        prev[pos] = head_get(h);
+        head_set(h, (int)pos);
 
         if (best_len > 0) {
             flush_literals(lit_start, pos);
@@ -132,8 +151,8 @@ inline std::vector<uint8_t> compress_global_chain_lz(
             for (int i = 1; i < best_len && pos + (size_t)i + 2 < src_size; i++) {
                 size_t p = pos + (size_t)i;
                 uint32_t h2 = hash3(p);
-                prev[p] = head[h2];
-                head[h2] = (int)p;
+                prev[p] = head_get(h2);
+                head_set(h2, (int)p);
             }
 
             pos += (size_t)best_len;
@@ -394,27 +413,60 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
         zigzag_encode_val
     );
 
-    auto mode1 = detail::build_mode1_payload_from_prepared(
-        mode1_prepared,
-        pad_h,
-        pixel_count,
-        encode_byte_stream_shared_lz, encode_byte_stream,
-        1,
-        [](const std::vector<uint8_t>& bytes) {
-            return TileLZ::compress(bytes);
-        }
-    );
-
-    auto mode2 = detail::build_mode1_payload_from_prepared(
-        mode1_prepared,
-        pad_h,
-        pixel_count,
-        encode_byte_stream_shared_lz, encode_byte_stream,
-        2,
-        [&](const std::vector<uint8_t>& bytes) {
-            return detail::compress_global_chain_lz(bytes, lz_params);
-        }
-    );
+    std::vector<uint8_t> mode1;
+    std::vector<uint8_t> mode2;
+    constexpr uint32_t kMode12ParallelPixelThreshold = 262144u;
+    thread_budget::ScopedThreadTokens mode12_tokens;
+    if (pixel_count >= kMode12ParallelPixelThreshold) {
+        mode12_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(1);
+    }
+    if (mode12_tokens.acquired()) {
+        auto f_mode2 = std::async(std::launch::async, [&]() {
+            thread_budget::ScopedParallelRegion guard;
+            return detail::build_mode1_payload_from_prepared(
+                mode1_prepared,
+                pad_h,
+                pixel_count,
+                encode_byte_stream_shared_lz, encode_byte_stream,
+                2,
+                [&](const std::vector<uint8_t>& bytes) {
+                    return detail::compress_global_chain_lz(bytes, lz_params);
+                }
+            );
+        });
+        mode1 = detail::build_mode1_payload_from_prepared(
+            mode1_prepared,
+            pad_h,
+            pixel_count,
+            encode_byte_stream_shared_lz, encode_byte_stream,
+            1,
+            [](const std::vector<uint8_t>& bytes) {
+                return TileLZ::compress(bytes);
+            }
+        );
+        mode2 = f_mode2.get();
+    } else {
+        mode1 = detail::build_mode1_payload_from_prepared(
+            mode1_prepared,
+            pad_h,
+            pixel_count,
+            encode_byte_stream_shared_lz, encode_byte_stream,
+            1,
+            [](const std::vector<uint8_t>& bytes) {
+                return TileLZ::compress(bytes);
+            }
+        );
+        mode2 = detail::build_mode1_payload_from_prepared(
+            mode1_prepared,
+            pad_h,
+            pixel_count,
+            encode_byte_stream_shared_lz, encode_byte_stream,
+            2,
+            [&](const std::vector<uint8_t>& bytes) {
+                return detail::compress_global_chain_lz(bytes, lz_params);
+            }
+        );
+    }
 
     std::vector<uint8_t> best = std::move(mode0);
     if (!mode1.empty() && mode1.size() < best.size()) {
