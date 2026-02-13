@@ -74,14 +74,26 @@ Rationale:
 - stage/wall encode regressed in trial measurements.
 - details: `docs/phase9w/logs/2026-02-13.md`
 
+13. `plane_lo_stream` mode3 branch-reduction rewrite: no-go (reverted)
+- stage-local gain was observed, but single-core wall regressed.
+- archive: `docs/archive/2026-02-14_lostream_mode3_branchcut_nogo.md`
+
+14. `byte_stream_encoder` alloc/copy reduction: no-go (reverted)
+- size invariants preserved; reruns did not show stable single-core gain.
+- archive: `docs/archive/2026-02-14_bstream_allocopt_nogo.md`
+
+15. `route_natural` cost-loop fast-abs substitution: no-go (reverted)
+- size invariants preserved; route_comp and wall encode regressed.
+- archive: `docs/archive/2026-02-14_routecost_fastabs_nogo.md`
+
 ## Single-Core Snapshot (`HAKONYANS_THREADS=1`)
-- source: `bench_results/phase9w_singlecore_threads1_balanced_20260213_runs3.csv`
-- median Enc(ms) HKN/PNG: `206.949 / 105.919` (`HKN/PNG=1.954`)
-- median Dec(ms) HKN/PNG: `12.702 / 6.192` (`HKN/PNG=2.051`)
+- source: `bench_results/phase9w_singlecore_blockclass_step2_scalar_final_vs_afterfix_20260214_runs3.csv`
+- median Enc(ms) HKN/PNG: `176.646 / 114.041` (`HKN/PNG=1.549`)
+- median Dec(ms) HKN/PNG: `13.169 / 6.487` (`HKN/PNG=2.030`)
 - median encode stage hotspots:
-  - `plane_block_class: 60.116 ms`
-  - `plane_route_comp: 58.235 ms`
-  - `plane_lo_stream: 56.664 ms`
+  - `plane_route_comp: 59.212 ms`
+  - `plane_lo_stream: 58.312 ms`
+  - `plane_block_class: 27.356 ms`
 
 Interpretation:
 - Multicore wall metrics are competitive, but per-core efficiency is still behind PNG.

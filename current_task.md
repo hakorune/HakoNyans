@@ -1096,3 +1096,14 @@ ctest --test-dir build --output-on-failure
    - 記録: `docs/archive/2026-02-14_blockclass_avx512_optin_nogo.md`
 4. [x] 単芯/複芯でA/B計測し、採否を確定
 5. [x] no-go は `docs/archive/` に必ず保存して次へ進む
+6. [x] `plane_lo_stream` mode3 分岐削減（予測評価/残差生成）→ no-goでrevert
+   - 記録: `docs/archive/2026-02-14_lostream_mode3_branchcut_nogo.md`
+   - 計測: `bench_results/phase9w_singlecore_lostream_mode3_branchcut_vs_step2_20260214_runs3.csv`
+7. [x] `byte_stream_encoder` アロケ/pack最適化 → no-goでrevert
+   - 記録: `docs/archive/2026-02-14_bstream_allocopt_nogo.md`
+   - 計測:
+     - `bench_results/phase9w_singlecore_bstream_allocopt_vs_step2_20260214_runs3.csv`
+     - `bench_results/phase9w_singlecore_bstream_allocopt_vs_step2_20260214_runs3_rerun.csv`
+8. [x] `route_natural` cost-loop fast-abs化 → no-goでrevert
+   - 記録: `docs/archive/2026-02-14_routecost_fastabs_nogo.md`
+   - 計測: `bench_results/phase9w_singlecore_routecost_fastabs_vs_step2_20260214_runs3.csv`
