@@ -617,3 +617,82 @@ Interpretation:
   the existing mode-selection/size outcomes unchanged.
 - This supports consult Plan #1 as a high-ROI, low-risk optimization; wall-clock
   should be judged from repeated runs because host variance remains non-trivial.
+
+## 2026-02-13: Documentation Sync (Post-Plan1)
+
+### Current Promoted Baseline For Next Work
+- Use this CSV as baseline for subsequent A/B:
+  - `bench_results/tmp_pipeline_overlap_route_natural_rerun2.csv`
+- Current target hotspot:
+  - `route_natural` internals, especially `nat_mode2`.
+
+### Next Implementation Target (Consult Plan #2)
+- Optimize `compress_global_chain_lz(...)` in `src/codec/lossless_natural_route.h`
+  with bitstream-preserving micro-optimizations:
+  - reduce avoidable realloc/copy overhead in literal flush path
+  - speed up match-length extension loop without changing tie-break/selection logic
+- Non-goals:
+  - no format change
+  - no mode selection policy change
+  - no compression regression
+
+### Acceptance Gate (unchanged)
+- `ctest` 17/17 PASS
+- fixed-6:
+  - `median PNG/HKN` non-regression
+  - `total HKN bytes` non-regression
+  - `route_natural` / `plane_route_comp` stage-time improvement preferred over
+    noisy single-run wall-clock conclusions.
+
+## 2026-02-13: Mode2 Global-Chain LZ Micro-Optimization (Consult Plan #2)
+
+### Objective
+- Speed up `route_natural` mode2 payload generation without changing:
+  - format
+  - mode selection policy
+  - compressed size behavior
+
+### Implementation
+- `src/codec/lossless_natural_route.h`
+  - `compress_global_chain_lz(...)` optimized with bitstream-preserving micro changes:
+    - added `<cstring>` and switched to pointer-local source access (`const uint8_t* s`)
+    - increased `out.reserve(...)` headroom to reduce reallocations on match-heavy streams
+    - replaced literal flush `push_back + insert` with `resize + memcpy`
+    - replaced byte-by-byte match extension with:
+      - 8-byte compare loop (`memcpy`-based load, bounds-safe)
+      - trailing byte loop for exact tail length
+  - Match accept/tie-break logic remains unchanged:
+    - same chain traversal order
+    - same `(len > best_len) || (len == best_len && dist < best_dist)` rule
+    - same `len==3` distance gate (`min_dist_len3`)
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `cd build && ctest --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- baseline:
+  - `bench_results/tmp_pipeline_overlap_route_natural_rerun2.csv`
+- candidates:
+  - `bench_results/tmp_mode2_lz_opt_20260213.csv` (noisy wall-clock run)
+  - `bench_results/tmp_mode2_lz_opt_20260213_rerun.csv` (rerun used for promoted comparison)
+
+### Result Summary (rerun promoted)
+- Compression invariants:
+  - `median PNG/HKN = 0.2610` unchanged
+  - `total HKN bytes = 2,977,544` unchanged
+- Median deltas vs baseline (`tmp_pipeline_overlap_route_natural_rerun2.csv`):
+  - `hkn_enc_ms`: `103.956844 -> 98.445622` (`-5.511222`)
+  - `hkn_dec_ms`: `14.057877 -> 13.268487` (`-0.789390`)
+  - `hkn_enc_plane_route_ms`: `53.953024 -> 48.661896` (`-5.291128`)
+  - `hkn_enc_plane_route_natural_candidate_ms`: `42.299897 -> 38.462874` (`-3.837023`)
+  - `hkn_enc_route_nat_mode2_ms`: `32.525301 -> 27.274424` (`-5.250877`)
+
+Interpretation:
+- The mode2 hotspot was materially reduced while keeping fixed-6 size metrics identical.
+- This confirms Plan #2 as a safe throughput win following Plan #1 pipeline overlap.
+
+### Current Promoted Baseline For Next Work
+- Use this CSV as baseline for subsequent A/B:
+  - `bench_results/tmp_mode2_lz_opt_20260213_rerun.csv`

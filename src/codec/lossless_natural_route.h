@@ -11,6 +11,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <cstdlib>
 #include <future>
 #include <limits>
@@ -64,8 +65,9 @@ inline std::vector<uint8_t> compress_global_chain_lz(
     const int min_dist_len3 = p.min_dist_len3;
 
     const size_t src_size = src.size();
+    const uint8_t* s = src.data();
     std::vector<uint8_t> out;
-    out.reserve(src_size);
+    out.reserve(src_size + (src_size / 3) + 64);
 
     thread_local std::array<int, HASH_SIZE> head{};
     thread_local std::array<uint32_t, HASH_SIZE> head_epoch{};
@@ -90,9 +92,9 @@ inline std::vector<uint8_t> compress_global_chain_lz(
     if (prev.size() < src_size) prev.resize(src_size);
 
     auto hash3 = [&](size_t p) -> uint32_t {
-        uint32_t v = ((uint32_t)src[p] << 16) |
-                     ((uint32_t)src[p + 1] << 8) |
-                     (uint32_t)src[p + 2];
+        uint32_t v = ((uint32_t)s[p] << 16) |
+                     ((uint32_t)s[p + 1] << 8) |
+                     (uint32_t)s[p + 2];
         return (v * 0x1e35a7bdu) >> (32 - HASH_BITS);
     };
 
@@ -100,9 +102,12 @@ inline std::vector<uint8_t> compress_global_chain_lz(
         size_t cur = start;
         while (cur < end) {
             size_t chunk = std::min<size_t>(255, end - cur);
-            out.push_back(0); // LITRUN
-            out.push_back((uint8_t)chunk);
-            out.insert(out.end(), src.data() + cur, src.data() + cur + chunk);
+            const size_t old_size = out.size();
+            out.resize(old_size + 2 + chunk);
+            uint8_t* dst = out.data() + old_size;
+            dst[0] = 0; // LITRUN
+            dst[1] = (uint8_t)chunk;
+            std::memcpy(dst + 2, s + cur, chunk);
             cur += chunk;
         }
     };
@@ -120,14 +125,21 @@ inline std::vector<uint8_t> compress_global_chain_lz(
             size_t ref_pos = (size_t)ref;
             int dist = (int)(pos - ref_pos);
             if (dist > 0 && dist <= window_size) {
-                if (src[ref_pos] == src[pos] &&
-                    src[ref_pos + 1] == src[pos + 1] &&
-                    src[ref_pos + 2] == src[pos + 2]) {
+                if (s[ref_pos] == s[pos] &&
+                    s[ref_pos + 1] == s[pos + 1] &&
+                    s[ref_pos + 2] == s[pos + 2]) {
+                    const size_t max_len = std::min<size_t>(255, src_size - pos);
                     int len = 3;
-                    while (pos + (size_t)len < src_size &&
-                           ref_pos + (size_t)len < src_size &&
-                           len < 255 &&
-                           src[ref_pos + (size_t)len] == src[pos + (size_t)len]) {
+                    while ((size_t)len + sizeof(uint64_t) <= max_len) {
+                        uint64_t a = 0;
+                        uint64_t b = 0;
+                        std::memcpy(&a, s + ref_pos + (size_t)len, sizeof(uint64_t));
+                        std::memcpy(&b, s + pos + (size_t)len, sizeof(uint64_t));
+                        if (a != b) break;
+                        len += (int)sizeof(uint64_t);
+                    }
+                    while ((size_t)len < max_len &&
+                           s[ref_pos + (size_t)len] == s[pos + (size_t)len]) {
                         len++;
                     }
                     const bool acceptable = (len >= 4) || (len == 3 && dist <= min_dist_len3);
