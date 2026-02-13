@@ -472,3 +472,47 @@ Interpretation:
 - Decode median remained unstable vs the earlier baseline run; because most images
   did not adopt alternate routes and size stayed identical, this needs controlled
   reruns (CPU pinning / fixed governor) before attributing causality.
+
+## 2026-02-13: Natural Route Compute Pipeline Dedupe + Prep Parallel
+
+### Objective
+- Further reduce `route_natural` wall-time while keeping bitstream decisions unchanged.
+- Remove repeated predictor-stream compression work and overlap independent prep stages.
+
+### Implementation
+- `src/codec/lossless_natural_route.h`
+  - Added `PackedPredictorStream` and `build_packed_predictor_stream(...)`.
+    - Predictor stream (raw vs rANS) is now built once and reused by mode1/mode2 payload builders.
+  - Updated `build_mode1_payload_from_prepared(...)` to take packed predictor data directly
+    (removes duplicated predictor encoding on mode1/mode2 path).
+  - Reworked global-chain LZ `prev` buffer to thread-local reusable storage
+    (avoids per-call allocation/initialization overhead).
+  - Added conditional parallel prep in `encode_plane_lossless_natural_row_tile_padded(...)`:
+    - `mode0` payload build and `mode1_prepared` build run in parallel for large tiles
+      (`pixel_count >= 262144`) when one worker token is available.
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `cd build && ctest --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- baseline:
+  - `bench_results/tmp_next_move_route_obs_opt_rerun2.csv`
+- candidate:
+  - `bench_results/tmp_next_move_natural_parallelprep.csv`
+  - `bench_results/tmp_next_move_natural_parallelprep_rerun.csv`
+
+### Result Summary
+- Compression invariants:
+  - `median PNG/HKN = 0.2610` unchanged
+  - `total HKN bytes = 2,977,544` unchanged
+- Latest rerun (`tmp_next_move_natural_parallelprep_rerun.csv`) vs baseline:
+  - `median Enc(ms): 136.398 -> 124.480` (`-11.918`)
+  - `median plane_route_comp(ms): 65.545 -> 62.257` (`-3.288`)
+  - `median route_natural(ms): 56.346 -> 51.249` (`-5.097`)
+
+Interpretation:
+- `route_natural` time was reduced with output-size invariants preserved.
+- Decode medians remained noisy across runs and should continue to be treated as
+  host-side variance unless reproduced under fixed benchmark environment controls.

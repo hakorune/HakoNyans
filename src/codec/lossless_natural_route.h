@@ -81,7 +81,10 @@ inline std::vector<uint8_t> compress_global_chain_lz(
         head[h] = pos;
     };
 
-    std::vector<int> prev(src_size, -1);
+    // `prev` is written for every position inserted into the current epoch chain.
+    // We intentionally avoid full reinitialization and reuse capacity per thread.
+    thread_local std::vector<int> prev;
+    if (prev.size() < src_size) prev.resize(src_size);
 
     auto hash3 = [&](size_t p) -> uint32_t {
         uint32_t v = ((uint32_t)src[p] << 16) |
@@ -243,6 +246,30 @@ struct Mode1Prepared {
     std::vector<uint8_t> residual_bytes;
 };
 
+struct PackedPredictorStream {
+    uint8_t mode = 0; // 0=raw, 1=rANS
+    std::vector<uint8_t> payload;
+    bool valid = false;
+};
+
+template <typename EncodeByteStreamFn>
+inline PackedPredictorStream build_packed_predictor_stream(
+    const std::vector<uint8_t>& row_pred_ids,
+    EncodeByteStreamFn&& encode_byte_stream
+) {
+    PackedPredictorStream out;
+    if (row_pred_ids.empty()) return out;
+
+    out.payload = row_pred_ids;
+    auto pred_rans = encode_byte_stream(row_pred_ids);
+    if (!pred_rans.empty() && pred_rans.size() < out.payload.size()) {
+        out.payload = std::move(pred_rans);
+        out.mode = 1;
+    }
+    out.valid = true;
+    return out;
+}
+
 template <typename ZigzagEncodeFn>
 inline Mode1Prepared build_mode1_prepared(
     const int16_t* padded, uint32_t pad_w, uint32_t pad_h, uint32_t pixel_count,
@@ -304,38 +331,28 @@ inline Mode1Prepared build_mode1_prepared(
 
 template <typename Mode1PreparedT,
           typename EncodeSharedLzFn,
-          typename EncodeByteStreamFn,
           typename CompressResidualFn>
 inline std::vector<uint8_t> build_mode1_payload_from_prepared(
     const Mode1PreparedT& prepared,
+    const PackedPredictorStream& packed_pred,
     uint32_t pad_h,
     uint32_t pixel_count,
     EncodeSharedLzFn&& encode_byte_stream_shared_lz,
-    EncodeByteStreamFn&& encode_byte_stream,
     uint8_t out_mode,
     CompressResidualFn&& compress_residual
 ) {
-    const auto& row_pred_ids = prepared.row_pred_ids;
     const auto& residual_bytes = prepared.residual_bytes;
-    if (row_pred_ids.empty() || residual_bytes.empty()) return {};
+    if (!packed_pred.valid || packed_pred.payload.empty() || residual_bytes.empty()) return {};
 
     auto resid_lz = compress_residual(residual_bytes);
     if (resid_lz.empty()) return {};
     auto resid_lz_rans = encode_byte_stream_shared_lz(resid_lz);
     if (resid_lz_rans.empty()) return {};
 
-    std::vector<uint8_t> pred_payload = row_pred_ids;
-    uint8_t pred_mode = 0; // raw
-    auto pred_rans = encode_byte_stream(row_pred_ids);
-    if (!pred_rans.empty() && pred_rans.size() < pred_payload.size()) {
-        pred_payload = std::move(pred_rans);
-        pred_mode = 1; // rANS
-    }
-
     // [magic][mode=1/2][pixel_count:4][pred_count:4][resid_raw_count:4][resid_payload_size:4]
     // [pred_mode:1][pred_raw_count:4][pred_payload_size:4][pred_payload][resid_payload]
     std::vector<uint8_t> out;
-    out.reserve(27 + pred_payload.size() + resid_lz_rans.size());
+    out.reserve(27 + packed_pred.payload.size() + resid_lz_rans.size());
     out.push_back(FileHeader::WRAPPER_MAGIC_NATURAL_ROW);
     out.push_back(out_mode);
     uint32_t pred_count = pad_h;
@@ -351,10 +368,10 @@ inline std::vector<uint8_t> build_mode1_payload_from_prepared(
     push_u32(pred_count);
     push_u32(resid_raw_count);
     push_u32(resid_payload_size);
-    out.push_back(pred_mode);
+    out.push_back(packed_pred.mode);
     push_u32(pred_count);
-    push_u32((uint32_t)pred_payload.size());
-    out.insert(out.end(), pred_payload.begin(), pred_payload.end());
+    push_u32((uint32_t)packed_pred.payload.size());
+    out.insert(out.end(), packed_pred.payload.begin(), packed_pred.payload.end());
     out.insert(out.end(), resid_lz_rans.begin(), resid_lz_rans.end());
     return out;
 }
@@ -374,10 +391,13 @@ inline std::vector<uint8_t> build_mode1_payload(
         padded, pad_w, pad_h, pixel_count,
         std::forward<ZigzagEncodeFn>(zigzag_encode_val)
     );
+    auto packed_pred = build_packed_predictor_stream(
+        prepared.row_pred_ids,
+        std::forward<EncodeByteStreamFn>(encode_byte_stream)
+    );
     return build_mode1_payload_from_prepared(
-        prepared, pad_h, pixel_count,
+        prepared, packed_pred, pad_h, pixel_count,
         std::forward<EncodeSharedLzFn>(encode_byte_stream_shared_lz),
-        std::forward<EncodeByteStreamFn>(encode_byte_stream),
         out_mode,
         std::forward<CompressResidualFn>(compress_residual)
     );
@@ -401,16 +421,40 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
     if (pixel_count == 0) return {};
 
     const auto& lz_params = detail::global_chain_lz_runtime_params();
-
-    auto mode0 = detail::build_mode0_payload(
-        padded, pad_w, pad_h, pixel_count,
-        zigzag_encode_val, encode_byte_stream_shared_lz
-    );
+    constexpr uint32_t kPrepParallelPixelThreshold = 262144u;
+    std::vector<uint8_t> mode0;
+    detail::Mode1Prepared mode1_prepared;
+    thread_budget::ScopedThreadTokens prep_tokens;
+    if (pixel_count >= kPrepParallelPixelThreshold) {
+        prep_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(1);
+    }
+    if (prep_tokens.acquired()) {
+        auto f_mode1_prepared = std::async(std::launch::async, [&]() {
+            thread_budget::ScopedParallelRegion guard;
+            return detail::build_mode1_prepared(
+                padded, pad_w, pad_h, pixel_count,
+                zigzag_encode_val
+            );
+        });
+        mode0 = detail::build_mode0_payload(
+            padded, pad_w, pad_h, pixel_count,
+            zigzag_encode_val, encode_byte_stream_shared_lz
+        );
+        mode1_prepared = f_mode1_prepared.get();
+    } else {
+        mode0 = detail::build_mode0_payload(
+            padded, pad_w, pad_h, pixel_count,
+            zigzag_encode_val, encode_byte_stream_shared_lz
+        );
+        mode1_prepared = detail::build_mode1_prepared(
+            padded, pad_w, pad_h, pixel_count,
+            zigzag_encode_val
+        );
+    }
     if (mode0.empty()) return {};
-
-    auto mode1_prepared = detail::build_mode1_prepared(
-        padded, pad_w, pad_h, pixel_count,
-        zigzag_encode_val
+    auto mode1_pred = detail::build_packed_predictor_stream(
+        mode1_prepared.row_pred_ids,
+        encode_byte_stream
     );
 
     std::vector<uint8_t> mode1;
@@ -425,9 +469,10 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
             thread_budget::ScopedParallelRegion guard;
             return detail::build_mode1_payload_from_prepared(
                 mode1_prepared,
+                mode1_pred,
                 pad_h,
                 pixel_count,
-                encode_byte_stream_shared_lz, encode_byte_stream,
+                encode_byte_stream_shared_lz,
                 2,
                 [&](const std::vector<uint8_t>& bytes) {
                     return detail::compress_global_chain_lz(bytes, lz_params);
@@ -436,9 +481,10 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
         });
         mode1 = detail::build_mode1_payload_from_prepared(
             mode1_prepared,
+            mode1_pred,
             pad_h,
             pixel_count,
-            encode_byte_stream_shared_lz, encode_byte_stream,
+            encode_byte_stream_shared_lz,
             1,
             [](const std::vector<uint8_t>& bytes) {
                 return TileLZ::compress(bytes);
@@ -448,9 +494,10 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
     } else {
         mode1 = detail::build_mode1_payload_from_prepared(
             mode1_prepared,
+            mode1_pred,
             pad_h,
             pixel_count,
-            encode_byte_stream_shared_lz, encode_byte_stream,
+            encode_byte_stream_shared_lz,
             1,
             [](const std::vector<uint8_t>& bytes) {
                 return TileLZ::compress(bytes);
@@ -458,9 +505,10 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
         );
         mode2 = detail::build_mode1_payload_from_prepared(
             mode1_prepared,
+            mode1_pred,
             pad_h,
             pixel_count,
-            encode_byte_stream_shared_lz, encode_byte_stream,
+            encode_byte_stream_shared_lz,
             2,
             [&](const std::vector<uint8_t>& bytes) {
                 return detail::compress_global_chain_lz(bytes, lz_params);
