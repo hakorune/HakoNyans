@@ -41,8 +41,8 @@ inline void build_filter_rows_and_residuals(
 
         int best_f = 0;
         int64_t best_sum = INT64_MAX;
-        const int filter_count = lossless_mode_select::lossless_filter_candidates(profile_id);
-        for (int f = 0; f < filter_count; f++) {
+        for (int f = 0; f < 8; f++) {
+            if (f == 5 && profile_id != lossless_mode_select::PROFILE_PHOTO) continue;
             int64_t sum = 0;
             for (uint32_t x = 0; x < pad_w; x++) {
                 const int bx_col = (int)(x / 8);
@@ -63,6 +63,8 @@ inline void build_filter_rows_and_residuals(
                     case 3: pred = (int16_t)(((int)a + (int)b) / 2); break;
                     case 4: pred = LosslessFilter::paeth_predictor(a, b, c); break;
                     case 5: pred = LosslessFilter::med_predictor(a, b, c); break;
+                    case 6: pred = (int16_t)(((int)a * 3 + (int)b) / 4); break;
+                    case 7: pred = (int16_t)(((int)a + (int)b * 3) / 4); break;
                     default: pred = 0; break;
                 }
                 sum += std::abs((int)(orig - pred));
@@ -76,7 +78,7 @@ inline void build_filter_rows_and_residuals(
         filter_ids[y] = (uint8_t)best_f;
         if (stats) {
             stats->filter_rows_with_pixels++;
-            if (best_f >= 0 && best_f < 6) stats->filter_row_id_hist[best_f]++;
+            if (best_f >= 0 && best_f < 8) stats->filter_row_id_hist[best_f]++;
             if (best_f == 5) stats->filter_med_selected++;
         }
 
@@ -99,6 +101,8 @@ inline void build_filter_rows_and_residuals(
                 case 3: pred = (int16_t)(((int)a + (int)b) / 2); break;
                 case 4: pred = LosslessFilter::paeth_predictor(a, b, c); break;
                 case 5: pred = LosslessFilter::med_predictor(a, b, c); break;
+                case 6: pred = (int16_t)(((int)a * 3 + (int)b) / 4); break;
+                case 7: pred = (int16_t)(((int)a + (int)b * 3) / 4); break;
                 default: pred = 0; break;
             }
             filter_residuals.push_back(orig - pred);

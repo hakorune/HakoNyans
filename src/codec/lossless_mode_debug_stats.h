@@ -37,7 +37,7 @@ struct LosslessModeDebugStats {
     uint64_t filter_diag_palette16_est_bits_sum;
     uint64_t filter_diag_palette16_gain_bits_sum;
     uint64_t filter_rows_with_pixels;
-    uint64_t filter_row_id_hist[6];
+    uint64_t filter_row_id_hist[8];
 
     uint64_t tile4_rejected_by_copy;
     uint64_t tile4_rejected_by_palette;
@@ -205,6 +205,7 @@ struct LosslessModeDebugStats {
     uint64_t natural_row_pred_pack_ns;
     uint64_t natural_row_mode1_build_ns;
     uint64_t natural_row_mode2_build_ns;
+    uint64_t natural_row_mode3_build_ns;
     uint64_t natural_row_mode0_size_sum;
     uint64_t natural_row_mode1_size_sum;
     uint64_t natural_row_mode2_size_sum;

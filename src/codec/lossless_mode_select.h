@@ -113,7 +113,8 @@ inline int estimate_filter_symbol_bits2_fast(
 }
 
 inline int lossless_filter_candidates(int profile) {
-    return (profile == PROFILE_PHOTO) ? LosslessFilter::FILTER_COUNT : LosslessFilter::FILTER_MED;
+    (void)profile;
+    return LosslessFilter::FILTER_COUNT;
 }
 
 inline int estimate_filter_bits(
@@ -144,15 +145,18 @@ inline int estimate_filter_bits(
             const int r2 = (int)orig - (int)b;
             const int r3 = (int)orig - (((int)a + (int)b) / 2);
             const int r4 = (int)orig - (int)LosslessFilter::paeth_predictor(a, b, c);
+            
             bits2[0] += estimate_filter_symbol_bits2_fast(fast_abs(r0), bits_lut);
             bits2[1] += estimate_filter_symbol_bits2_fast(fast_abs(r1), bits_lut);
             bits2[2] += estimate_filter_symbol_bits2_fast(fast_abs(r2), bits_lut);
             bits2[3] += estimate_filter_symbol_bits2_fast(fast_abs(r3), bits_lut);
             bits2[4] += estimate_filter_symbol_bits2_fast(fast_abs(r4), bits_lut);
-            if (use_med) {
+            
+            if (profile == PROFILE_PHOTO) {
                 const int r5 = (int)orig - (int)LosslessFilter::med_predictor(a, b, c);
                 bits2[5] += estimate_filter_symbol_bits2_fast(fast_abs(r5), bits_lut);
             }
+            
             const int r6 = (int)orig - (int16_t)(((int)a * 3 + (int)b) / 4);
             const int r7 = (int)orig - (int16_t)(((int)a + (int)b * 3) / 4);
             bits2[6] += estimate_filter_symbol_bits2_fast(fast_abs(r6), bits_lut);
@@ -164,7 +168,10 @@ inline int estimate_filter_bits(
     }
 
     int best_bits2 = bits2[0];
-    for (int f = 1; f < filter_count; f++) best_bits2 = std::min(best_bits2, bits2[f]);
+    for (int f = 1; f < 8; f++) {
+        if (f == 5 && profile != PROFILE_PHOTO) continue;
+        best_bits2 = std::min(best_bits2, bits2[f]);
+    }
     return best_bits2;
 }
 

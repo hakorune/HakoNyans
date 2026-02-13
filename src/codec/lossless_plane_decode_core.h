@@ -601,6 +601,28 @@ inline std::vector<int16_t> decode_plane_lossless(
                             }
                             break;
                         }
+                        case 6: {
+                            int16_t left = (x_base > 0) ? dst[-1] : 0;
+                            for (size_t px = 0; px < kRun; px++) {
+                                const int16_t b = up ? up[px] : 0;
+                                const int16_t pred = (int16_t)(((int)left * 3 + (int)b) / 4);
+                                const int16_t cur = (int16_t)(pred + rs[px]);
+                                dst[px] = cur;
+                                left = cur;
+                            }
+                            break;
+                        }
+                        case 7: {
+                            int16_t left = (x_base > 0) ? dst[-1] : 0;
+                            for (size_t px = 0; px < kRun; px++) {
+                                const int16_t b = up ? up[px] : 0;
+                                const int16_t pred = (int16_t)(((int)left + (int)b * 3) / 4);
+                                const int16_t cur = (int16_t)(pred + rs[px]);
+                                dst[px] = cur;
+                                left = cur;
+                            }
+                            break;
+                        }
                         default: {
                             std::memcpy(dst, rs, kRun * sizeof(int16_t));
                             break;
@@ -625,6 +647,8 @@ inline std::vector<int16_t> decode_plane_lossless(
                         case 3: pred = (int16_t)(((int)a + (int)b) / 2); break;
                         case 4: pred = LosslessFilter::paeth_predictor(a, b, c); break;
                         case 5: pred = LosslessFilter::med_predictor(a, b, c); break;
+                        case 6: pred = (int16_t)(((int)a * 3 + (int)b) / 4); break;
+                        case 7: pred = (int16_t)(((int)a + (int)b * 3) / 4); break;
                         default: pred = 0; break;
                     }
                     if (residual_idx < residual_size) {

@@ -1253,6 +1253,11 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
             uint64_t elapsed_ns = 0;
             detail::GlobalChainLzCounters lz;
         };
+        struct TimedMode23 {
+            TimedPayload mode2;
+            std::vector<uint8_t> mode3;
+            uint64_t mode3_elapsed_ns = 0;
+        };
         if (stats) {
             stats->natural_row_prep_parallel_count++;
             stats->natural_row_prep_parallel_tokens_sum += (uint64_t)pipeline_tokens.count();
@@ -1265,7 +1270,7 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
         auto mode23_future = std::async(
             std::launch::async,
             [&,
-             rp = std::move(ready_promise)]() mutable -> std::pair<TimedPayload, std::vector<uint8_t>> {
+             rp = std::move(ready_promise)]() mutable -> TimedMode23 {
                 thread_budget::ScopedParallelRegion guard;
                 ReadyData ready;
                 const auto t_prep0 = Clock::now();
@@ -1306,14 +1311,20 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
                 const auto t_mode2_1 = Clock::now();
                 out2.elapsed_ns = ns_since(t_mode2_0, t_mode2_1);
 
+                const auto t_mode3_0 = Clock::now();
                 std::vector<uint8_t> out3 = detail::build_mode3_payload_from_prepared(
                     padded, pad_w, pad_h, pixel_count,
                     *ready.prepared,
                     *ready.pred,
                     encode_byte_stream
                 );
+                const auto t_mode3_1 = Clock::now();
 
-                return {out2, out3};
+                return TimedMode23{
+                    std::move(out2),
+                    std::move(out3),
+                    ns_since(t_mode3_0, t_mode3_1)
+                };
             }
         );
 
@@ -1349,10 +1360,13 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
         if (stats) stats->natural_row_mode1_build_ns += ns_since(t_mode1_0, t_mode1_1);
 
         auto mode23_res = mode23_future.get();
-        mode2 = std::move(mode23_res.first.payload);
-        mode3 = std::move(mode23_res.second);
-        if (stats) stats->natural_row_mode2_build_ns += mode23_res.first.elapsed_ns;
-        accumulate_mode2_lz(mode23_res.first.lz);
+        mode2 = std::move(mode23_res.mode2.payload);
+        mode3 = std::move(mode23_res.mode3);
+        if (stats) {
+            stats->natural_row_mode2_build_ns += mode23_res.mode2.elapsed_ns;
+            stats->natural_row_mode3_build_ns += mode23_res.mode3_elapsed_ns;
+        }
+        accumulate_mode2_lz(mode23_res.mode2.lz);
     } else {
         if (stats) stats->natural_row_prep_seq_count++;
         const auto t_mode0_0 = Clock::now();
@@ -1398,12 +1412,17 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
             uint64_t elapsed_ns = 0;
             detail::GlobalChainLzCounters lz;
         };
+        struct TimedMode23 {
+            TimedPayload mode2;
+            std::vector<uint8_t> mode3;
+            uint64_t mode3_elapsed_ns = 0;
+        };
         if (mode12_tokens.acquired() && mode2_possible_vs_mode0) {
             if (stats) {
                 stats->natural_row_mode12_parallel_count++;
                 stats->natural_row_mode12_parallel_tokens_sum += (uint64_t)mode12_tokens.count();
             }
-            auto f_mode23 = std::async(std::launch::async, [&]() -> std::pair<TimedPayload, std::vector<uint8_t>> {
+            auto f_mode23 = std::async(std::launch::async, [&]() -> TimedMode23 {
                 thread_budget::ScopedParallelRegion guard;
                 const auto t0 = Clock::now();
                 TimedPayload out2;
@@ -1423,13 +1442,19 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
                 const auto t1 = Clock::now();
                 out2.elapsed_ns = ns_since(t0, t1);
 
+                const auto t_mode3_0 = Clock::now();
                 std::vector<uint8_t> out3 = detail::build_mode3_payload_from_prepared(
                     padded, pad_w, pad_h, pixel_count,
                     mode1_prepared,
                     mode1_pred,
                     encode_byte_stream
                 );
-                return {out2, out3};
+                const auto t_mode3_1 = Clock::now();
+                return TimedMode23{
+                    std::move(out2),
+                    std::move(out3),
+                    ns_since(t_mode3_0, t_mode3_1)
+                };
             });
             const auto t_mode1_0 = Clock::now();
             mode1 = detail::build_mode1_payload_from_prepared(
@@ -1446,10 +1471,13 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
             const auto t_mode1_1 = Clock::now();
             if (stats) stats->natural_row_mode1_build_ns += ns_since(t_mode1_0, t_mode1_1);
             auto mode23_res = f_mode23.get();
-            mode2 = std::move(mode23_res.first.payload);
-            mode3 = std::move(mode23_res.second);
-            if (stats) stats->natural_row_mode2_build_ns += mode23_res.first.elapsed_ns;
-            accumulate_mode2_lz(mode23_res.first.lz);
+            mode2 = std::move(mode23_res.mode2.payload);
+            mode3 = std::move(mode23_res.mode3);
+            if (stats) {
+                stats->natural_row_mode2_build_ns += mode23_res.mode2.elapsed_ns;
+                stats->natural_row_mode3_build_ns += mode23_res.mode3_elapsed_ns;
+            }
+            accumulate_mode2_lz(mode23_res.mode2.lz);
             if (stats && mode2.empty()) stats->natural_row_mode2_bias_reject_count++;
         } else {
             if (stats) stats->natural_row_mode12_seq_count++;
@@ -1498,12 +1526,15 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
             } else if (stats) {
                 stats->natural_row_mode2_bias_reject_count++;
             }
+            const auto t_mode3_0 = Clock::now();
             mode3 = detail::build_mode3_payload_from_prepared(
                 padded, pad_w, pad_h, pixel_count,
                 mode1_prepared,
                 mode1_pred,
                 encode_byte_stream
             );
+            const auto t_mode3_1 = Clock::now();
+            if (stats) stats->natural_row_mode3_build_ns += ns_since(t_mode3_0, t_mode3_1);
         }
     }
     if (mode0.empty()) return {};

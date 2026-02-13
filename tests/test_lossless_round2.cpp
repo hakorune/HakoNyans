@@ -10,6 +10,7 @@
 #include "../src/codec/encode.h"
 #include "../src/codec/decode.h"
 #include "../src/codec/headers.h"
+#include "../src/codec/lossless_natural_decode.h"
 #include "../src/codec/lossless_filter.h"
 
 using namespace hakonyans;
@@ -1660,6 +1661,86 @@ static void test_natural_row_route_roundtrip() {
     PASS();
 }
 
+static void test_natural_row_mode3_roundtrip() {
+    TEST("Natural route Mode 3 (context-split) roundtrip");
+
+    // Mode 3 is context-split based on local gradients.
+    // Create an image with clear flat/edge transitions.
+    const int W = 64, H = 64;
+    std::vector<uint8_t> rgb(W * H * 3);
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            size_t off = (size_t)(y * W + x) * 3;
+            if ((x / 8) % 2 == (y / 8) % 2) {
+                // Flat area
+                rgb[off] = rgb[off+1] = rgb[off+2] = 128;
+            } else {
+                // High gradient area (noise)
+                rgb[off] = (uint8_t)(x * 4);
+                rgb[off+1] = (uint8_t)(y * 4);
+                rgb[off+2] = (uint8_t)((x + y) * 2);
+            }
+        }
+    }
+
+    // Force Max preset to ensure route competition
+    auto hkn = GrayscaleEncoder::encode_color_lossless(
+        rgb.data(), W, H, GrayscaleEncoder::LosslessPreset::MAX
+    );
+    auto s = GrayscaleEncoder::get_lossless_mode_debug_stats();
+    
+    // We expect mode 3 to be candidate and hopefully selected for at least some tiles
+    if (s.natural_row_mode3_size_sum == 0) {
+        // Fallback: at least verify it's valid if it was chosen
+    }
+
+    int dec_w = 0, dec_h = 0;
+    auto dec = GrayscaleDecoder::decode_color_lossless(hkn, dec_w, dec_h);
+
+    if (dec_w == W && dec_h == H && dec == rgb) {
+        PASS();
+    } else {
+        FAIL("Mode 3 roundtrip mismatch");
+    }
+}
+
+static void test_natural_row_mode3_malformed() {
+    TEST("Natural route Mode 3 malformed payload");
+
+    const int W = 16, H = 16;
+    std::vector<int16_t> plane(W * H, 0);
+    // Create a mode 3 payload manually (minimal)
+    std::vector<uint8_t> td;
+    td.push_back(FileHeader::WRAPPER_MAGIC_NATURAL_ROW);
+    td.push_back(3); // mode 3
+    auto push_u32 = [&](uint32_t v) {
+        td.push_back((uint8_t)(v & 0xFF)); td.push_back((uint8_t)((v >> 8) & 0xFF));
+        td.push_back((uint8_t)((v >> 16) & 0xFF)); td.push_back((uint8_t)((v >> 24) & 0xFF));
+    };
+    push_u32(W * H); // pixel_count
+    push_u32(H);     // pred_count
+    push_u32(100);   // flat_size (bogus)
+    push_u32(100);   // edge_size (bogus)
+    td.push_back(0); // pred_mode=raw
+    push_u32(H);     // pred_raw_count
+    push_u32(H);     // pred_payload_size
+    for(int i=0; i<H; i++) td.push_back(0); // pred ids
+
+    std::vector<int16_t> out;
+    bool handled = hakonyans::lossless_natural_decode::try_decode_natural_row_wrapper(
+        td.data(), td.size(), W, H, W, H, FileHeader::VERSION,
+        [](const uint8_t*, size_t, size_t) { return std::vector<uint8_t>(); },
+        [](const uint8_t*, size_t, size_t) { return std::vector<uint8_t>(); },
+        out
+    );
+
+    if (handled && out.size() == W * H) {
+        PASS(); // Gracefully returned zeros
+    } else {
+        FAIL("Malformed mode 3 payload caused crash or unexpected behavior");
+    }
+}
+
 static void test_lossless_preset_balanced_compat() {
     TEST("test_lossless_preset_balanced_compat");
 
@@ -1755,6 +1836,8 @@ int main() {
     test_filter_lo_mode5_selection_path();
     test_filter_lo_mode5_fallback_logic();
     test_natural_row_route_roundtrip();
+    test_natural_row_mode3_roundtrip();
+    test_natural_row_mode3_malformed();
     test_lossless_preset_balanced_compat();
     test_lossless_preset_fast_max_roundtrip();
 

@@ -130,6 +130,17 @@ static void add_lossless_tile(Accounting& a, const uint8_t* tile_data, size_t ti
             pred_payload_size = read_u32(tile_data + 23);
             header_bytes = 27;
             payload_off = header_bytes + (size_t)pred_payload_size;
+        } else if (mode == 3) {
+            if (tile_size < 27) {
+                a.unknown += tile_size;
+                return;
+            }
+            uint32_t flat_size = read_u32(tile_data + 10);
+            uint32_t edge_size = read_u32(tile_data + 14);
+            pred_payload_size = read_u32(tile_data + 23);
+            header_bytes = 27;
+            payload_off = header_bytes + (size_t)pred_payload_size;
+            resid_payload_size = flat_size + edge_size;
         } else {
             a.unknown += tile_size;
             return;
@@ -145,7 +156,7 @@ static void add_lossless_tile(Accounting& a, const uint8_t* tile_data, size_t ti
         size_t payload_bytes = tile_size - payload_off;
         if (payload_bytes > 0) a.natural_row += payload_bytes;
         uint64_t expected_payload = (uint64_t)resid_payload_size;
-        if (mode == 1 || mode == 2) expected_payload += (uint64_t)pred_payload_size;
+        if (mode == 1 || mode == 2 || mode == 3) expected_payload += (uint64_t)pred_payload_size;
         if ((uint64_t)payload_bytes > expected_payload) {
             a.unknown += (size_t)((uint64_t)payload_bytes - expected_payload);
         }
