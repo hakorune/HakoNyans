@@ -751,3 +751,104 @@ Interpretation:
 ### Current Promoted Baseline For Next Work
 - Use this CSV as baseline for subsequent A/B:
   - `bench_results/tmp_plan3_mode01prep_opt_20260213_v2.csv`
+
+## 2026-02-13: Decode Observation Deepening (YCoCg + Scheduler Split)
+
+### Objective
+- Strengthen decode-side observation before further optimization.
+- Split wall-clock-heavy decode stages into:
+  - scheduler/dispatch overhead
+  - kernel compute
+  - wait/join blocking
+
+### Implementation
+- `src/codec/lossless_decode_debug_stats.h`
+  - Added decode counters:
+    - `decode_plane_dispatch_ns`
+    - `decode_plane_wait_ns`
+    - `decode_ycocg_dispatch_ns`
+    - `decode_ycocg_kernel_ns`
+    - `decode_ycocg_wait_ns`
+    - `decode_ycocg_rows_sum`
+    - `decode_ycocg_pixels_sum`
+- `src/codec/decode.h`
+  - `decode_color_lossless(...)`:
+    - instrumented plane 3-way scheduler dispatch/wait windows
+    - instrumented YCoCg->RGB dispatch/kernel/wait split
+    - accumulated per-task rows/pixels for parallel path
+- `bench/bench_png_compare.cpp`
+  - Exported new counters to CSV.
+  - Added median print lines in stage/parallel sections for the new splits.
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `cd build && ctest --output-on-failure`
+- Result: `17/17 PASS`
+
+### Observation Artifact
+- `bench_results/tmp_obs_ycocg_deep_20260213.csv`
+  - command:
+    - `./build/bench_png_compare --runs 1 --warmup 0 --baseline bench_results/tmp_plan3_mode01prep_opt_20260213_v2.csv --out bench_results/tmp_obs_ycocg_deep_20260213.csv`
+
+### Initial Readout (runs=1, diagnostic)
+- New median lines observed in console:
+  - `plane dispatch/wait`
+  - `ycocg dispatch/kernel/wait`
+  - `ycocg rows/pixels`
+- Example (diagnostic run):
+  - `plane dispatch/wait: 0.000 / 7.829 ms`
+  - `ycocg dispatch/kernel/wait: 5.228 / 2.043 / 0.728 ms`
+  - `ycocg rows/pixels: 796 / 1,233,408`
+
+Interpretation:
+- The decode bottleneck is not only arithmetic kernel time; scheduler and wait portions are now explicitly measurable.
+- Next optimization should target the largest stable component after repeated-runs observation (especially ycocg dispatch/wait behavior).
+
+## 2026-02-13: YCoCg->RGB Dispatch Overhead Reduction
+
+### Objective
+- Reduce decode wall time by lowering YCoCg->RGB scheduling overhead.
+- Keep format and size behavior unchanged (decode-side only optimization).
+
+### Implementation
+- `src/codec/decode.h` (`decode_color_lossless(...)`)
+  - Added adaptive cap for RGB conversion worker count:
+    - hard cap: `kMaxRgbThreads = 8`
+    - row granularity gate: `kMinRowsPerTask = 128`
+    - pixel granularity gate: `kMinPixelsPerTask = 200000`
+  - Avoided over-sharding for small/medium frames by reducing requested worker count.
+  - Reduced async launch overhead:
+    - launch `std::async` only for worker chunks `t=1..N-1`
+    - process chunk `t=0` on caller thread
+  - Existing deep counters remain active (`dispatch/kernel/wait`, rows/pixels).
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `cd build && ctest --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- baseline:
+  - `bench_results/tmp_plan3_mode01prep_opt_20260213_v2.csv`
+- candidates:
+  - `bench_results/tmp_ycocg_sched_opt_20260213.csv`
+  - `bench_results/tmp_ycocg_sched_opt_20260213_rerun.csv`
+  - `bench_results/tmp_ycocg_sched_opt_20260213_runs5.csv` (promoted)
+
+### Result Summary (promoted runs=5)
+- Compression invariants:
+  - `median PNG/HKN = 0.2610` unchanged
+  - `total HKN bytes = 2,977,544` unchanged
+- Decode performance vs baseline:
+  - `hkn_dec_ms: 13.566274 -> 9.583383` (`-3.982891`, ~29.4% faster)
+  - `hkn_dec_ycocg_to_rgb_ms: 5.436907 -> 1.155264` (`-4.281643`)
+  - `ycocg dispatch/kernel/wait` now observable as:
+    - `0.530 / 2.053 / 0.054 ms` (median over fixed-6)
+
+Interpretation:
+- The main win came from reducing scheduling overhead, not filter/reconstruct math changes.
+- This confirms decode-side thread sharding policy as a high-ROI optimization lever.
+
+### Current Promoted Baseline For Next Work
+- Use this CSV as baseline for subsequent A/B:
+  - `bench_results/tmp_ycocg_sched_opt_20260213_runs5.csv`

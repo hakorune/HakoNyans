@@ -106,6 +106,13 @@ struct ResultRow {
     double hkn_dec_header_ms = 0.0;
     double hkn_dec_plane_total_ms = 0.0;
     double hkn_dec_ycocg_to_rgb_ms = 0.0;
+    double hkn_dec_plane_dispatch_ms = 0.0;
+    double hkn_dec_plane_wait_ms = 0.0;
+    double hkn_dec_ycocg_dispatch_ms = 0.0;
+    double hkn_dec_ycocg_kernel_ms = 0.0;
+    double hkn_dec_ycocg_wait_ms = 0.0;
+    uint64_t hkn_dec_ycocg_rows_sum = 0;
+    uint64_t hkn_dec_ycocg_pixels_sum = 0;
     double hkn_dec_plane_try_natural_ms = 0.0;
     double hkn_dec_plane_screen_wrapper_ms = 0.0;
     double hkn_dec_plane_block_types_ms = 0.0;
@@ -283,7 +290,7 @@ void write_results_csv(const std::string& path, const std::vector<ResultRow>& ro
         throw std::runtime_error("Failed to write CSV: " + path);
     }
 
-    ofs << "image_id,image_name,width,height,hkn_bytes,png_bytes,png_over_hkn,dec_ms,natural_row_selected,natural_row_candidates,natural_row_selected_rate,gain_bytes,loss_bytes,hkn_enc_ms,hkn_dec_ms,png_enc_ms,png_dec_ms,hkn_enc_rgb_to_ycocg_ms,hkn_enc_profile_ms,hkn_enc_plane_total_ms,hkn_enc_plane_block_classify_ms,hkn_enc_plane_filter_rows_ms,hkn_enc_plane_lo_stream_ms,hkn_enc_plane_hi_stream_ms,hkn_enc_plane_stream_wrap_ms,hkn_enc_plane_route_ms,hkn_enc_plane_route_prefilter_ms,hkn_enc_plane_route_screen_candidate_ms,hkn_enc_plane_route_natural_candidate_ms,hkn_enc_plane_route_parallel,hkn_enc_plane_route_seq,hkn_enc_plane_route_parallel_tokens_sum,hkn_enc_route_nat_mode0_ms,hkn_enc_route_nat_mode1prep_ms,hkn_enc_route_nat_predpack_ms,hkn_enc_route_nat_mode1_ms,hkn_enc_route_nat_mode2_ms,hkn_enc_route_nat_mode0_selected,hkn_enc_route_nat_mode1_selected,hkn_enc_route_nat_mode2_selected,hkn_enc_route_nat_pred_raw,hkn_enc_route_nat_pred_rans,hkn_enc_route_nat_mode2_bias_adopt,hkn_enc_route_nat_mode2_bias_reject,hkn_enc_route_nat_prep_parallel,hkn_enc_route_nat_prep_seq,hkn_enc_route_nat_prep_tokens_sum,hkn_enc_route_nat_mode12_parallel,hkn_enc_route_nat_mode12_seq,hkn_enc_route_nat_mode12_tokens_sum,hkn_enc_container_pack_ms,hkn_dec_header_ms,hkn_dec_plane_total_ms,hkn_dec_ycocg_to_rgb_ms,hkn_dec_plane_try_natural_ms,hkn_dec_plane_screen_wrapper_ms,hkn_dec_plane_block_types_ms,hkn_dec_plane_filter_ids_ms,hkn_dec_plane_filter_lo_ms,hkn_dec_plane_filter_hi_ms,hkn_dec_plane_reconstruct_ms,hkn_enc_plane_y_ms,hkn_enc_plane_co_ms,hkn_enc_plane_cg_ms,hkn_dec_plane_y_ms,hkn_dec_plane_co_ms,hkn_dec_plane_cg_ms,hkn_enc_plane_parallel_3way,hkn_enc_plane_parallel_2way,hkn_enc_plane_parallel_seq,hkn_enc_plane_parallel_tokens_sum,hkn_dec_plane_parallel_3way,hkn_dec_plane_parallel_seq,hkn_dec_plane_parallel_tokens_sum,hkn_dec_ycocg_parallel,hkn_dec_ycocg_sequential,hkn_dec_ycocg_parallel_threads_sum,hkn_dec_filter_lo_mode_raw,hkn_dec_filter_lo_mode1,hkn_dec_filter_lo_mode2,hkn_dec_filter_lo_mode3,hkn_dec_filter_lo_mode4,hkn_dec_filter_lo_mode5,hkn_dec_filter_lo_mode_invalid,hkn_dec_filter_lo_fallback_zero_fill,hkn_dec_filter_lo_mode4_parallel_tiles,hkn_dec_filter_lo_mode4_sequential_tiles,hkn_dec_filter_lo_decode_rans_ms,hkn_dec_filter_lo_decode_shared_rans_ms,hkn_dec_filter_lo_tilelz_ms,hkn_dec_recon_copy_fast_rows,hkn_dec_recon_copy_slow_rows,hkn_dec_recon_tile4_fast_quads,hkn_dec_recon_tile4_slow_quads,hkn_dec_recon_residual_missing\n";
+    ofs << "image_id,image_name,width,height,hkn_bytes,png_bytes,png_over_hkn,dec_ms,natural_row_selected,natural_row_candidates,natural_row_selected_rate,gain_bytes,loss_bytes,hkn_enc_ms,hkn_dec_ms,png_enc_ms,png_dec_ms,hkn_enc_rgb_to_ycocg_ms,hkn_enc_profile_ms,hkn_enc_plane_total_ms,hkn_enc_plane_block_classify_ms,hkn_enc_plane_filter_rows_ms,hkn_enc_plane_lo_stream_ms,hkn_enc_plane_hi_stream_ms,hkn_enc_plane_stream_wrap_ms,hkn_enc_plane_route_ms,hkn_enc_plane_route_prefilter_ms,hkn_enc_plane_route_screen_candidate_ms,hkn_enc_plane_route_natural_candidate_ms,hkn_enc_plane_route_parallel,hkn_enc_plane_route_seq,hkn_enc_plane_route_parallel_tokens_sum,hkn_enc_route_nat_mode0_ms,hkn_enc_route_nat_mode1prep_ms,hkn_enc_route_nat_predpack_ms,hkn_enc_route_nat_mode1_ms,hkn_enc_route_nat_mode2_ms,hkn_enc_route_nat_mode0_selected,hkn_enc_route_nat_mode1_selected,hkn_enc_route_nat_mode2_selected,hkn_enc_route_nat_pred_raw,hkn_enc_route_nat_pred_rans,hkn_enc_route_nat_mode2_bias_adopt,hkn_enc_route_nat_mode2_bias_reject,hkn_enc_route_nat_prep_parallel,hkn_enc_route_nat_prep_seq,hkn_enc_route_nat_prep_tokens_sum,hkn_enc_route_nat_mode12_parallel,hkn_enc_route_nat_mode12_seq,hkn_enc_route_nat_mode12_tokens_sum,hkn_enc_container_pack_ms,hkn_dec_header_ms,hkn_dec_plane_total_ms,hkn_dec_ycocg_to_rgb_ms,hkn_dec_plane_dispatch_ms,hkn_dec_plane_wait_ms,hkn_dec_ycocg_dispatch_ms,hkn_dec_ycocg_kernel_ms,hkn_dec_ycocg_wait_ms,hkn_dec_ycocg_rows_sum,hkn_dec_ycocg_pixels_sum,hkn_dec_plane_try_natural_ms,hkn_dec_plane_screen_wrapper_ms,hkn_dec_plane_block_types_ms,hkn_dec_plane_filter_ids_ms,hkn_dec_plane_filter_lo_ms,hkn_dec_plane_filter_hi_ms,hkn_dec_plane_reconstruct_ms,hkn_enc_plane_y_ms,hkn_enc_plane_co_ms,hkn_enc_plane_cg_ms,hkn_dec_plane_y_ms,hkn_dec_plane_co_ms,hkn_dec_plane_cg_ms,hkn_enc_plane_parallel_3way,hkn_enc_plane_parallel_2way,hkn_enc_plane_parallel_seq,hkn_enc_plane_parallel_tokens_sum,hkn_dec_plane_parallel_3way,hkn_dec_plane_parallel_seq,hkn_dec_plane_parallel_tokens_sum,hkn_dec_ycocg_parallel,hkn_dec_ycocg_sequential,hkn_dec_ycocg_parallel_threads_sum,hkn_dec_filter_lo_mode_raw,hkn_dec_filter_lo_mode1,hkn_dec_filter_lo_mode2,hkn_dec_filter_lo_mode3,hkn_dec_filter_lo_mode4,hkn_dec_filter_lo_mode5,hkn_dec_filter_lo_mode_invalid,hkn_dec_filter_lo_fallback_zero_fill,hkn_dec_filter_lo_mode4_parallel_tiles,hkn_dec_filter_lo_mode4_sequential_tiles,hkn_dec_filter_lo_decode_rans_ms,hkn_dec_filter_lo_decode_shared_rans_ms,hkn_dec_filter_lo_tilelz_ms,hkn_dec_recon_copy_fast_rows,hkn_dec_recon_copy_slow_rows,hkn_dec_recon_tile4_fast_quads,hkn_dec_recon_tile4_slow_quads,hkn_dec_recon_residual_missing\n";
     ofs << std::fixed << std::setprecision(6);
     for (const auto& r : rows) {
         ofs << r.image_id << ","
@@ -340,6 +347,13 @@ void write_results_csv(const std::string& path, const std::vector<ResultRow>& ro
             << r.hkn_dec_header_ms << ","
             << r.hkn_dec_plane_total_ms << ","
             << r.hkn_dec_ycocg_to_rgb_ms << ","
+            << r.hkn_dec_plane_dispatch_ms << ","
+            << r.hkn_dec_plane_wait_ms << ","
+            << r.hkn_dec_ycocg_dispatch_ms << ","
+            << r.hkn_dec_ycocg_kernel_ms << ","
+            << r.hkn_dec_ycocg_wait_ms << ","
+            << r.hkn_dec_ycocg_rows_sum << ","
+            << r.hkn_dec_ycocg_pixels_sum << ","
             << r.hkn_dec_plane_try_natural_ms << ","
             << r.hkn_dec_plane_screen_wrapper_ms << ","
             << r.hkn_dec_plane_block_types_ms << ","
@@ -442,6 +456,11 @@ ResultRow benchmark_one(const EvalImage& img, const Args& args) {
     std::vector<double> hkn_dec_header_samples_ms;
     std::vector<double> hkn_dec_plane_total_samples_ms;
     std::vector<double> hkn_dec_ycocg_to_rgb_samples_ms;
+    std::vector<double> hkn_dec_plane_dispatch_samples_ms;
+    std::vector<double> hkn_dec_plane_wait_samples_ms;
+    std::vector<double> hkn_dec_ycocg_dispatch_samples_ms;
+    std::vector<double> hkn_dec_ycocg_kernel_samples_ms;
+    std::vector<double> hkn_dec_ycocg_wait_samples_ms;
     std::vector<double> hkn_dec_plane_try_natural_samples_ms;
     std::vector<double> hkn_dec_plane_screen_wrapper_samples_ms;
     std::vector<double> hkn_dec_plane_block_types_samples_ms;
@@ -466,6 +485,8 @@ ResultRow benchmark_one(const EvalImage& img, const Args& args) {
     std::vector<uint64_t> dec_ycocg_parallel_samples;
     std::vector<uint64_t> dec_ycocg_seq_samples;
     std::vector<uint64_t> dec_ycocg_threads_sum_samples;
+    std::vector<uint64_t> dec_ycocg_rows_sum_samples;
+    std::vector<uint64_t> dec_ycocg_pixels_sum_samples;
     std::vector<uint64_t> dec_filter_lo_mode_raw_samples;
     std::vector<uint64_t> dec_filter_lo_mode1_samples;
     std::vector<uint64_t> dec_filter_lo_mode2_samples;
@@ -561,6 +582,11 @@ ResultRow benchmark_one(const EvalImage& img, const Args& args) {
             hkn_dec_header_samples_ms.push_back(ns_to_ms(dec_stats.decode_header_dir_ns));
             hkn_dec_plane_total_samples_ms.push_back(ns_to_ms(dec_stats.decode_plane_total_ns));
             hkn_dec_ycocg_to_rgb_samples_ms.push_back(ns_to_ms(dec_stats.decode_ycocg_to_rgb_ns));
+            hkn_dec_plane_dispatch_samples_ms.push_back(ns_to_ms(dec_stats.decode_plane_dispatch_ns));
+            hkn_dec_plane_wait_samples_ms.push_back(ns_to_ms(dec_stats.decode_plane_wait_ns));
+            hkn_dec_ycocg_dispatch_samples_ms.push_back(ns_to_ms(dec_stats.decode_ycocg_dispatch_ns));
+            hkn_dec_ycocg_kernel_samples_ms.push_back(ns_to_ms(dec_stats.decode_ycocg_kernel_ns));
+            hkn_dec_ycocg_wait_samples_ms.push_back(ns_to_ms(dec_stats.decode_ycocg_wait_ns));
             hkn_dec_plane_try_natural_samples_ms.push_back(ns_to_ms(dec_stats.plane_try_natural_ns));
             hkn_dec_plane_screen_wrapper_samples_ms.push_back(ns_to_ms(dec_stats.plane_screen_wrapper_ns));
             hkn_dec_plane_block_types_samples_ms.push_back(ns_to_ms(dec_stats.plane_block_types_ns));
@@ -585,6 +611,8 @@ ResultRow benchmark_one(const EvalImage& img, const Args& args) {
             dec_ycocg_parallel_samples.push_back(dec_stats.decode_ycocg_parallel_count);
             dec_ycocg_seq_samples.push_back(dec_stats.decode_ycocg_sequential_count);
             dec_ycocg_threads_sum_samples.push_back(dec_stats.decode_ycocg_parallel_threads_sum);
+            dec_ycocg_rows_sum_samples.push_back(dec_stats.decode_ycocg_rows_sum);
+            dec_ycocg_pixels_sum_samples.push_back(dec_stats.decode_ycocg_pixels_sum);
             dec_filter_lo_mode_raw_samples.push_back(dec_stats.plane_filter_lo_mode_raw_count);
             dec_filter_lo_mode1_samples.push_back(dec_stats.plane_filter_lo_mode1_count);
             dec_filter_lo_mode2_samples.push_back(dec_stats.plane_filter_lo_mode2_count);
@@ -652,6 +680,11 @@ ResultRow benchmark_one(const EvalImage& img, const Args& args) {
     row.hkn_dec_header_ms = median_value(hkn_dec_header_samples_ms);
     row.hkn_dec_plane_total_ms = median_value(hkn_dec_plane_total_samples_ms);
     row.hkn_dec_ycocg_to_rgb_ms = median_value(hkn_dec_ycocg_to_rgb_samples_ms);
+    row.hkn_dec_plane_dispatch_ms = median_value(hkn_dec_plane_dispatch_samples_ms);
+    row.hkn_dec_plane_wait_ms = median_value(hkn_dec_plane_wait_samples_ms);
+    row.hkn_dec_ycocg_dispatch_ms = median_value(hkn_dec_ycocg_dispatch_samples_ms);
+    row.hkn_dec_ycocg_kernel_ms = median_value(hkn_dec_ycocg_kernel_samples_ms);
+    row.hkn_dec_ycocg_wait_ms = median_value(hkn_dec_ycocg_wait_samples_ms);
     row.hkn_dec_plane_try_natural_ms = median_value(hkn_dec_plane_try_natural_samples_ms);
     row.hkn_dec_plane_screen_wrapper_ms = median_value(hkn_dec_plane_screen_wrapper_samples_ms);
     row.hkn_dec_plane_block_types_ms = median_value(hkn_dec_plane_block_types_samples_ms);
@@ -677,6 +710,8 @@ ResultRow benchmark_one(const EvalImage& img, const Args& args) {
     row.hkn_dec_ycocg_parallel = median_value(dec_ycocg_parallel_samples);
     row.hkn_dec_ycocg_sequential = median_value(dec_ycocg_seq_samples);
     row.hkn_dec_ycocg_parallel_threads_sum = median_value(dec_ycocg_threads_sum_samples);
+    row.hkn_dec_ycocg_rows_sum = median_value(dec_ycocg_rows_sum_samples);
+    row.hkn_dec_ycocg_pixels_sum = median_value(dec_ycocg_pixels_sum_samples);
     row.hkn_dec_filter_lo_mode_raw = median_value(dec_filter_lo_mode_raw_samples);
     row.hkn_dec_filter_lo_mode1 = median_value(dec_filter_lo_mode1_samples);
     row.hkn_dec_filter_lo_mode2 = median_value(dec_filter_lo_mode2_samples);
@@ -792,12 +827,12 @@ int main(int argc, char** argv) {
         std::cout << "\n";
 
         std::vector<double> v_enc_rgb, v_enc_cls, v_enc_plane, v_enc_blk, v_enc_rows, v_enc_lo, v_enc_hi, v_enc_wrap, v_enc_route, v_enc_route_pref, v_enc_route_screen, v_enc_route_nat, v_enc_route_nat_m0, v_enc_route_nat_m1prep, v_enc_route_nat_predpack, v_enc_route_nat_m1, v_enc_route_nat_m2, v_enc_pack;
-        std::vector<double> v_dec_hdr, v_dec_plane, v_dec_ycocg, v_dec_nat, v_dec_screen, v_dec_bt, v_dec_fid, v_dec_lo, v_dec_hi, v_dec_recon;
+        std::vector<double> v_dec_hdr, v_dec_plane, v_dec_ycocg, v_dec_plane_dispatch, v_dec_plane_wait, v_dec_ycocg_dispatch, v_dec_ycocg_kernel, v_dec_ycocg_wait, v_dec_nat, v_dec_screen, v_dec_bt, v_dec_fid, v_dec_lo, v_dec_hi, v_dec_recon;
         std::vector<double> v_enc_py, v_enc_pco, v_enc_pcg;
         std::vector<double> v_dec_py, v_dec_pco, v_dec_pcg;
         std::vector<double> v_dec_lo_rans, v_dec_lo_shared_rans, v_dec_lo_lz;
         std::vector<uint64_t> v_enc_p3, v_enc_p2, v_enc_ps, v_enc_ptok, v_enc_route_par, v_enc_route_seq, v_enc_route_tok, v_nat_mode0_sel, v_nat_mode1_sel, v_nat_mode2_sel, v_nat_pred_raw, v_nat_pred_rans, v_nat_bias_adopt, v_nat_bias_reject, v_nat_prep_par, v_nat_prep_seq, v_nat_prep_tok, v_nat_mode12_par, v_nat_mode12_seq, v_nat_mode12_tok;
-        std::vector<uint64_t> v_dec_p3, v_dec_ps, v_dec_ptok, v_dec_rgb_p, v_dec_rgb_s, v_dec_rgb_thr;
+        std::vector<uint64_t> v_dec_p3, v_dec_ps, v_dec_ptok, v_dec_rgb_p, v_dec_rgb_s, v_dec_rgb_thr, v_dec_rgb_rows, v_dec_rgb_pixels;
         std::vector<uint64_t> v_lo_raw, v_lo_m1, v_lo_m2, v_lo_m3, v_lo_m4, v_lo_m5, v_lo_inv, v_lo_fb;
         std::vector<uint64_t> v_lo_m4_par, v_lo_m4_seq;
         std::vector<uint64_t> v_rc_copy_fast, v_rc_copy_slow, v_rc_t4_fast, v_rc_t4_slow, v_rc_res_miss;
@@ -822,6 +857,11 @@ int main(int argc, char** argv) {
         v_dec_hdr.reserve(rows.size());
         v_dec_plane.reserve(rows.size());
         v_dec_ycocg.reserve(rows.size());
+        v_dec_plane_dispatch.reserve(rows.size());
+        v_dec_plane_wait.reserve(rows.size());
+        v_dec_ycocg_dispatch.reserve(rows.size());
+        v_dec_ycocg_kernel.reserve(rows.size());
+        v_dec_ycocg_wait.reserve(rows.size());
         v_dec_nat.reserve(rows.size());
         v_dec_screen.reserve(rows.size());
         v_dec_bt.reserve(rows.size());
@@ -864,6 +904,8 @@ int main(int argc, char** argv) {
         v_dec_rgb_p.reserve(rows.size());
         v_dec_rgb_s.reserve(rows.size());
         v_dec_rgb_thr.reserve(rows.size());
+        v_dec_rgb_rows.reserve(rows.size());
+        v_dec_rgb_pixels.reserve(rows.size());
         v_lo_raw.reserve(rows.size());
         v_lo_m1.reserve(rows.size());
         v_lo_m2.reserve(rows.size());
@@ -901,6 +943,11 @@ int main(int argc, char** argv) {
             v_dec_hdr.push_back(r.hkn_dec_header_ms);
             v_dec_plane.push_back(r.hkn_dec_plane_total_ms);
             v_dec_ycocg.push_back(r.hkn_dec_ycocg_to_rgb_ms);
+            v_dec_plane_dispatch.push_back(r.hkn_dec_plane_dispatch_ms);
+            v_dec_plane_wait.push_back(r.hkn_dec_plane_wait_ms);
+            v_dec_ycocg_dispatch.push_back(r.hkn_dec_ycocg_dispatch_ms);
+            v_dec_ycocg_kernel.push_back(r.hkn_dec_ycocg_kernel_ms);
+            v_dec_ycocg_wait.push_back(r.hkn_dec_ycocg_wait_ms);
             v_dec_nat.push_back(r.hkn_dec_plane_try_natural_ms);
             v_dec_screen.push_back(r.hkn_dec_plane_screen_wrapper_ms);
             v_dec_bt.push_back(r.hkn_dec_plane_block_types_ms);
@@ -943,6 +990,8 @@ int main(int argc, char** argv) {
             v_dec_rgb_p.push_back(r.hkn_dec_ycocg_parallel);
             v_dec_rgb_s.push_back(r.hkn_dec_ycocg_sequential);
             v_dec_rgb_thr.push_back(r.hkn_dec_ycocg_parallel_threads_sum);
+            v_dec_rgb_rows.push_back(r.hkn_dec_ycocg_rows_sum);
+            v_dec_rgb_pixels.push_back(r.hkn_dec_ycocg_pixels_sum);
             v_lo_raw.push_back(r.hkn_dec_filter_lo_mode_raw);
             v_lo_m1.push_back(r.hkn_dec_filter_lo_mode1);
             v_lo_m2.push_back(r.hkn_dec_filter_lo_mode2);
@@ -980,6 +1029,11 @@ int main(int argc, char** argv) {
         const double med_dec_hdr = median_value(v_dec_hdr);
         const double med_dec_plane = median_value(v_dec_plane);
         const double med_dec_ycocg = median_value(v_dec_ycocg);
+        const double med_dec_plane_dispatch = median_value(v_dec_plane_dispatch);
+        const double med_dec_plane_wait = median_value(v_dec_plane_wait);
+        const double med_dec_ycocg_dispatch = median_value(v_dec_ycocg_dispatch);
+        const double med_dec_ycocg_kernel = median_value(v_dec_ycocg_kernel);
+        const double med_dec_ycocg_wait = median_value(v_dec_ycocg_wait);
         const double med_dec_nat = median_value(v_dec_nat);
         const double med_dec_screen = median_value(v_dec_screen);
         const double med_dec_bt = median_value(v_dec_bt);
@@ -1022,6 +1076,8 @@ int main(int argc, char** argv) {
         const uint64_t med_dec_rgb_p = median_value(v_dec_rgb_p);
         const uint64_t med_dec_rgb_s = median_value(v_dec_rgb_s);
         const uint64_t med_dec_rgb_thr = median_value(v_dec_rgb_thr);
+        const uint64_t med_dec_rgb_rows = median_value(v_dec_rgb_rows);
+        const uint64_t med_dec_rgb_pixels = median_value(v_dec_rgb_pixels);
         const uint64_t med_lo_raw = median_value(v_lo_raw);
         const uint64_t med_lo_m1 = median_value(v_lo_m1);
         const uint64_t med_lo_m2 = median_value(v_lo_m2);
@@ -1075,7 +1131,13 @@ int main(int argc, char** argv) {
         std::cout << "\n";
         std::cout << "  header_dir:        " << med_dec_hdr << " [cpu]\n";
         std::cout << "  planes_total:      " << med_dec_plane << " [cpu]\n";
+        std::cout << "  plane dispatch/wait: "
+                  << med_dec_plane_dispatch << " / " << med_dec_plane_wait << " [cpu]\n";
         std::cout << "  ycocg_to_rgb:      " << med_dec_ycocg << " [cpu]\n";
+        std::cout << "    ycocg dispatch/kernel/wait: "
+                  << med_dec_ycocg_dispatch << " / "
+                  << med_dec_ycocg_kernel << " / "
+                  << med_dec_ycocg_wait << " [cpu]\n";
         std::cout << "  plane_try_natural: " << med_dec_nat << " [cpu]\n";
         std::cout << "  plane_screen_wrap: " << med_dec_screen << " [cpu]\n";
         std::cout << "  plane_block_types: " << med_dec_bt << " [cpu]\n";
@@ -1109,6 +1171,8 @@ int main(int argc, char** argv) {
                   << med_dec_p3 << "/" << med_dec_ps << "/" << med_dec_ptok << "\n";
         std::cout << "decode ycocg->rgb       parallel/seq/threads: "
                   << med_dec_rgb_p << "/" << med_dec_rgb_s << "/" << med_dec_rgb_thr << "\n";
+        std::cout << "decode ycocg->rgb       rows/pixels: "
+                  << med_dec_rgb_rows << "/" << med_dec_rgb_pixels << "\n";
         std::cout << "\n=== Decode Deep Counters (median per image) ===\n";
         std::cout << "filter_lo modes raw/1/2/3/4/5/invalid: "
                   << med_lo_raw << "/" << med_lo_m1 << "/" << med_lo_m2 << "/"

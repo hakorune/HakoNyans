@@ -734,6 +734,7 @@ public:
 
         std::vector<int16_t> y_plane, co_plane, cg_plane;
         const unsigned int hw_threads = thread_budget::max_threads();
+        const auto t_plane_dispatch0 = Clock::now();
         auto plane_decode_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(3);
         if (plane_decode_tokens.acquired()) {
             tl_lossless_decode_debug_stats_.decode_plane_parallel_3way_count++;
@@ -742,6 +743,11 @@ public:
         } else {
             tl_lossless_decode_debug_stats_.decode_plane_parallel_seq_count++;
         }
+        const auto t_plane_dispatch1 = Clock::now();
+        tl_lossless_decode_debug_stats_.decode_plane_dispatch_ns +=
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                t_plane_dispatch1 - t_plane_dispatch0
+            ).count();
 
         if (plane_decode_tokens.acquired()) {
             auto fy = std::async(std::launch::async, [&]() {
@@ -757,9 +763,15 @@ public:
                 return run_plane_task(t2->offset, t2->size);
             });
 
+            const auto t_plane_wait0 = Clock::now();
             auto y_res = fy.get();
             auto co_res = fco.get();
             auto cg_res = fcg.get();
+            const auto t_plane_wait1 = Clock::now();
+            tl_lossless_decode_debug_stats_.decode_plane_wait_ns +=
+                (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    t_plane_wait1 - t_plane_wait0
+                ).count();
 
             y_plane = std::move(y_res.plane);
             co_plane = std::move(co_res.plane);
@@ -797,38 +809,115 @@ public:
         std::vector<uint8_t> rgb(w * h * 3);
         unsigned int rgb_threads =
             std::max(1u, std::min<unsigned int>(hw_threads, (unsigned int)h));
-        auto ycocg_to_rgb_tokens = thread_budget::ScopedThreadTokens::try_acquire_up_to(
-            rgb_threads, 2
-        );
-        if (ycocg_to_rgb_tokens.acquired()) {
-            rgb_threads = ycocg_to_rgb_tokens.count();
+        const uint64_t pixel_count = (uint64_t)w * (uint64_t)h;
+        constexpr unsigned int kMaxRgbThreads = 8;
+        constexpr unsigned int kMinRowsPerTask = 128;
+        constexpr uint64_t kMinPixelsPerTask = 200000; // Avoid over-sharding small frames.
+        rgb_threads = std::min(rgb_threads, kMaxRgbThreads);
+        if ((unsigned int)h > 0) {
+            const unsigned int by_rows =
+                std::max(1u, (unsigned int)h / kMinRowsPerTask);
+            rgb_threads = std::min(rgb_threads, by_rows);
+        }
+        if (pixel_count > 0) {
+            const unsigned int by_pixels =
+                std::max(1u, (unsigned int)(pixel_count / kMinPixelsPerTask));
+            rgb_threads = std::min(rgb_threads, by_pixels);
+        }
+        const auto t_rgb_dispatch0 = Clock::now();
+        thread_budget::ScopedThreadTokens ycocg_to_rgb_tokens;
+        if (rgb_threads > 1) {
+            ycocg_to_rgb_tokens = thread_budget::ScopedThreadTokens::try_acquire_up_to(
+                rgb_threads, 2
+            );
+            if (ycocg_to_rgb_tokens.acquired()) {
+                rgb_threads = ycocg_to_rgb_tokens.count();
+            } else {
+                rgb_threads = 1;
+            }
+        } else {
+            rgb_threads = 1;
+        }
+        if (rgb_threads > 1) {
             tl_lossless_decode_debug_stats_.decode_ycocg_parallel_count++;
             tl_lossless_decode_debug_stats_.decode_ycocg_parallel_threads_sum += rgb_threads;
-            std::vector<std::future<void>> futs;
-            futs.reserve(rgb_threads);
-            const int rows_per_task = h / (int)rgb_threads;
-            for (unsigned int t = 0; t < rgb_threads; t++) {
-                const int sy = (int)t * rows_per_task;
-                const int ey = (t == rgb_threads - 1) ? h : (int)(t + 1) * rows_per_task;
+            struct YcocgTaskResult {
+                uint64_t kernel_ns = 0;
+                uint64_t rows = 0;
+                uint64_t pixels = 0;
+            };
+            auto run_rows = [&](int sy, int ey) -> YcocgTaskResult {
+                const auto t_kernel0 = Clock::now();
+                for (int y = sy; y < ey; y++) {
+                    const int row_off = y * w;
+                    for (int x = 0; x < w; x++) {
+                        const int i = row_off + x;
+                        ycocg_r_to_rgb(y_plane[i], co_plane[i], cg_plane[i],
+                                       rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
+                    }
+                }
+                const auto t_kernel1 = Clock::now();
+                YcocgTaskResult out;
+                out.kernel_ns = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    t_kernel1 - t_kernel0
+                ).count();
+                out.rows = (uint64_t)(ey - sy);
+                out.pixels = (uint64_t)(ey - sy) * (uint64_t)w;
+                return out;
+            };
+            std::vector<std::future<YcocgTaskResult>> futs;
+            futs.reserve((rgb_threads > 0) ? (rgb_threads - 1) : 0);
+            for (unsigned int t = 1; t < rgb_threads; t++) {
+                const int sy = (int)(((uint64_t)t * (uint64_t)h) / (uint64_t)rgb_threads);
+                const int ey = (int)(((uint64_t)(t + 1) * (uint64_t)h) / (uint64_t)rgb_threads);
                 futs.push_back(std::async(std::launch::async, [&, sy, ey]() {
                     thread_budget::ScopedParallelRegion guard;
-                    for (int y = sy; y < ey; y++) {
-                        const int row_off = y * w;
-                        for (int x = 0; x < w; x++) {
-                            const int i = row_off + x;
-                            ycocg_r_to_rgb(y_plane[i], co_plane[i], cg_plane[i],
-                                           rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
-                        }
-                    }
+                    return run_rows(sy, ey);
                 }));
             }
-            for (auto& f : futs) f.get();
+            const auto t_rgb_dispatch1 = Clock::now();
+            tl_lossless_decode_debug_stats_.decode_ycocg_dispatch_ns +=
+                (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    t_rgb_dispatch1 - t_rgb_dispatch0
+                ).count();
+            const int sy0 = 0;
+            const int ey0 = (int)(((uint64_t)1 * (uint64_t)h) / (uint64_t)rgb_threads);
+            auto main_res = run_rows(sy0, ey0);
+            tl_lossless_decode_debug_stats_.decode_ycocg_kernel_ns += main_res.kernel_ns;
+            tl_lossless_decode_debug_stats_.decode_ycocg_rows_sum += main_res.rows;
+            tl_lossless_decode_debug_stats_.decode_ycocg_pixels_sum += main_res.pixels;
+            const auto t_rgb_wait0 = Clock::now();
+            for (auto& f : futs) {
+                auto r = f.get();
+                tl_lossless_decode_debug_stats_.decode_ycocg_kernel_ns += r.kernel_ns;
+                tl_lossless_decode_debug_stats_.decode_ycocg_rows_sum += r.rows;
+                tl_lossless_decode_debug_stats_.decode_ycocg_pixels_sum += r.pixels;
+            }
+            const auto t_rgb_wait1 = Clock::now();
+            tl_lossless_decode_debug_stats_.decode_ycocg_wait_ns +=
+                (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    t_rgb_wait1 - t_rgb_wait0
+                ).count();
         } else {
+            const auto t_rgb_dispatch1 = Clock::now();
+            tl_lossless_decode_debug_stats_.decode_ycocg_dispatch_ns +=
+                (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    t_rgb_dispatch1 - t_rgb_dispatch0
+                ).count();
             tl_lossless_decode_debug_stats_.decode_ycocg_sequential_count++;
+            const auto t_rgb_kernel0 = Clock::now();
             for (int i = 0; i < w * h; i++) {
                 ycocg_r_to_rgb(y_plane[i], co_plane[i], cg_plane[i],
                                rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
             }
+            const auto t_rgb_kernel1 = Clock::now();
+            tl_lossless_decode_debug_stats_.decode_ycocg_kernel_ns +=
+                (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    t_rgb_kernel1 - t_rgb_kernel0
+                ).count();
+            tl_lossless_decode_debug_stats_.decode_ycocg_rows_sum += (uint64_t)h;
+            tl_lossless_decode_debug_stats_.decode_ycocg_pixels_sum +=
+                (uint64_t)w * (uint64_t)h;
         }
         const auto t_rgb1 = Clock::now();
         tl_lossless_decode_debug_stats_.decode_ycocg_to_rgb_ns +=

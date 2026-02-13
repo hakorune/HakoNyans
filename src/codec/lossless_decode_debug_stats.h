@@ -14,6 +14,13 @@ struct LosslessDecodeDebugStats {
     uint64_t decode_plane_co_ns;
     uint64_t decode_plane_cg_ns;
     uint64_t decode_ycocg_to_rgb_ns;
+    uint64_t decode_plane_dispatch_ns;
+    uint64_t decode_plane_wait_ns;
+    uint64_t decode_ycocg_dispatch_ns;
+    uint64_t decode_ycocg_kernel_ns;
+    uint64_t decode_ycocg_wait_ns;
+    uint64_t decode_ycocg_rows_sum;
+    uint64_t decode_ycocg_pixels_sum;
 
     // Decode parallel scheduler telemetry.
     uint64_t decode_plane_parallel_3way_count;
