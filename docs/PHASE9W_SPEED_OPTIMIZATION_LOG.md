@@ -1375,3 +1375,120 @@ Per-image highlights:
 - `hd_01` and `nature_*` dominate mode2 cost with very large
   `chain_steps` and non-trivial `len3_reject_dist`.
 - `kodim01` remains a high-compression, low-literal case (near-all match bytes).
+
+## 2026-02-13: Box Definition - mode2 len3-distance Early Reject
+
+### Objective
+- Reduce `mode2` encode time by avoiding unnecessary `match_len_from(...)`
+  calls for candidates that can never pass the `len=3` distance rule.
+
+### Scope
+- Target file:
+  - `src/codec/lossless_natural_route.h`
+    - `compress_global_chain_lz(...)` inner match-search loop
+- Non-target:
+  - bitstream format
+  - route selection/bias policy
+  - decode path
+
+### Planned Change
+- For candidates with `dist > min_dist_len3`:
+  - if `pos+3 >= src_size`, `len==3` is guaranteed -> reject immediately
+  - else check 4th byte (`s[ref_pos+3] != s[pos+3]`) and reject immediately
+- Keep existing `len3_reject_dist` accounting semantics.
+
+### Boundaries / Gate
+- Lossless + format compatibility must be preserved.
+- `ctest --test-dir build --output-on-failure`: `17/17 PASS`
+- Fixed 6 (`bench_png_compare`, `--preset balanced`, `runs=3,warmup=1`):
+  - `total HKN bytes` non-regression
+  - `median PNG/HKN` non-regression
+  - target: `hkn_enc_route_nat_mode2_ms` and
+    `hkn_enc_plane_route_natural_candidate_ms` improve.
+
+### Implementation
+- `src/codec/lossless_natural_route.h`
+  - Added `len=3` distance reject precheck before `match_len_from(...)`:
+    - if `dist > min_dist_len3` and `pos+3 >= src_size`, reject immediately.
+    - if `dist > min_dist_len3` and 4th byte mismatches, reject immediately.
+  - Kept existing `len3_reject_dist` accounting.
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `ctest --test-dir build --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- Baseline:
+  - `bench_results/phase9w_mode2_counters_balanced_20260213_runs3.csv`
+- Candidate:
+  - `bench_results/phase9w_mode2_len3_prereject_balanced_20260213_runs3.csv`
+  - `bench_results/phase9w_mode2_len3_prereject_balanced_20260213_runs3_rerun.csv`
+
+### Result Summary (vs baseline)
+- Invariants:
+  - `total HKN bytes`: unchanged (`2,977,544`)
+  - `median PNG/HKN`: unchanged (`0.2610`)
+- Stage counters:
+  - `median route_natural(ms)`:
+    - run1 `+0.965`
+    - rerun `+0.676`
+  - `median nat_mode2(ms)`:
+    - run1 `+1.203`
+    - rerun `+1.208`
+- Wall-clock:
+  - `median Enc(ms)` improved in both runs (`-0.806`, `-4.272`) but with
+    host noise sensitivity.
+
+### Decision
+- **Not promoted as a clear mode2-stage win**.
+- Keep as observed trial; next step should move to the stronger proposal:
+  `match_len_from` low-level speedup (`XOR + ctz` style counting).
+- Archived as no-go:
+  - `docs/archive/2026-02-13_mode2_len3_prereject_nogo.md`
+- Implementation is reverted from mainline before proceeding to next step.
+
+## 2026-02-13: mode2 `match_len_from` XOR/ctz Fast Count
+
+### Objective
+- Reduce `mode2` inner-loop cost per `chain_step` by accelerating first-mismatch
+  detection in `match_len_from(...)`.
+
+### Implementation
+- `src/codec/lossless_natural_route.h`
+  - Updated `match_len_from(...)`:
+    - when 8-byte block differs, use `va ^ vb` and trailing-zero byte count on
+      little-endian targets to compute common prefix bytes in O(1).
+    - non-little-endian fallback keeps byte-wise safe path.
+  - No format/selection logic changes.
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `ctest --test-dir build --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- Baseline:
+  - `bench_results/phase9w_mode2_counters_balanced_20260213_runs3.csv`
+- Candidate:
+  - `bench_results/phase9w_mode2_ctz_balanced_20260213_runs3.csv`
+  - `bench_results/phase9w_mode2_ctz_balanced_20260213_runs3_rerun.csv`
+  - `bench_results/phase9w_mode2_ctz_balanced_20260213_runs3_rerun2.csv`
+
+### Result Summary (vs baseline)
+- Invariants: all runs preserved
+  - `total HKN bytes`: unchanged (`2,977,544`)
+  - `median PNG/HKN`: unchanged (`0.2610`)
+- Stage-level improvements were consistent across runs:
+  - `median route_natural(ms)`: `-3.851 / -3.534 / -2.764`
+  - `median nat_mode2(ms)`: `-3.380 / -3.380 / -2.367`
+  - `median plane_route_comp(ms)`: `-4.544 / -4.801 / -3.758`
+- Encode wall improved in all runs:
+  - `median Enc(ms)`: `-22.308 / -6.350 / -23.091`
+- Decode wall showed host-noise-scale variance (encode-only change):
+  - `median Dec(ms)`: `-0.056 / +0.155 / +0.174`
+
+### Decision
+- Keep this optimization as the next promoted encode-step candidate:
+  stage-target metrics (`mode2` / `route_natural`) improved consistently with
+  size invariants preserved.

@@ -144,7 +144,27 @@ inline std::vector<uint8_t> compress_global_chain_lz(
             uint64_t vb = 0;
             std::memcpy(&va, a, sizeof(uint64_t));
             std::memcpy(&vb, b, sizeof(uint64_t));
-            if (va != vb) break;
+            if (va != vb) {
+#if defined(_WIN32) || (defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__))
+                uint64_t diff = va ^ vb;
+#if defined(__GNUC__) || defined(__clang__)
+                const int common = (int)(__builtin_ctzll(diff) >> 3);
+#else
+                int common = 0;
+                while ((diff & 0xFFu) == 0u && common < 8) {
+                    diff >>= 8;
+                    common++;
+                }
+#endif
+                len += common;
+                return len;
+#else
+                int common = 0;
+                while (common < 8 && a[common] == b[common]) common++;
+                len += common;
+                return len;
+#endif
+            }
             a += sizeof(uint64_t);
             b += sizeof(uint64_t);
             len += (int)sizeof(uint64_t);
