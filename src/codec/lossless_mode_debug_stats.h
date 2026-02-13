@@ -196,6 +196,27 @@ struct LosslessModeDebugStats {
     uint64_t natural_prefilter_mad_x100_sum;
     uint64_t natural_prefilter_entropy_x100_sum;
     uint64_t route_compete_policy_skip_count;
+    uint64_t natural_row_mode0_build_ns;
+    uint64_t natural_row_mode1_prepare_ns;
+    uint64_t natural_row_pred_pack_ns;
+    uint64_t natural_row_mode1_build_ns;
+    uint64_t natural_row_mode2_build_ns;
+    uint64_t natural_row_mode0_size_sum;
+    uint64_t natural_row_mode1_size_sum;
+    uint64_t natural_row_mode2_size_sum;
+    uint64_t natural_row_mode0_selected_count;
+    uint64_t natural_row_mode1_selected_count;
+    uint64_t natural_row_mode2_selected_count;
+    uint64_t natural_row_pred_mode_raw_count;
+    uint64_t natural_row_pred_mode_rans_count;
+    uint64_t natural_row_mode2_bias_adopt_count;
+    uint64_t natural_row_mode2_bias_reject_count;
+    uint64_t natural_row_prep_parallel_count;
+    uint64_t natural_row_prep_seq_count;
+    uint64_t natural_row_prep_parallel_tokens_sum;
+    uint64_t natural_row_mode12_parallel_count;
+    uint64_t natural_row_mode12_seq_count;
+    uint64_t natural_row_mode12_parallel_tokens_sum;
 
     uint64_t palette_reorder_trials;
     uint64_t palette_reorder_adopted;

@@ -814,7 +814,8 @@ public:
     }
 
     static std::vector<uint8_t> encode_plane_lossless_natural_row_tile(
-        const int16_t* plane, uint32_t width, uint32_t height
+        const int16_t* plane, uint32_t width, uint32_t height,
+        LosslessModeDebugStats* stats = nullptr
     ) {
         return lossless_natural_route::encode_plane_lossless_natural_row_tile(
             plane, width, height,
@@ -824,12 +825,14 @@ public:
             },
             [](const std::vector<uint8_t>& bytes) {
                 return GrayscaleEncoder::encode_byte_stream(bytes);
-            }
+            },
+            stats
         );
     }
 
     static std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
-        const int16_t* padded, uint32_t pad_w, uint32_t pad_h
+        const int16_t* padded, uint32_t pad_w, uint32_t pad_h,
+        LosslessModeDebugStats* stats = nullptr
     ) {
         return lossless_natural_route::encode_plane_lossless_natural_row_tile_padded(
             padded, pad_w, pad_h,
@@ -839,7 +842,8 @@ public:
             },
             [](const std::vector<uint8_t>& bytes) {
                 return GrayscaleEncoder::encode_byte_stream(bytes);
-            }
+            },
+            stats
         );
     }
 
@@ -1115,7 +1119,7 @@ public:
             },
             [&padded, pad_w, pad_h](const int16_t*, uint32_t, uint32_t) {
                 return GrayscaleEncoder::encode_plane_lossless_natural_row_tile_padded(
-                    padded.data(), pad_w, pad_h
+                    padded.data(), pad_w, pad_h, &tl_lossless_mode_debug_stats_
                 );
             }
         );

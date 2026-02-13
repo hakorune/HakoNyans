@@ -516,3 +516,104 @@ Interpretation:
 - `route_natural` time was reduced with output-size invariants preserved.
 - Decode medians remained noisy across runs and should continue to be treated as
   host-side variance unless reproduced under fixed benchmark environment controls.
+
+## 2026-02-13: Natural Route Deep Observation Counters
+
+### Objective
+- Add internal counters for natural route build stages to decide the next optimization target.
+- Keep output format and size behavior unchanged.
+
+### Implementation
+- `src/codec/lossless_mode_debug_stats.h`
+  - Added natural-route deep counters:
+    - mode stage timings (`mode0`, `mode1_prepare`, `pred_pack`, `mode1`, `mode2`)
+    - selected mode counters (`mode0/1/2`)
+    - predictor stream mode counters (`raw/rANS`)
+    - mode2 bias gate counters (`adopt/reject`)
+    - prep and mode1/2 parallel scheduler counters.
+- `src/codec/lossless_natural_route.h`
+  - Wired timing/scheduler/selection counter updates.
+  - Added optional stats pointer pass-through for natural route functions.
+- `src/codec/encode.h`
+  - Passed `LosslessModeDebugStats` pointer into route natural candidate build.
+- `bench/bench_png_compare.cpp`
+  - Exported natural deep counters to CSV and printed them in stage/parallel sections.
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `cd build && ctest --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- `bench_results/tmp_measure_natural_deep_20260213.csv`
+- `bench_results/tmp_measure_natural_deep_20260213_rerun.csv`
+
+### Result Summary (latest rerun)
+- `median PNG/HKN = 0.2610` (unchanged)
+- `total HKN bytes = 2,977,544` (unchanged)
+- `median Enc(ms) HKN/PNG = 114.150 / 108.586`
+- `plane_route_comp = 63.345 ms`
+  - `route_natural = 52.410 ms`
+    - `nat_mode0 = 18.502 ms`
+    - `nat_mode1_prepare = 9.910 ms`
+    - `nat_pred_pack = 0.012 ms`
+    - `nat_mode1 = 13.235 ms`
+    - `nat_mode2 = 32.870 ms`
+- natural mode selected (median): `mode0/mode1/mode2 = 0/0/1`
+
+Interpretation:
+- Route natural remains dominated by `mode2` generation cost.
+- The next high-ROI target is mode2 internals (global-chain search and/or residual production path).
+
+## 2026-02-13: Route-Natural Pipeline Overlap (Consult Plan #1)
+
+### Objective
+- Start `mode2` as soon as `mode1_prepared` is available, instead of waiting for
+  the separate mode1/mode2 phase.
+- Preserve format/bitstream choice logic and size behavior.
+
+### Implementation
+- `src/codec/lossless_natural_route.h`
+  - Added pipeline path for large tiles (`pixel_count >= 262144`) when one worker token is available:
+    - worker: `mode1_prepared -> pred_pack -> mode2`
+    - main: `mode0 -> mode1`
+    - then join and run existing best-selection logic unchanged.
+  - Kept non-pipeline fallback path (existing prep/mode12 scheduling behavior).
+  - Kept deep counters updated for prep/mode12 timings and scheduler counts.
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `cd build && ctest --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- baseline:
+  - `bench_results/tmp_measure_natural_deep_20260213_rerun.csv`
+- candidate:
+  - `bench_results/tmp_pipeline_overlap_route_natural.csv`
+  - `bench_results/tmp_pipeline_overlap_route_natural_rerun.csv`
+  - `bench_results/tmp_pipeline_overlap_route_natural_rerun2.csv`
+
+### Result Summary
+- Compression invariants:
+  - `median PNG/HKN = 0.2610` unchanged
+  - `total HKN bytes = 2,977,544` unchanged
+- Candidate runs showed one noisy outlier in wall-clock, but stage counters were consistently lower:
+  - run#1 (`tmp_pipeline_overlap_route_natural.csv`)
+    - `median Enc(ms): 114.150 -> 105.304` (`-8.846`)
+    - `median plane_route_comp(ms): 63.345 -> 53.973` (`-9.372`)
+    - `median route_natural(ms): 52.410 -> 44.005` (`-8.405`)
+  - run#2 (`tmp_pipeline_overlap_route_natural_rerun.csv`)
+    - `median Enc(ms): 114.150 -> 119.288` (`+5.138`, noisy host run)
+    - `median plane_route_comp(ms): 63.345 -> 53.600` (`-9.745`)
+    - `median route_natural(ms): 52.410 -> 43.542` (`-8.868`)
+  - run#3 (`tmp_pipeline_overlap_route_natural_rerun2.csv`)
+    - `median Enc(ms): 114.150 -> 103.957` (`-10.193`)
+    - `median plane_route_comp(ms): 63.345 -> 53.953` (`-9.392`)
+    - `median route_natural(ms): 52.410 -> 42.300` (`-10.110`)
+
+Interpretation:
+- The pipeline overlap reduced route-natural wall time materially while keeping
+  the existing mode-selection/size outcomes unchanged.
+- This supports consult Plan #1 as a high-ROI, low-risk optimization; wall-clock
+  should be judged from repeated runs because host variance remains non-trivial.

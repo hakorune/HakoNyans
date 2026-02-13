@@ -3,15 +3,18 @@
 #include "headers.h"
 #include "lz_tile.h"
 #include "lossless_filter.h"
+#include "lossless_mode_debug_stats.h"
 #include "../platform/thread_budget.h"
 
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <future>
 #include <limits>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -414,60 +417,224 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
     const int16_t* padded, uint32_t pad_w, uint32_t pad_h,
     ZigzagEncodeFn&& zigzag_encode_val,
     EncodeSharedLzFn&& encode_byte_stream_shared_lz,
-    EncodeByteStreamFn&& encode_byte_stream
+    EncodeByteStreamFn&& encode_byte_stream,
+    LosslessModeDebugStats* stats = nullptr
 ) {
+    using Clock = std::chrono::steady_clock;
+    auto ns_since = [](const Clock::time_point& t0, const Clock::time_point& t1) -> uint64_t {
+        return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+    };
     if (!padded || pad_w == 0 || pad_h == 0) return {};
     const uint32_t pixel_count = pad_w * pad_h;
     if (pixel_count == 0) return {};
 
     const auto& lz_params = detail::global_chain_lz_runtime_params();
-    constexpr uint32_t kPrepParallelPixelThreshold = 262144u;
     std::vector<uint8_t> mode0;
+    std::vector<uint8_t> mode1;
+    std::vector<uint8_t> mode2;
     detail::Mode1Prepared mode1_prepared;
-    thread_budget::ScopedThreadTokens prep_tokens;
+    detail::PackedPredictorStream mode1_pred;
+    constexpr uint32_t kPrepParallelPixelThreshold = 262144u;
+    thread_budget::ScopedThreadTokens pipeline_tokens;
     if (pixel_count >= kPrepParallelPixelThreshold) {
-        prep_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(1);
+        pipeline_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(1);
     }
-    if (prep_tokens.acquired()) {
-        auto f_mode1_prepared = std::async(std::launch::async, [&]() {
-            thread_budget::ScopedParallelRegion guard;
-            return detail::build_mode1_prepared(
-                padded, pad_w, pad_h, pixel_count,
-                zigzag_encode_val
-            );
-        });
+
+    if (pipeline_tokens.acquired()) {
+        struct ReadyData {
+            std::shared_ptr<const detail::Mode1Prepared> prepared;
+            std::shared_ptr<const detail::PackedPredictorStream> pred;
+            uint64_t prep_ns = 0;
+            uint64_t pred_ns = 0;
+        };
+        struct TimedPayload {
+            std::vector<uint8_t> payload;
+            uint64_t elapsed_ns = 0;
+        };
+        if (stats) {
+            stats->natural_row_prep_parallel_count++;
+            stats->natural_row_prep_parallel_tokens_sum += (uint64_t)pipeline_tokens.count();
+            stats->natural_row_mode12_parallel_count++;
+            stats->natural_row_mode12_parallel_tokens_sum += (uint64_t)pipeline_tokens.count();
+        }
+
+        std::promise<ReadyData> ready_promise;
+        auto ready_future = ready_promise.get_future();
+        auto mode2_future = std::async(
+            std::launch::async,
+            [&,
+             rp = std::move(ready_promise)]() mutable -> TimedPayload {
+                thread_budget::ScopedParallelRegion guard;
+                ReadyData ready;
+                const auto t_prep0 = Clock::now();
+                auto prep_local = detail::build_mode1_prepared(
+                    padded, pad_w, pad_h, pixel_count,
+                    zigzag_encode_val
+                );
+                const auto t_prep1 = Clock::now();
+                ready.prep_ns = ns_since(t_prep0, t_prep1);
+
+                const auto t_pred0 = Clock::now();
+                auto pred_local = detail::build_packed_predictor_stream(
+                    prep_local.row_pred_ids,
+                    encode_byte_stream
+                );
+                const auto t_pred1 = Clock::now();
+                ready.pred_ns = ns_since(t_pred0, t_pred1);
+                ready.prepared = std::make_shared<const detail::Mode1Prepared>(std::move(prep_local));
+                ready.pred = std::make_shared<const detail::PackedPredictorStream>(std::move(pred_local));
+
+                rp.set_value(ready);
+
+                const auto t_mode2_0 = Clock::now();
+                TimedPayload out;
+                out.payload = detail::build_mode1_payload_from_prepared(
+                    *ready.prepared,
+                    *ready.pred,
+                    pad_h,
+                    pixel_count,
+                    encode_byte_stream_shared_lz,
+                    2,
+                    [&](const std::vector<uint8_t>& bytes) {
+                        return detail::compress_global_chain_lz(bytes, lz_params);
+                    }
+                );
+                const auto t_mode2_1 = Clock::now();
+                out.elapsed_ns = ns_since(t_mode2_0, t_mode2_1);
+                return out;
+            }
+        );
+
+        const auto t_mode0_0 = Clock::now();
         mode0 = detail::build_mode0_payload(
             padded, pad_w, pad_h, pixel_count,
             zigzag_encode_val, encode_byte_stream_shared_lz
         );
-        mode1_prepared = f_mode1_prepared.get();
+        const auto t_mode0_1 = Clock::now();
+        if (stats) stats->natural_row_mode0_build_ns += ns_since(t_mode0_0, t_mode0_1);
+
+        auto ready = ready_future.get();
+        if (stats) {
+            stats->natural_row_mode1_prepare_ns += ready.prep_ns;
+            stats->natural_row_pred_pack_ns += ready.pred_ns;
+            if (ready.pred->mode == 0) stats->natural_row_pred_mode_raw_count++;
+            else stats->natural_row_pred_mode_rans_count++;
+        }
+
+        const auto t_mode1_0 = Clock::now();
+        mode1 = detail::build_mode1_payload_from_prepared(
+            *ready.prepared,
+            *ready.pred,
+            pad_h,
+            pixel_count,
+            encode_byte_stream_shared_lz,
+            1,
+            [](const std::vector<uint8_t>& bytes) {
+                return TileLZ::compress(bytes);
+            }
+        );
+        const auto t_mode1_1 = Clock::now();
+        if (stats) stats->natural_row_mode1_build_ns += ns_since(t_mode1_0, t_mode1_1);
+
+        auto mode2_res = mode2_future.get();
+        mode2 = std::move(mode2_res.payload);
+        if (stats) stats->natural_row_mode2_build_ns += mode2_res.elapsed_ns;
     } else {
+        if (stats) stats->natural_row_prep_seq_count++;
+        const auto t_mode0_0 = Clock::now();
         mode0 = detail::build_mode0_payload(
             padded, pad_w, pad_h, pixel_count,
             zigzag_encode_val, encode_byte_stream_shared_lz
         );
+        const auto t_mode0_1 = Clock::now();
+        if (stats) stats->natural_row_mode0_build_ns += ns_since(t_mode0_0, t_mode0_1);
+        const auto t_mode1p_0 = Clock::now();
         mode1_prepared = detail::build_mode1_prepared(
             padded, pad_w, pad_h, pixel_count,
             zigzag_encode_val
         );
-    }
-    if (mode0.empty()) return {};
-    auto mode1_pred = detail::build_packed_predictor_stream(
-        mode1_prepared.row_pred_ids,
-        encode_byte_stream
-    );
+        const auto t_mode1p_1 = Clock::now();
+        if (stats) stats->natural_row_mode1_prepare_ns += ns_since(t_mode1p_0, t_mode1p_1);
+        const auto t_pred0 = Clock::now();
+        mode1_pred = detail::build_packed_predictor_stream(
+            mode1_prepared.row_pred_ids,
+            encode_byte_stream
+        );
+        const auto t_pred1 = Clock::now();
+        if (stats) {
+            stats->natural_row_pred_pack_ns += ns_since(t_pred0, t_pred1);
+            if (mode1_pred.mode == 0) stats->natural_row_pred_mode_raw_count++;
+            else stats->natural_row_pred_mode_rans_count++;
+        }
 
-    std::vector<uint8_t> mode1;
-    std::vector<uint8_t> mode2;
-    constexpr uint32_t kMode12ParallelPixelThreshold = 262144u;
-    thread_budget::ScopedThreadTokens mode12_tokens;
-    if (pixel_count >= kMode12ParallelPixelThreshold) {
-        mode12_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(1);
-    }
-    if (mode12_tokens.acquired()) {
-        auto f_mode2 = std::async(std::launch::async, [&]() {
-            thread_budget::ScopedParallelRegion guard;
-            return detail::build_mode1_payload_from_prepared(
+        constexpr uint32_t kMode12ParallelPixelThreshold = 262144u;
+        thread_budget::ScopedThreadTokens mode12_tokens;
+        if (pixel_count >= kMode12ParallelPixelThreshold) {
+            mode12_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(1);
+        }
+        struct TimedPayload {
+            std::vector<uint8_t> payload;
+            uint64_t elapsed_ns = 0;
+        };
+        if (mode12_tokens.acquired()) {
+            if (stats) {
+                stats->natural_row_mode12_parallel_count++;
+                stats->natural_row_mode12_parallel_tokens_sum += (uint64_t)mode12_tokens.count();
+            }
+            auto f_mode2 = std::async(std::launch::async, [&]() {
+                thread_budget::ScopedParallelRegion guard;
+                const auto t0 = Clock::now();
+                TimedPayload out;
+                out.payload = detail::build_mode1_payload_from_prepared(
+                    mode1_prepared,
+                    mode1_pred,
+                    pad_h,
+                    pixel_count,
+                    encode_byte_stream_shared_lz,
+                    2,
+                    [&](const std::vector<uint8_t>& bytes) {
+                        return detail::compress_global_chain_lz(bytes, lz_params);
+                    }
+                );
+                const auto t1 = Clock::now();
+                out.elapsed_ns = ns_since(t0, t1);
+                return out;
+            });
+            const auto t_mode1_0 = Clock::now();
+            mode1 = detail::build_mode1_payload_from_prepared(
+                mode1_prepared,
+                mode1_pred,
+                pad_h,
+                pixel_count,
+                encode_byte_stream_shared_lz,
+                1,
+                [](const std::vector<uint8_t>& bytes) {
+                    return TileLZ::compress(bytes);
+                }
+            );
+            const auto t_mode1_1 = Clock::now();
+            if (stats) stats->natural_row_mode1_build_ns += ns_since(t_mode1_0, t_mode1_1);
+            auto mode2_res = f_mode2.get();
+            mode2 = std::move(mode2_res.payload);
+            if (stats) stats->natural_row_mode2_build_ns += mode2_res.elapsed_ns;
+        } else {
+            if (stats) stats->natural_row_mode12_seq_count++;
+            const auto t_mode1_0 = Clock::now();
+            mode1 = detail::build_mode1_payload_from_prepared(
+                mode1_prepared,
+                mode1_pred,
+                pad_h,
+                pixel_count,
+                encode_byte_stream_shared_lz,
+                1,
+                [](const std::vector<uint8_t>& bytes) {
+                    return TileLZ::compress(bytes);
+                }
+            );
+            const auto t_mode1_1 = Clock::now();
+            if (stats) stats->natural_row_mode1_build_ns += ns_since(t_mode1_0, t_mode1_1);
+            const auto t_mode2_0 = Clock::now();
+            mode2 = detail::build_mode1_payload_from_prepared(
                 mode1_prepared,
                 mode1_pred,
                 pad_h,
@@ -478,54 +645,38 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
                     return detail::compress_global_chain_lz(bytes, lz_params);
                 }
             );
-        });
-        mode1 = detail::build_mode1_payload_from_prepared(
-            mode1_prepared,
-            mode1_pred,
-            pad_h,
-            pixel_count,
-            encode_byte_stream_shared_lz,
-            1,
-            [](const std::vector<uint8_t>& bytes) {
-                return TileLZ::compress(bytes);
-            }
-        );
-        mode2 = f_mode2.get();
-    } else {
-        mode1 = detail::build_mode1_payload_from_prepared(
-            mode1_prepared,
-            mode1_pred,
-            pad_h,
-            pixel_count,
-            encode_byte_stream_shared_lz,
-            1,
-            [](const std::vector<uint8_t>& bytes) {
-                return TileLZ::compress(bytes);
-            }
-        );
-        mode2 = detail::build_mode1_payload_from_prepared(
-            mode1_prepared,
-            mode1_pred,
-            pad_h,
-            pixel_count,
-            encode_byte_stream_shared_lz,
-            2,
-            [&](const std::vector<uint8_t>& bytes) {
-                return detail::compress_global_chain_lz(bytes, lz_params);
-            }
-        );
+            const auto t_mode2_1 = Clock::now();
+            if (stats) stats->natural_row_mode2_build_ns += ns_since(t_mode2_0, t_mode2_1);
+        }
+    }
+    if (mode0.empty()) return {};
+    if (stats) {
+        stats->natural_row_mode0_size_sum += (uint64_t)mode0.size();
+        stats->natural_row_mode1_size_sum += (uint64_t)mode1.size();
+        stats->natural_row_mode2_size_sum += (uint64_t)mode2.size();
     }
 
+    uint8_t selected_mode = 0;
     std::vector<uint8_t> best = std::move(mode0);
     if (!mode1.empty() && mode1.size() < best.size()) {
         best = std::move(mode1);
+        selected_mode = 1;
     }
     if (!mode2.empty()) {
         const uint64_t lhs = (uint64_t)mode2.size() * 1000ull;
         const uint64_t rhs = (uint64_t)best.size() * (uint64_t)lz_params.bias_permille;
         if (lhs <= rhs) {
             best = std::move(mode2);
+            selected_mode = 2;
+            if (stats) stats->natural_row_mode2_bias_adopt_count++;
+        } else if (stats) {
+            stats->natural_row_mode2_bias_reject_count++;
         }
+    }
+    if (stats) {
+        if (selected_mode == 0) stats->natural_row_mode0_selected_count++;
+        else if (selected_mode == 1) stats->natural_row_mode1_selected_count++;
+        else stats->natural_row_mode2_selected_count++;
     }
     return best;
 }
@@ -535,7 +686,8 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile(
     const int16_t* plane, uint32_t width, uint32_t height,
     ZigzagEncodeFn&& zigzag_encode_val,
     EncodeSharedLzFn&& encode_byte_stream_shared_lz,
-    EncodeByteStreamFn&& encode_byte_stream
+    EncodeByteStreamFn&& encode_byte_stream,
+    LosslessModeDebugStats* stats = nullptr
 ) {
     if (!plane || width == 0 || height == 0) return {};
     const uint32_t pad_w = ((width + 7) / 8) * 8;
@@ -554,7 +706,7 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile(
 
     return encode_plane_lossless_natural_row_tile_padded(
         padded.data(), pad_w, pad_h,
-        zigzag_encode_val, encode_byte_stream_shared_lz, encode_byte_stream
+        zigzag_encode_val, encode_byte_stream_shared_lz, encode_byte_stream, stats
     );
 }
 

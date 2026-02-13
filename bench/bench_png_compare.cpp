@@ -75,6 +75,24 @@ struct ResultRow {
     uint64_t hkn_enc_plane_route_parallel = 0;
     uint64_t hkn_enc_plane_route_seq = 0;
     uint64_t hkn_enc_plane_route_parallel_tokens_sum = 0;
+    double hkn_enc_route_nat_mode0_ms = 0.0;
+    double hkn_enc_route_nat_mode1prep_ms = 0.0;
+    double hkn_enc_route_nat_predpack_ms = 0.0;
+    double hkn_enc_route_nat_mode1_ms = 0.0;
+    double hkn_enc_route_nat_mode2_ms = 0.0;
+    uint64_t hkn_enc_route_nat_mode0_selected = 0;
+    uint64_t hkn_enc_route_nat_mode1_selected = 0;
+    uint64_t hkn_enc_route_nat_mode2_selected = 0;
+    uint64_t hkn_enc_route_nat_pred_raw = 0;
+    uint64_t hkn_enc_route_nat_pred_rans = 0;
+    uint64_t hkn_enc_route_nat_mode2_bias_adopt = 0;
+    uint64_t hkn_enc_route_nat_mode2_bias_reject = 0;
+    uint64_t hkn_enc_route_nat_prep_parallel = 0;
+    uint64_t hkn_enc_route_nat_prep_seq = 0;
+    uint64_t hkn_enc_route_nat_prep_tokens_sum = 0;
+    uint64_t hkn_enc_route_nat_mode12_parallel = 0;
+    uint64_t hkn_enc_route_nat_mode12_seq = 0;
+    uint64_t hkn_enc_route_nat_mode12_tokens_sum = 0;
     double hkn_enc_container_pack_ms = 0.0;
     double hkn_enc_plane_y_ms = 0.0;
     double hkn_enc_plane_co_ms = 0.0;
@@ -265,7 +283,7 @@ void write_results_csv(const std::string& path, const std::vector<ResultRow>& ro
         throw std::runtime_error("Failed to write CSV: " + path);
     }
 
-    ofs << "image_id,image_name,width,height,hkn_bytes,png_bytes,png_over_hkn,dec_ms,natural_row_selected,natural_row_candidates,natural_row_selected_rate,gain_bytes,loss_bytes,hkn_enc_ms,hkn_dec_ms,png_enc_ms,png_dec_ms,hkn_enc_rgb_to_ycocg_ms,hkn_enc_profile_ms,hkn_enc_plane_total_ms,hkn_enc_plane_block_classify_ms,hkn_enc_plane_filter_rows_ms,hkn_enc_plane_lo_stream_ms,hkn_enc_plane_hi_stream_ms,hkn_enc_plane_stream_wrap_ms,hkn_enc_plane_route_ms,hkn_enc_plane_route_prefilter_ms,hkn_enc_plane_route_screen_candidate_ms,hkn_enc_plane_route_natural_candidate_ms,hkn_enc_plane_route_parallel,hkn_enc_plane_route_seq,hkn_enc_plane_route_parallel_tokens_sum,hkn_enc_container_pack_ms,hkn_dec_header_ms,hkn_dec_plane_total_ms,hkn_dec_ycocg_to_rgb_ms,hkn_dec_plane_try_natural_ms,hkn_dec_plane_screen_wrapper_ms,hkn_dec_plane_block_types_ms,hkn_dec_plane_filter_ids_ms,hkn_dec_plane_filter_lo_ms,hkn_dec_plane_filter_hi_ms,hkn_dec_plane_reconstruct_ms,hkn_enc_plane_y_ms,hkn_enc_plane_co_ms,hkn_enc_plane_cg_ms,hkn_dec_plane_y_ms,hkn_dec_plane_co_ms,hkn_dec_plane_cg_ms,hkn_enc_plane_parallel_3way,hkn_enc_plane_parallel_2way,hkn_enc_plane_parallel_seq,hkn_enc_plane_parallel_tokens_sum,hkn_dec_plane_parallel_3way,hkn_dec_plane_parallel_seq,hkn_dec_plane_parallel_tokens_sum,hkn_dec_ycocg_parallel,hkn_dec_ycocg_sequential,hkn_dec_ycocg_parallel_threads_sum,hkn_dec_filter_lo_mode_raw,hkn_dec_filter_lo_mode1,hkn_dec_filter_lo_mode2,hkn_dec_filter_lo_mode3,hkn_dec_filter_lo_mode4,hkn_dec_filter_lo_mode5,hkn_dec_filter_lo_mode_invalid,hkn_dec_filter_lo_fallback_zero_fill,hkn_dec_filter_lo_mode4_parallel_tiles,hkn_dec_filter_lo_mode4_sequential_tiles,hkn_dec_filter_lo_decode_rans_ms,hkn_dec_filter_lo_decode_shared_rans_ms,hkn_dec_filter_lo_tilelz_ms,hkn_dec_recon_copy_fast_rows,hkn_dec_recon_copy_slow_rows,hkn_dec_recon_tile4_fast_quads,hkn_dec_recon_tile4_slow_quads,hkn_dec_recon_residual_missing\n";
+    ofs << "image_id,image_name,width,height,hkn_bytes,png_bytes,png_over_hkn,dec_ms,natural_row_selected,natural_row_candidates,natural_row_selected_rate,gain_bytes,loss_bytes,hkn_enc_ms,hkn_dec_ms,png_enc_ms,png_dec_ms,hkn_enc_rgb_to_ycocg_ms,hkn_enc_profile_ms,hkn_enc_plane_total_ms,hkn_enc_plane_block_classify_ms,hkn_enc_plane_filter_rows_ms,hkn_enc_plane_lo_stream_ms,hkn_enc_plane_hi_stream_ms,hkn_enc_plane_stream_wrap_ms,hkn_enc_plane_route_ms,hkn_enc_plane_route_prefilter_ms,hkn_enc_plane_route_screen_candidate_ms,hkn_enc_plane_route_natural_candidate_ms,hkn_enc_plane_route_parallel,hkn_enc_plane_route_seq,hkn_enc_plane_route_parallel_tokens_sum,hkn_enc_route_nat_mode0_ms,hkn_enc_route_nat_mode1prep_ms,hkn_enc_route_nat_predpack_ms,hkn_enc_route_nat_mode1_ms,hkn_enc_route_nat_mode2_ms,hkn_enc_route_nat_mode0_selected,hkn_enc_route_nat_mode1_selected,hkn_enc_route_nat_mode2_selected,hkn_enc_route_nat_pred_raw,hkn_enc_route_nat_pred_rans,hkn_enc_route_nat_mode2_bias_adopt,hkn_enc_route_nat_mode2_bias_reject,hkn_enc_route_nat_prep_parallel,hkn_enc_route_nat_prep_seq,hkn_enc_route_nat_prep_tokens_sum,hkn_enc_route_nat_mode12_parallel,hkn_enc_route_nat_mode12_seq,hkn_enc_route_nat_mode12_tokens_sum,hkn_enc_container_pack_ms,hkn_dec_header_ms,hkn_dec_plane_total_ms,hkn_dec_ycocg_to_rgb_ms,hkn_dec_plane_try_natural_ms,hkn_dec_plane_screen_wrapper_ms,hkn_dec_plane_block_types_ms,hkn_dec_plane_filter_ids_ms,hkn_dec_plane_filter_lo_ms,hkn_dec_plane_filter_hi_ms,hkn_dec_plane_reconstruct_ms,hkn_enc_plane_y_ms,hkn_enc_plane_co_ms,hkn_enc_plane_cg_ms,hkn_dec_plane_y_ms,hkn_dec_plane_co_ms,hkn_dec_plane_cg_ms,hkn_enc_plane_parallel_3way,hkn_enc_plane_parallel_2way,hkn_enc_plane_parallel_seq,hkn_enc_plane_parallel_tokens_sum,hkn_dec_plane_parallel_3way,hkn_dec_plane_parallel_seq,hkn_dec_plane_parallel_tokens_sum,hkn_dec_ycocg_parallel,hkn_dec_ycocg_sequential,hkn_dec_ycocg_parallel_threads_sum,hkn_dec_filter_lo_mode_raw,hkn_dec_filter_lo_mode1,hkn_dec_filter_lo_mode2,hkn_dec_filter_lo_mode3,hkn_dec_filter_lo_mode4,hkn_dec_filter_lo_mode5,hkn_dec_filter_lo_mode_invalid,hkn_dec_filter_lo_fallback_zero_fill,hkn_dec_filter_lo_mode4_parallel_tiles,hkn_dec_filter_lo_mode4_sequential_tiles,hkn_dec_filter_lo_decode_rans_ms,hkn_dec_filter_lo_decode_shared_rans_ms,hkn_dec_filter_lo_tilelz_ms,hkn_dec_recon_copy_fast_rows,hkn_dec_recon_copy_slow_rows,hkn_dec_recon_tile4_fast_quads,hkn_dec_recon_tile4_slow_quads,hkn_dec_recon_residual_missing\n";
     ofs << std::fixed << std::setprecision(6);
     for (const auto& r : rows) {
         ofs << r.image_id << ","
@@ -300,6 +318,24 @@ void write_results_csv(const std::string& path, const std::vector<ResultRow>& ro
             << r.hkn_enc_plane_route_parallel << ","
             << r.hkn_enc_plane_route_seq << ","
             << r.hkn_enc_plane_route_parallel_tokens_sum << ","
+            << r.hkn_enc_route_nat_mode0_ms << ","
+            << r.hkn_enc_route_nat_mode1prep_ms << ","
+            << r.hkn_enc_route_nat_predpack_ms << ","
+            << r.hkn_enc_route_nat_mode1_ms << ","
+            << r.hkn_enc_route_nat_mode2_ms << ","
+            << r.hkn_enc_route_nat_mode0_selected << ","
+            << r.hkn_enc_route_nat_mode1_selected << ","
+            << r.hkn_enc_route_nat_mode2_selected << ","
+            << r.hkn_enc_route_nat_pred_raw << ","
+            << r.hkn_enc_route_nat_pred_rans << ","
+            << r.hkn_enc_route_nat_mode2_bias_adopt << ","
+            << r.hkn_enc_route_nat_mode2_bias_reject << ","
+            << r.hkn_enc_route_nat_prep_parallel << ","
+            << r.hkn_enc_route_nat_prep_seq << ","
+            << r.hkn_enc_route_nat_prep_tokens_sum << ","
+            << r.hkn_enc_route_nat_mode12_parallel << ","
+            << r.hkn_enc_route_nat_mode12_seq << ","
+            << r.hkn_enc_route_nat_mode12_tokens_sum << ","
             << r.hkn_enc_container_pack_ms << ","
             << r.hkn_dec_header_ms << ","
             << r.hkn_dec_plane_total_ms << ","
@@ -381,6 +417,24 @@ ResultRow benchmark_one(const EvalImage& img, const Args& args) {
     std::vector<uint64_t> hkn_enc_plane_route_parallel_samples;
     std::vector<uint64_t> hkn_enc_plane_route_seq_samples;
     std::vector<uint64_t> hkn_enc_plane_route_parallel_tokens_sum_samples;
+    std::vector<double> hkn_enc_route_nat_mode0_samples_ms;
+    std::vector<double> hkn_enc_route_nat_mode1prep_samples_ms;
+    std::vector<double> hkn_enc_route_nat_predpack_samples_ms;
+    std::vector<double> hkn_enc_route_nat_mode1_samples_ms;
+    std::vector<double> hkn_enc_route_nat_mode2_samples_ms;
+    std::vector<uint64_t> hkn_enc_route_nat_mode0_selected_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_mode1_selected_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_mode2_selected_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_pred_raw_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_pred_rans_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_mode2_bias_adopt_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_mode2_bias_reject_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_prep_parallel_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_prep_seq_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_prep_tokens_sum_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_mode12_parallel_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_mode12_seq_samples;
+    std::vector<uint64_t> hkn_enc_route_nat_mode12_tokens_sum_samples;
     std::vector<double> hkn_enc_container_pack_samples_ms;
     std::vector<double> hkn_enc_plane_y_samples_ms;
     std::vector<double> hkn_enc_plane_co_samples_ms;
@@ -482,6 +536,24 @@ ResultRow benchmark_one(const EvalImage& img, const Args& args) {
             hkn_enc_plane_route_parallel_samples.push_back(enc_stats.perf_encode_plane_route_parallel_count);
             hkn_enc_plane_route_seq_samples.push_back(enc_stats.perf_encode_plane_route_seq_count);
             hkn_enc_plane_route_parallel_tokens_sum_samples.push_back(enc_stats.perf_encode_plane_route_parallel_tokens_sum);
+            hkn_enc_route_nat_mode0_samples_ms.push_back(ns_to_ms(enc_stats.natural_row_mode0_build_ns));
+            hkn_enc_route_nat_mode1prep_samples_ms.push_back(ns_to_ms(enc_stats.natural_row_mode1_prepare_ns));
+            hkn_enc_route_nat_predpack_samples_ms.push_back(ns_to_ms(enc_stats.natural_row_pred_pack_ns));
+            hkn_enc_route_nat_mode1_samples_ms.push_back(ns_to_ms(enc_stats.natural_row_mode1_build_ns));
+            hkn_enc_route_nat_mode2_samples_ms.push_back(ns_to_ms(enc_stats.natural_row_mode2_build_ns));
+            hkn_enc_route_nat_mode0_selected_samples.push_back(enc_stats.natural_row_mode0_selected_count);
+            hkn_enc_route_nat_mode1_selected_samples.push_back(enc_stats.natural_row_mode1_selected_count);
+            hkn_enc_route_nat_mode2_selected_samples.push_back(enc_stats.natural_row_mode2_selected_count);
+            hkn_enc_route_nat_pred_raw_samples.push_back(enc_stats.natural_row_pred_mode_raw_count);
+            hkn_enc_route_nat_pred_rans_samples.push_back(enc_stats.natural_row_pred_mode_rans_count);
+            hkn_enc_route_nat_mode2_bias_adopt_samples.push_back(enc_stats.natural_row_mode2_bias_adopt_count);
+            hkn_enc_route_nat_mode2_bias_reject_samples.push_back(enc_stats.natural_row_mode2_bias_reject_count);
+            hkn_enc_route_nat_prep_parallel_samples.push_back(enc_stats.natural_row_prep_parallel_count);
+            hkn_enc_route_nat_prep_seq_samples.push_back(enc_stats.natural_row_prep_seq_count);
+            hkn_enc_route_nat_prep_tokens_sum_samples.push_back(enc_stats.natural_row_prep_parallel_tokens_sum);
+            hkn_enc_route_nat_mode12_parallel_samples.push_back(enc_stats.natural_row_mode12_parallel_count);
+            hkn_enc_route_nat_mode12_seq_samples.push_back(enc_stats.natural_row_mode12_seq_count);
+            hkn_enc_route_nat_mode12_tokens_sum_samples.push_back(enc_stats.natural_row_mode12_parallel_tokens_sum);
             hkn_enc_container_pack_samples_ms.push_back(ns_to_ms(enc_stats.perf_encode_container_pack_ns));
             hkn_enc_plane_y_samples_ms.push_back(ns_to_ms(enc_stats.perf_encode_plane_y_ns));
             hkn_enc_plane_co_samples_ms.push_back(ns_to_ms(enc_stats.perf_encode_plane_co_ns));
@@ -555,6 +627,24 @@ ResultRow benchmark_one(const EvalImage& img, const Args& args) {
     row.hkn_enc_plane_route_parallel = median_value(hkn_enc_plane_route_parallel_samples);
     row.hkn_enc_plane_route_seq = median_value(hkn_enc_plane_route_seq_samples);
     row.hkn_enc_plane_route_parallel_tokens_sum = median_value(hkn_enc_plane_route_parallel_tokens_sum_samples);
+    row.hkn_enc_route_nat_mode0_ms = median_value(hkn_enc_route_nat_mode0_samples_ms);
+    row.hkn_enc_route_nat_mode1prep_ms = median_value(hkn_enc_route_nat_mode1prep_samples_ms);
+    row.hkn_enc_route_nat_predpack_ms = median_value(hkn_enc_route_nat_predpack_samples_ms);
+    row.hkn_enc_route_nat_mode1_ms = median_value(hkn_enc_route_nat_mode1_samples_ms);
+    row.hkn_enc_route_nat_mode2_ms = median_value(hkn_enc_route_nat_mode2_samples_ms);
+    row.hkn_enc_route_nat_mode0_selected = median_value(hkn_enc_route_nat_mode0_selected_samples);
+    row.hkn_enc_route_nat_mode1_selected = median_value(hkn_enc_route_nat_mode1_selected_samples);
+    row.hkn_enc_route_nat_mode2_selected = median_value(hkn_enc_route_nat_mode2_selected_samples);
+    row.hkn_enc_route_nat_pred_raw = median_value(hkn_enc_route_nat_pred_raw_samples);
+    row.hkn_enc_route_nat_pred_rans = median_value(hkn_enc_route_nat_pred_rans_samples);
+    row.hkn_enc_route_nat_mode2_bias_adopt = median_value(hkn_enc_route_nat_mode2_bias_adopt_samples);
+    row.hkn_enc_route_nat_mode2_bias_reject = median_value(hkn_enc_route_nat_mode2_bias_reject_samples);
+    row.hkn_enc_route_nat_prep_parallel = median_value(hkn_enc_route_nat_prep_parallel_samples);
+    row.hkn_enc_route_nat_prep_seq = median_value(hkn_enc_route_nat_prep_seq_samples);
+    row.hkn_enc_route_nat_prep_tokens_sum = median_value(hkn_enc_route_nat_prep_tokens_sum_samples);
+    row.hkn_enc_route_nat_mode12_parallel = median_value(hkn_enc_route_nat_mode12_parallel_samples);
+    row.hkn_enc_route_nat_mode12_seq = median_value(hkn_enc_route_nat_mode12_seq_samples);
+    row.hkn_enc_route_nat_mode12_tokens_sum = median_value(hkn_enc_route_nat_mode12_tokens_sum_samples);
     row.hkn_enc_container_pack_ms = median_value(hkn_enc_container_pack_samples_ms);
     row.hkn_enc_plane_y_ms = median_value(hkn_enc_plane_y_samples_ms);
     row.hkn_enc_plane_co_ms = median_value(hkn_enc_plane_co_samples_ms);
@@ -701,12 +791,12 @@ int main(int argc, char** argv) {
         }
         std::cout << "\n";
 
-        std::vector<double> v_enc_rgb, v_enc_cls, v_enc_plane, v_enc_blk, v_enc_rows, v_enc_lo, v_enc_hi, v_enc_wrap, v_enc_route, v_enc_route_pref, v_enc_route_screen, v_enc_route_nat, v_enc_pack;
+        std::vector<double> v_enc_rgb, v_enc_cls, v_enc_plane, v_enc_blk, v_enc_rows, v_enc_lo, v_enc_hi, v_enc_wrap, v_enc_route, v_enc_route_pref, v_enc_route_screen, v_enc_route_nat, v_enc_route_nat_m0, v_enc_route_nat_m1prep, v_enc_route_nat_predpack, v_enc_route_nat_m1, v_enc_route_nat_m2, v_enc_pack;
         std::vector<double> v_dec_hdr, v_dec_plane, v_dec_ycocg, v_dec_nat, v_dec_screen, v_dec_bt, v_dec_fid, v_dec_lo, v_dec_hi, v_dec_recon;
         std::vector<double> v_enc_py, v_enc_pco, v_enc_pcg;
         std::vector<double> v_dec_py, v_dec_pco, v_dec_pcg;
         std::vector<double> v_dec_lo_rans, v_dec_lo_shared_rans, v_dec_lo_lz;
-        std::vector<uint64_t> v_enc_p3, v_enc_p2, v_enc_ps, v_enc_ptok, v_enc_route_par, v_enc_route_seq, v_enc_route_tok;
+        std::vector<uint64_t> v_enc_p3, v_enc_p2, v_enc_ps, v_enc_ptok, v_enc_route_par, v_enc_route_seq, v_enc_route_tok, v_nat_mode0_sel, v_nat_mode1_sel, v_nat_mode2_sel, v_nat_pred_raw, v_nat_pred_rans, v_nat_bias_adopt, v_nat_bias_reject, v_nat_prep_par, v_nat_prep_seq, v_nat_prep_tok, v_nat_mode12_par, v_nat_mode12_seq, v_nat_mode12_tok;
         std::vector<uint64_t> v_dec_p3, v_dec_ps, v_dec_ptok, v_dec_rgb_p, v_dec_rgb_s, v_dec_rgb_thr;
         std::vector<uint64_t> v_lo_raw, v_lo_m1, v_lo_m2, v_lo_m3, v_lo_m4, v_lo_m5, v_lo_inv, v_lo_fb;
         std::vector<uint64_t> v_lo_m4_par, v_lo_m4_seq;
@@ -723,6 +813,11 @@ int main(int argc, char** argv) {
         v_enc_route_pref.reserve(rows.size());
         v_enc_route_screen.reserve(rows.size());
         v_enc_route_nat.reserve(rows.size());
+        v_enc_route_nat_m0.reserve(rows.size());
+        v_enc_route_nat_m1prep.reserve(rows.size());
+        v_enc_route_nat_predpack.reserve(rows.size());
+        v_enc_route_nat_m1.reserve(rows.size());
+        v_enc_route_nat_m2.reserve(rows.size());
         v_enc_pack.reserve(rows.size());
         v_dec_hdr.reserve(rows.size());
         v_dec_plane.reserve(rows.size());
@@ -750,6 +845,19 @@ int main(int argc, char** argv) {
         v_enc_route_par.reserve(rows.size());
         v_enc_route_seq.reserve(rows.size());
         v_enc_route_tok.reserve(rows.size());
+        v_nat_mode0_sel.reserve(rows.size());
+        v_nat_mode1_sel.reserve(rows.size());
+        v_nat_mode2_sel.reserve(rows.size());
+        v_nat_pred_raw.reserve(rows.size());
+        v_nat_pred_rans.reserve(rows.size());
+        v_nat_bias_adopt.reserve(rows.size());
+        v_nat_bias_reject.reserve(rows.size());
+        v_nat_prep_par.reserve(rows.size());
+        v_nat_prep_seq.reserve(rows.size());
+        v_nat_prep_tok.reserve(rows.size());
+        v_nat_mode12_par.reserve(rows.size());
+        v_nat_mode12_seq.reserve(rows.size());
+        v_nat_mode12_tok.reserve(rows.size());
         v_dec_p3.reserve(rows.size());
         v_dec_ps.reserve(rows.size());
         v_dec_ptok.reserve(rows.size());
@@ -784,6 +892,11 @@ int main(int argc, char** argv) {
             v_enc_route_pref.push_back(r.hkn_enc_plane_route_prefilter_ms);
             v_enc_route_screen.push_back(r.hkn_enc_plane_route_screen_candidate_ms);
             v_enc_route_nat.push_back(r.hkn_enc_plane_route_natural_candidate_ms);
+            v_enc_route_nat_m0.push_back(r.hkn_enc_route_nat_mode0_ms);
+            v_enc_route_nat_m1prep.push_back(r.hkn_enc_route_nat_mode1prep_ms);
+            v_enc_route_nat_predpack.push_back(r.hkn_enc_route_nat_predpack_ms);
+            v_enc_route_nat_m1.push_back(r.hkn_enc_route_nat_mode1_ms);
+            v_enc_route_nat_m2.push_back(r.hkn_enc_route_nat_mode2_ms);
             v_enc_pack.push_back(r.hkn_enc_container_pack_ms);
             v_dec_hdr.push_back(r.hkn_dec_header_ms);
             v_dec_plane.push_back(r.hkn_dec_plane_total_ms);
@@ -811,6 +924,19 @@ int main(int argc, char** argv) {
             v_enc_route_par.push_back(r.hkn_enc_plane_route_parallel);
             v_enc_route_seq.push_back(r.hkn_enc_plane_route_seq);
             v_enc_route_tok.push_back(r.hkn_enc_plane_route_parallel_tokens_sum);
+            v_nat_mode0_sel.push_back(r.hkn_enc_route_nat_mode0_selected);
+            v_nat_mode1_sel.push_back(r.hkn_enc_route_nat_mode1_selected);
+            v_nat_mode2_sel.push_back(r.hkn_enc_route_nat_mode2_selected);
+            v_nat_pred_raw.push_back(r.hkn_enc_route_nat_pred_raw);
+            v_nat_pred_rans.push_back(r.hkn_enc_route_nat_pred_rans);
+            v_nat_bias_adopt.push_back(r.hkn_enc_route_nat_mode2_bias_adopt);
+            v_nat_bias_reject.push_back(r.hkn_enc_route_nat_mode2_bias_reject);
+            v_nat_prep_par.push_back(r.hkn_enc_route_nat_prep_parallel);
+            v_nat_prep_seq.push_back(r.hkn_enc_route_nat_prep_seq);
+            v_nat_prep_tok.push_back(r.hkn_enc_route_nat_prep_tokens_sum);
+            v_nat_mode12_par.push_back(r.hkn_enc_route_nat_mode12_parallel);
+            v_nat_mode12_seq.push_back(r.hkn_enc_route_nat_mode12_seq);
+            v_nat_mode12_tok.push_back(r.hkn_enc_route_nat_mode12_tokens_sum);
             v_dec_p3.push_back(r.hkn_dec_plane_parallel_3way);
             v_dec_ps.push_back(r.hkn_dec_plane_parallel_seq);
             v_dec_ptok.push_back(r.hkn_dec_plane_parallel_tokens_sum);
@@ -845,6 +971,11 @@ int main(int argc, char** argv) {
         const double med_enc_route_pref = median_value(v_enc_route_pref);
         const double med_enc_route_screen = median_value(v_enc_route_screen);
         const double med_enc_route_nat = median_value(v_enc_route_nat);
+        const double med_enc_route_nat_m0 = median_value(v_enc_route_nat_m0);
+        const double med_enc_route_nat_m1prep = median_value(v_enc_route_nat_m1prep);
+        const double med_enc_route_nat_predpack = median_value(v_enc_route_nat_predpack);
+        const double med_enc_route_nat_m1 = median_value(v_enc_route_nat_m1);
+        const double med_enc_route_nat_m2 = median_value(v_enc_route_nat_m2);
         const double med_enc_pack = median_value(v_enc_pack);
         const double med_dec_hdr = median_value(v_dec_hdr);
         const double med_dec_plane = median_value(v_dec_plane);
@@ -872,6 +1003,19 @@ int main(int argc, char** argv) {
         const uint64_t med_enc_route_par = median_value(v_enc_route_par);
         const uint64_t med_enc_route_seq = median_value(v_enc_route_seq);
         const uint64_t med_enc_route_tok = median_value(v_enc_route_tok);
+        const uint64_t med_nat_mode0_sel = median_value(v_nat_mode0_sel);
+        const uint64_t med_nat_mode1_sel = median_value(v_nat_mode1_sel);
+        const uint64_t med_nat_mode2_sel = median_value(v_nat_mode2_sel);
+        const uint64_t med_nat_pred_raw = median_value(v_nat_pred_raw);
+        const uint64_t med_nat_pred_rans = median_value(v_nat_pred_rans);
+        const uint64_t med_nat_bias_adopt = median_value(v_nat_bias_adopt);
+        const uint64_t med_nat_bias_reject = median_value(v_nat_bias_reject);
+        const uint64_t med_nat_prep_par = median_value(v_nat_prep_par);
+        const uint64_t med_nat_prep_seq = median_value(v_nat_prep_seq);
+        const uint64_t med_nat_prep_tok = median_value(v_nat_prep_tok);
+        const uint64_t med_nat_mode12_par = median_value(v_nat_mode12_par);
+        const uint64_t med_nat_mode12_seq = median_value(v_nat_mode12_seq);
+        const uint64_t med_nat_mode12_tok = median_value(v_nat_mode12_tok);
         const uint64_t med_dec_p3 = median_value(v_dec_p3);
         const uint64_t med_dec_ps = median_value(v_dec_ps);
         const uint64_t med_dec_ptok = median_value(v_dec_ptok);
@@ -915,6 +1059,11 @@ int main(int argc, char** argv) {
         std::cout << "    route_prefilter: " << med_enc_route_pref << "\n";
         std::cout << "    route_screen:    " << med_enc_route_screen << "\n";
         std::cout << "    route_natural:   " << med_enc_route_nat << "\n";
+        std::cout << "      nat_mode0:     " << med_enc_route_nat_m0 << "\n";
+        std::cout << "      nat_mode1prep: " << med_enc_route_nat_m1prep << "\n";
+        std::cout << "      nat_pred_pack: " << med_enc_route_nat_predpack << "\n";
+        std::cout << "      nat_mode1:     " << med_enc_route_nat_m1 << "\n";
+        std::cout << "      nat_mode2:     " << med_enc_route_nat_m2 << "\n";
         std::cout << "  container_pack:    " << med_enc_pack << " [cpu]\n";
         std::cout << "  plane_y/co/cg:     " << med_enc_py << " / " << med_enc_pco
                   << " / " << med_enc_pcg << " [cpu]\n";
@@ -943,6 +1092,19 @@ int main(int argc, char** argv) {
         std::cout << "route compete scheduler parallel/seq/tokens: "
                   << med_enc_route_par << "/" << med_enc_route_seq
                   << "/" << med_enc_route_tok << "\n";
+        std::cout << "route natural prep    parallel/seq/tokens: "
+                  << med_nat_prep_par << "/" << med_nat_prep_seq
+                  << "/" << med_nat_prep_tok << "\n";
+        std::cout << "route natural m1/m2   parallel/seq/tokens: "
+                  << med_nat_mode12_par << "/" << med_nat_mode12_seq
+                  << "/" << med_nat_mode12_tok << "\n";
+        std::cout << "route natural selected mode0/mode1/mode2: "
+                  << med_nat_mode0_sel << "/" << med_nat_mode1_sel
+                  << "/" << med_nat_mode2_sel << "\n";
+        std::cout << "route natural pred raw/rans: "
+                  << med_nat_pred_raw << "/" << med_nat_pred_rans << "\n";
+        std::cout << "route natural mode2 bias adopt/reject: "
+                  << med_nat_bias_adopt << "/" << med_nat_bias_reject << "\n";
         std::cout << "decode plane scheduler  3way/seq/tokens: "
                   << med_dec_p3 << "/" << med_dec_ps << "/" << med_dec_ptok << "\n";
         std::cout << "decode ycocg->rgb       parallel/seq/threads: "
