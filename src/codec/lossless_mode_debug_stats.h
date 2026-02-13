@@ -225,6 +225,7 @@ struct LosslessModeDebugStats {
     uint64_t natural_row_mode2_lz_chain_steps_sum;
     uint64_t natural_row_mode2_lz_depth_limit_hits;
     uint64_t natural_row_mode2_lz_early_maxlen_hits;
+    uint64_t natural_row_mode2_lz_nice_cutoff_hits;
     uint64_t natural_row_mode2_lz_len3_reject_dist;
     uint64_t natural_row_prep_parallel_count;
     uint64_t natural_row_prep_seq_count;

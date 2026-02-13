@@ -28,6 +28,7 @@ struct GlobalChainLzParams {
     int chain_depth = 32;
     int min_dist_len3 = 128;
     int bias_permille = 990;
+    int nice_length = 255;
 };
 
 struct GlobalChainLzCounters {
@@ -40,6 +41,7 @@ struct GlobalChainLzCounters {
     uint64_t chain_steps = 0;
     uint64_t depth_limit_hits = 0;
     uint64_t early_maxlen_hits = 0;
+    uint64_t nice_cutoff_hits = 0;
     uint64_t len3_reject_dist = 0;
 };
 
@@ -61,6 +63,7 @@ inline const GlobalChainLzParams& global_chain_lz_runtime_params() {
         t.chain_depth = parse_lz_env_int("HKN_LZ_CHAIN_DEPTH", 32, 1, 128);
         t.min_dist_len3 = parse_lz_env_int("HKN_LZ_MIN_DIST_LEN3", 128, 0, 65535);
         t.bias_permille = parse_lz_env_int("HKN_LZ_BIAS_PERMILLE", 990, 900, 1100);
+        t.nice_length = parse_lz_env_int("HKN_LZ_NICE_LENGTH", 255, 4, 255);
         return t;
     }();
     return p;
@@ -77,6 +80,7 @@ inline std::vector<uint8_t> compress_global_chain_lz(
     const int window_size = p.window_size;
     const int chain_depth = p.chain_depth;
     const int min_dist_len3 = p.min_dist_len3;
+    const int nice_length = p.nice_length;
 
     const size_t src_size = src.size();
     const uint8_t* s = src.data();
@@ -190,6 +194,7 @@ inline std::vector<uint8_t> compress_global_chain_lz(
         int depth = 0;
         bool depth_limit_hit = false;
         bool early_maxlen_hit = false;
+        bool nice_cutoff_hit = false;
         while (ref >= 0 && depth < chain_depth) {
             if (counters) counters->chain_steps++;
             size_t ref_pos = (size_t)ref;
@@ -213,6 +218,10 @@ inline std::vector<uint8_t> compress_global_chain_lz(
                             early_maxlen_hit = true;
                             break;
                         }
+                        if (best_len >= nice_length) {
+                            nice_cutoff_hit = true;
+                            break;
+                        }
                     }
                 }
             } else if (dist > window_size) {
@@ -226,6 +235,7 @@ inline std::vector<uint8_t> compress_global_chain_lz(
         }
         if (depth_limit_hit && counters) counters->depth_limit_hits++;
         if (early_maxlen_hit && counters) counters->early_maxlen_hits++;
+        if (nice_cutoff_hit && counters) counters->nice_cutoff_hits++;
 
         prev[pos] = head_get(h);
         head_set(h, (int)pos);
@@ -619,6 +629,7 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
         stats->natural_row_mode2_lz_chain_steps_sum += c.chain_steps;
         stats->natural_row_mode2_lz_depth_limit_hits += c.depth_limit_hits;
         stats->natural_row_mode2_lz_early_maxlen_hits += c.early_maxlen_hits;
+        stats->natural_row_mode2_lz_nice_cutoff_hits += c.nice_cutoff_hits;
         stats->natural_row_mode2_lz_len3_reject_dist += c.len3_reject_dist;
     };
     constexpr uint32_t kPrepParallelPixelThreshold = 262144u;

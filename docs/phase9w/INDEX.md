@@ -43,8 +43,10 @@
 | 2026-02-13 | mode2 `match_len_from` XOR/ctz Fast Count | `docs/phase9w/logs/2026-02-13.md` |
 | 2026-02-13 | Box Definition - mode2 len3 Fast-Path (4th-byte gate) | `docs/phase9w/logs/2026-02-13.md` |
 | 2026-02-14 | `filter_lo` mode3/4 Safe Lower-Bound Skip + Encode Adoption CSV | `docs/phase9w/logs/2026-02-14.md` |
+| 2026-02-14 | `route_natural mode2` Nice-Length Cutoff (`nice=64` No-Go, infra kept) | `docs/phase9w/logs/2026-02-14.md` |
 
 ## No-Go Archive
 
 - `docs/archive/2026-02-13_filter_lo_decode_nogo.md`
 - `docs/archive/2026-02-13_mode2_len3_prereject_nogo.md`
+- `docs/archive/2026-02-14_mode2_nice64_nogo.md`

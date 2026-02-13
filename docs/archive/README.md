@@ -12,3 +12,4 @@
 - `2026-02-13_mode2_len3_prereject_nogo.md`
 - `2026-02-13_mode2_pipeline_limit_gating_nogo.md`
 - `2026-02-13_plane_lo_stream_pruning_nogo.md`
+- `2026-02-14_mode2_nice64_nogo.md`

@@ -1,6 +1,6 @@
 # Phase 9w Speed Status
 
-Last updated: 2026-02-14 (post Trial E)
+Last updated: 2026-02-14 (post Trial F)
 
 ## Current Lane
 - Default lane: `balanced`
@@ -12,13 +12,14 @@ Last updated: 2026-02-14 (post Trial E)
 - `bench_results/phase9w_mode2_ctz_balanced_20260213_runs3_rerun2.csv`
 - Single-core reference:
   - `bench_results/phase9w_singlecore_after_drift_fix_vs_singlecorebase_20260213_runs3.csv`
-- Latest observation run (mode-wise `lo_stream` counters):
-  - `bench_results/phase9w_singlecore_lostream_lbcut_obs_20260214_runs3.csv`
+- Latest observation run (mode2 nice cutoff counters):
+  - `bench_results/phase9w_singlecore_mode2_nice255_vs_lostreamlb_20260214_runs3.csv`
 
 Rationale:
 - Preserves size invariants.
 - Shows consistent stage wins in `route_natural` / `nat_mode2` from the XOR+ctz step.
 - `filter_lo` now has safe lower-bound skip for weak mode3/4 candidates.
+- `mode2 nice_length` infrastructure is integrated with safe default (`255`).
 
 ## Latest Box Decisions
 1. `mode2 len3-distance prereject`: no-go (archived and reverted)
@@ -97,6 +98,12 @@ Rationale:
   so static mode disable is on hold.
 - details: `docs/phase9w/logs/2026-02-14.md`
 
+18. `route_natural mode2` nice-length cutoff: infra kept, `nice=64` no-go
+- `nice=64` reduced chain steps but violated size gate (+7,144 B total).
+- default was reset to `nice=255`; behavior is baseline-equivalent unless env override.
+- archive: `docs/archive/2026-02-14_mode2_nice64_nogo.md`
+- details: `docs/phase9w/logs/2026-02-14.md`
+
 ## Single-Core Snapshot (`HAKONYANS_THREADS=1`)
 - source: `bench_results/phase9w_singlecore_tilelz_compress_fast_vs_step2_20260214_runs3_rerun2.csv`
 - median Enc(ms) HKN/PNG: `175.056 / 107.321` (`HKN/PNG=1.631`)
@@ -111,15 +118,15 @@ Interpretation:
 - Next optimization should prioritize single-core hotspots.
 
 ## Next Tasks
-1. Resume `plane_lo_stream` mode2 optimization
-- `out_limit`-based early abort was reverted; thread-count dependent size drift is resolved.
-- preserve bitstream and keep single-core/multicore output parity.
+1. Sweep `HKN_LZ_NICE_LENGTH` with strict size gate
+- target range: `128, 160, 192, 224, 255`
+- promote only if fixed6 total bytes is non-worsening
 
 2. Re-run fixed low-noise validation for each candidate
 - fixed condition: `HAKONYANS_THREADS=1` + `taskset -c 0`, fixed6, `runs=3`, `warmup=1`.
 
-3. Revisit `route_natural` mode2 search-cost reduction after `lo_stream`
-- prioritize per-candidate compute reduction over path-serialization changes.
+3. Resume `plane_lo_stream` mode2 optimization after Trial F
+- keep prior no-go constraints (`out_limit` path gating remains disabled)
 
 4. Keep promote protocol and archive-by-default
 - repeated fixed-condition reruns required for promotion.
