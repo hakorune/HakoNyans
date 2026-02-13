@@ -1,6 +1,6 @@
 # Phase 9w Speed Status
 
-Last updated: 2026-02-13
+Last updated: 2026-02-14
 
 ## Current Lane
 - Default lane: `balanced`
@@ -86,14 +86,18 @@ Rationale:
 - size invariants preserved; route_comp and wall encode regressed.
 - archive: `docs/archive/2026-02-14_routecost_fastabs_nogo.md`
 
+16. `TileLZ::compress` head-init/literal-flush optimization: kept candidate
+- size invariants preserved; single-core reruns showed net wall gain in 3/4 runs.
+- details: `docs/phase9w/logs/2026-02-14.md`
+
 ## Single-Core Snapshot (`HAKONYANS_THREADS=1`)
-- source: `bench_results/phase9w_singlecore_blockclass_step2_scalar_final_vs_afterfix_20260214_runs3.csv`
-- median Enc(ms) HKN/PNG: `176.646 / 114.041` (`HKN/PNG=1.549`)
-- median Dec(ms) HKN/PNG: `13.169 / 6.487` (`HKN/PNG=2.030`)
+- source: `bench_results/phase9w_singlecore_tilelz_compress_fast_vs_step2_20260214_runs3_rerun2.csv`
+- median Enc(ms) HKN/PNG: `175.056 / 107.321` (`HKN/PNG=1.631`)
+- median Dec(ms) HKN/PNG: `12.698 / 6.311` (`HKN/PNG=2.012`)
 - median encode stage hotspots:
-  - `plane_route_comp: 59.212 ms`
-  - `plane_lo_stream: 58.312 ms`
-  - `plane_block_class: 27.356 ms`
+  - `plane_route_comp: 57.312 ms`
+  - `plane_lo_stream: 56.434 ms`
+  - `plane_block_class: 26.563 ms`
 
 Interpretation:
 - Multicore wall metrics are competitive, but per-core efficiency is still behind PNG.

@@ -1107,3 +1107,16 @@ ctest --test-dir build --output-on-failure
 8. [x] `route_natural` cost-loop fast-abs化 → no-goでrevert
    - 記録: `docs/archive/2026-02-14_routecost_fastabs_nogo.md`
    - 計測: `bench_results/phase9w_singlecore_routecost_fastabs_vs_step2_20260214_runs3.csv`
+9. [x] `TileLZ::compress`（head初期化削減 + literal flush memcpy化）→ keep
+   - 実装: `src/codec/lz_tile.h`
+   - 計測:
+     - single-core:
+       - `bench_results/phase9w_singlecore_tilelz_compress_fast_vs_step2_20260214_runs3.csv`
+       - `bench_results/phase9w_singlecore_tilelz_compress_fast_vs_step2_20260214_runs3_rerun.csv`
+       - `bench_results/phase9w_singlecore_tilelz_compress_fast_vs_step2_20260214_runs3_rerun2.csv`
+       - `bench_results/phase9w_singlecore_tilelz_compress_fast_vs_step2_20260214_runs3_rerun3.csv`
+       - baseline `Enc(ms)=176.646` に対して rerun中央値は `174.960 / 175.056 / 175.765`（3/4で改善）
+     - multicore:
+       - `bench_results/phase9w_tilelz_compress_fast_vs_step2_multi_20260214_runs3.csv`
+       - `bench_results/phase9w_tilelz_compress_fast_vs_step2_multi_20260214_runs3_rerun.csv`
+   - size/ratio維持: `total=2,977,544`, `median PNG/HKN=0.261035`

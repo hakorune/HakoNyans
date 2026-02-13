@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <vector>
 #include <cstdint>
 #include <cstring>
@@ -15,7 +16,7 @@ public:
     static std::vector<uint8_t> compress(const std::vector<uint8_t>& src) {
         if (src.empty()) return {};
         std::vector<uint8_t> out;
-        out.reserve(src.size()); 
+        out.reserve(src.size() + (src.size() / 255u + 1u) * 2u);
 
         size_t pos = 0;
         const size_t src_size = src.size();
@@ -26,12 +27,24 @@ public:
         static constexpr int HASH_SIZE = 1 << HASH_BITS;
         static constexpr int WINDOW_SIZE = 32768;
         
-        // We use a simple "last pos" table for MVP speed/simplicity since it's "Tile Local" (small data)
-        // Actually, for better compression we should chain or just use "best recent match".
-        // Let's use a single-entry hash table (stores last position of hash) for simplicity and speed (LZ4-ish style).
-        // It fits the "2% improvement" requirement easily if data is truly repetitive.
-        
-        std::vector<int> head(HASH_SIZE, -1);
+        thread_local std::array<int, HASH_SIZE> head;
+        thread_local std::array<uint32_t, HASH_SIZE> stamp;
+        thread_local uint32_t epoch = 1;
+        epoch++;
+        if (epoch == 0) {
+            stamp.fill(0);
+            epoch = 1;
+        }
+
+        auto head_get = [&](uint32_t h) -> int {
+            if (stamp[h] != epoch) return -1;
+            return head[h];
+        };
+
+        auto head_set = [&](uint32_t h, int p) {
+            stamp[h] = epoch;
+            head[h] = p;
+        };
         
         auto hash = [&](size_t p) -> uint32_t {
             if (p + 3 > src_size) return 0;
@@ -39,6 +52,20 @@ public:
             // Better: ((val * prime) >> shift)
             uint32_t v = ((uint32_t)src[p] << 16) | ((uint32_t)src[p+1] << 8) | (uint32_t)src[p+2];
             return ((v * 0x1e35a7bd) >> (32 - HASH_BITS));
+        };
+
+        auto flush_literals = [&](size_t from, size_t to) {
+            size_t lit_len = to - from;
+            while (lit_len > 0) {
+                const size_t chunk = std::min<size_t>(lit_len, 255u);
+                const size_t off = out.size();
+                out.resize(off + 2 + chunk);
+                out[off] = 0; // LITRUN
+                out[off + 1] = (uint8_t)chunk;
+                std::memcpy(out.data() + off + 2, src.data() + from, chunk);
+                from += chunk;
+                lit_len -= chunk;
+            }
         };
 
         size_t lit_start = 0;
@@ -51,8 +78,8 @@ public:
             }
 
             uint32_t h = hash(pos);
-            int ref = head[h];
-            head[h] = (int)pos;
+            int ref = head_get(h);
+            head_set(h, (int)pos);
 
             // Check match if ref is valid and within sliding window
             bool match = false;
@@ -74,22 +101,16 @@ public:
 
             if (match && best_len >= 3) {
                 // Flush literals
-                int lit_len = (int)(pos - lit_start);
-                while (lit_len > 0) {
-                    int chunk = std::min(lit_len, 255);
-                    out.push_back(0); // LITRUN
-                    out.push_back((uint8_t)chunk);
-                    out.insert(out.end(), src.begin() + lit_start, src.begin() + lit_start + chunk);
-                    lit_start += chunk;
-                    lit_len -= chunk;
-                }
+                flush_literals(lit_start, pos);
 
                 // Write match
                 // [1][len][dist]
-                out.push_back(1); // MATCH
-                out.push_back((uint8_t)best_len);
-                out.push_back((uint8_t)(best_dist & 0xFF));
-                out.push_back((uint8_t)((best_dist >> 8) & 0xFF));
+                const size_t off = out.size();
+                out.resize(off + 4);
+                out[off] = 1; // MATCH
+                out[off + 1] = (uint8_t)best_len;
+                out[off + 2] = (uint8_t)(best_dist & 0xFF);
+                out[off + 3] = (uint8_t)((best_dist >> 8) & 0xFF);
 
                 pos += best_len;
                 lit_start = pos;
@@ -99,15 +120,7 @@ public:
         }
 
         // Flush remaining literals
-        int lit_len = (int)(src_size - lit_start);
-        while (lit_len > 0) {
-            int chunk = std::min(lit_len, 255);
-            out.push_back(0); // LITRUN
-            out.push_back((uint8_t)chunk);
-            out.insert(out.end(), src.begin() + lit_start, src.begin() + lit_start + chunk);
-            lit_start += chunk;
-            lit_len -= chunk;
-        }
+        flush_literals(lit_start, src_size);
 
         return out;
     }
