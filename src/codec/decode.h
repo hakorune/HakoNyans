@@ -14,6 +14,7 @@
 #include <vector>
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
 #include <stdexcept>
 #include <future>
 #include <cmath>
@@ -44,6 +45,25 @@ public:
 
 private:
     inline static thread_local LosslessDecodeDebugStats tl_lossless_decode_debug_stats_;
+
+    static bool env_bool_flag(const char* key, bool fallback) {
+        const char* raw = std::getenv(key);
+        if (!raw || raw[0] == '\0') return fallback;
+        const char c0 = raw[0];
+        if (c0 == '0' || c0 == 'f' || c0 == 'F' || c0 == 'n' || c0 == 'N') return false;
+        if (c0 == '1' || c0 == 't' || c0 == 'T' || c0 == 'y' || c0 == 'Y') return true;
+        return fallback;
+    }
+
+    static bool decode_use_bulk_rans() {
+        static const bool enabled = env_bool_flag("HKN_DECODE_BULK_RANS", true);
+        return enabled;
+    }
+
+    static bool decode_use_plane_caller_y_path() {
+        static const bool enabled = env_bool_flag("HKN_DECODE_PLANE_CALLER_Y", false);
+        return enabled;
+    }
 
 public:
     static std::vector<uint8_t> pad_image(const uint8_t* p, uint32_t w, uint32_t h, uint32_t pw, uint32_t ph) {
@@ -750,41 +770,78 @@ public:
             ).count();
 
         if (plane_decode_tokens.acquired()) {
-            auto fco = std::async(std::launch::async, [&]() {
-                thread_budget::ScopedParallelRegion guard;
-                return run_plane_task(t1->offset, t1->size);
-            });
-            auto fcg = std::async(std::launch::async, [&]() {
-                thread_budget::ScopedParallelRegion guard;
-                return run_plane_task(t2->offset, t2->size);
-            });
+            if (decode_use_plane_caller_y_path()) {
+                auto fco = std::async(std::launch::async, [&]() {
+                    thread_budget::ScopedParallelRegion guard;
+                    return run_plane_task(t1->offset, t1->size);
+                });
+                auto fcg = std::async(std::launch::async, [&]() {
+                    thread_budget::ScopedParallelRegion guard;
+                    return run_plane_task(t2->offset, t2->size);
+                });
 
-            PlaneDecodeTaskResult y_res;
-            {
-                thread_budget::ScopedParallelRegion guard;
-                y_res = run_plane_task(t0->offset, t0->size);
+                PlaneDecodeTaskResult y_res;
+                {
+                    thread_budget::ScopedParallelRegion guard;
+                    y_res = run_plane_task(t0->offset, t0->size);
+                }
+
+                const auto t_plane_wait0 = Clock::now();
+                auto co_res = fco.get();
+                auto cg_res = fcg.get();
+                const auto t_plane_wait1 = Clock::now();
+                tl_lossless_decode_debug_stats_.decode_plane_wait_ns +=
+                    (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        t_plane_wait1 - t_plane_wait0
+                    ).count();
+
+                y_plane = std::move(y_res.plane);
+                co_plane = std::move(co_res.plane);
+                cg_plane = std::move(cg_res.plane);
+
+                tl_lossless_decode_debug_stats_.accumulate_from(y_res.stats);
+                tl_lossless_decode_debug_stats_.accumulate_from(co_res.stats);
+                tl_lossless_decode_debug_stats_.accumulate_from(cg_res.stats);
+
+                tl_lossless_decode_debug_stats_.decode_plane_y_ns += y_res.elapsed_ns;
+                tl_lossless_decode_debug_stats_.decode_plane_co_ns += co_res.elapsed_ns;
+                tl_lossless_decode_debug_stats_.decode_plane_cg_ns += cg_res.elapsed_ns;
+            } else {
+                auto fy = std::async(std::launch::async, [&]() {
+                    thread_budget::ScopedParallelRegion guard;
+                    return run_plane_task(t0->offset, t0->size);
+                });
+                auto fco = std::async(std::launch::async, [&]() {
+                    thread_budget::ScopedParallelRegion guard;
+                    return run_plane_task(t1->offset, t1->size);
+                });
+                auto fcg = std::async(std::launch::async, [&]() {
+                    thread_budget::ScopedParallelRegion guard;
+                    return run_plane_task(t2->offset, t2->size);
+                });
+
+                const auto t_plane_wait0 = Clock::now();
+                auto y_res = fy.get();
+                auto co_res = fco.get();
+                auto cg_res = fcg.get();
+                const auto t_plane_wait1 = Clock::now();
+                tl_lossless_decode_debug_stats_.decode_plane_wait_ns +=
+                    (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        t_plane_wait1 - t_plane_wait0
+                    ).count();
+
+                y_plane = std::move(y_res.plane);
+                co_plane = std::move(co_res.plane);
+                cg_plane = std::move(cg_res.plane);
+
+                tl_lossless_decode_debug_stats_.accumulate_from(y_res.stats);
+                tl_lossless_decode_debug_stats_.accumulate_from(co_res.stats);
+                tl_lossless_decode_debug_stats_.accumulate_from(cg_res.stats);
+
+                tl_lossless_decode_debug_stats_.decode_plane_y_ns += y_res.elapsed_ns;
+                tl_lossless_decode_debug_stats_.decode_plane_co_ns += co_res.elapsed_ns;
+                tl_lossless_decode_debug_stats_.decode_plane_cg_ns += cg_res.elapsed_ns;
             }
-
-            const auto t_plane_wait0 = Clock::now();
-            auto co_res = fco.get();
-            auto cg_res = fcg.get();
-            const auto t_plane_wait1 = Clock::now();
-            tl_lossless_decode_debug_stats_.decode_plane_wait_ns +=
-                (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    t_plane_wait1 - t_plane_wait0
-                ).count();
-
-            y_plane = std::move(y_res.plane);
-            co_plane = std::move(co_res.plane);
-            cg_plane = std::move(cg_res.plane);
-
-            tl_lossless_decode_debug_stats_.accumulate_from(y_res.stats);
-            tl_lossless_decode_debug_stats_.accumulate_from(co_res.stats);
-            tl_lossless_decode_debug_stats_.accumulate_from(cg_res.stats);
-
-            tl_lossless_decode_debug_stats_.decode_plane_y_ns += y_res.elapsed_ns;
-            tl_lossless_decode_debug_stats_.decode_plane_co_ns += co_res.elapsed_ns;
-            tl_lossless_decode_debug_stats_.decode_plane_cg_ns += cg_res.elapsed_ns;
         } else {
             const auto t_y0 = Clock::now();
             y_plane  = decode_plane_lossless(&hkn[t0->offset], t0->size, w, h, hdr.version);
@@ -996,11 +1053,24 @@ public:
         if (count > 0) {
             uint8_t* dst = result.data();
             constexpr uint32_t kUseLutMinCount = 128;
+            const bool use_bulk = decode_use_bulk_rans();
             if (count >= kUseLutMinCount) {
                 auto tbl = CDFBuilder::build_simd_table(cdf);
-                dec.decode_symbols_lut(dst, count, *tbl);
+                if (use_bulk) {
+                    dec.decode_symbols_lut(dst, count, *tbl);
+                } else {
+                    for (uint32_t i = 0; i < count; i++) {
+                        dst[i] = (uint8_t)dec.decode_symbol_lut(*tbl);
+                    }
+                }
             } else {
-                dec.decode_symbols(dst, count, cdf);
+                if (use_bulk) {
+                    dec.decode_symbols(dst, count, cdf);
+                } else {
+                    for (uint32_t i = 0; i < count; i++) {
+                        dst[i] = (uint8_t)dec.decode_symbol(cdf);
+                    }
+                }
             }
         }
         if (expected_count > 0 && result.size() != expected_count) {
@@ -1030,7 +1100,13 @@ public:
         std::vector<uint8_t> result(count);
         if (count > 0) {
             const SIMDDecodeTable& tbl = get_mode5_shared_lz_simd_table();
-            dec.decode_symbols_lut(result.data(), count, tbl);
+            if (decode_use_bulk_rans()) {
+                dec.decode_symbols_lut(result.data(), count, tbl);
+            } else {
+                for (uint32_t i = 0; i < count; i++) {
+                    result[i] = (uint8_t)dec.decode_symbol_lut(tbl);
+                }
+            }
         }
         if (expected_count > 0 && result.size() != expected_count) {
             result.resize(expected_count, 0);

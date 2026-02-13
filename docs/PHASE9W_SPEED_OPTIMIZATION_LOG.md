@@ -910,3 +910,55 @@ Interpretation:
     while route-natural internals were improved or near-neutral.
   - Large-image host variance remained significant; this step is kept as implemented
     and should be re-judged with additional reruns when promoting a new baseline.
+
+## 2026-02-13: Step Isolation (Step1 / Step2 / Step3)
+
+### Objective
+- Identify which step causes wall-time instability by toggling each step independently
+  under a single binary.
+- Keep size behavior unchanged.
+
+### Implementation
+- `src/codec/decode.h`
+  - Added runtime flags:
+    - `HKN_DECODE_BULK_RANS` (step2 toggle, default `on`)
+    - `HKN_DECODE_PLANE_CALLER_Y` (step3 toggle, default `off`)
+  - Reintroduced fallback paths so step2/step3 can be compared in-process.
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `cd build && ctest --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts (runs=5, warmup=1)
+- baseline:
+  - `bench_results/tmp_ycocg_sched_opt_20260213_runs5.csv`
+- step1 only (`BULK_RANS=0`, `PLANE_CALLER_Y=0`):
+  - `bench_results/tmp_isolate_step1_only_20260213_runs5.csv`
+- step1+2 (`BULK_RANS=1`, `PLANE_CALLER_Y=0`):
+  - `bench_results/tmp_isolate_step12_20260213_runs5.csv`
+- step1+2+3 (`BULK_RANS=1`, `PLANE_CALLER_Y=1`):
+  - `bench_results/tmp_isolate_step123_20260213_runs5.csv`
+- default (after changing step3 default to off):
+  - `bench_results/tmp_isolate_default_step12_20260213_runs5.csv`
+
+### Result Summary (median deltas vs baseline)
+- Compression invariants were preserved in all cases:
+  - `median PNG/HKN = 0.2610`
+  - `total HKN bytes = 2,977,544`
+- Wall-time comparison:
+  - step1 only:
+    - `hkn_enc_ms: 99.472817 -> 99.206570` (`-0.266247`)
+    - `hkn_dec_ms: 9.583383 -> 9.066595` (`-0.516788`)
+  - step1+2:
+    - `hkn_enc_ms: 99.472817 -> 101.080500` (`+1.607683`)
+    - `hkn_dec_ms: 9.583383 -> 8.577956` (`-1.005427`)
+  - step1+2+3:
+    - `hkn_enc_ms: 99.472817 -> 109.149485` (`+9.676669`)
+    - `hkn_dec_ms: 9.583383 -> 8.691541` (`-0.891842`)
+
+Interpretation:
+- The large encode-wall regression appears only when step3 (`PLANE_CALLER_Y`) is enabled.
+- step1 and step2 are safe to keep enabled for the current baseline strategy.
+- Therefore step3 remains implemented but is now default-off (opt-in via env) until a
+  stronger scheduler design removes the encode-side instability.
