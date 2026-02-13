@@ -74,6 +74,7 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
     constexpr int kFilterLoMode5GainPermille = 995;
     constexpr int kFilterLoMode5MinRawBytes = 2048;
     constexpr int kFilterLoMode5MinLZBytes = 1024;
+    constexpr size_t kByteStreamMinEncodedBytes = 4 + (256 * 4) + 4 + 4; // cdf_size+cdf+count+rans_size
 
     std::vector<uint8_t> delta_bytes(lo_bytes.size());
     delta_bytes[0] = lo_bytes[0];
@@ -157,7 +158,6 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
 
     const bool enable_mode3_mode4 = ((profile_code == 1 || profile_code == 2) && lo_bytes.size() > 256);
     if (enable_mode3_mode4) {
-        const auto t_mode3_eval0 = Clock::now();
         std::vector<int> dct_row_lens(std::max(1u, pad_h / 8u), 0);
         for (uint32_t by = 0; by < pad_h / 8u; by++) {
             int dct_cols = 0;
@@ -176,78 +176,87 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
         std::vector<uint8_t> resids;
         size_t active_rows = 0;
         for (int len : row_lens) if (len > 0) active_rows++;
-        preds.reserve(active_rows);
-        resids.resize(lo_bytes.size());
+        const size_t mode3_min_size = 1 + 1 + 4 + 4 + (2 * kByteStreamMinEncodedBytes);
+        const bool mode3_lower_bound_reject =
+            (mode3_min_size >= best_size) ||
+            ((uint64_t)mode3_min_size * 1000ull >
+             (uint64_t)legacy_size * (uint64_t)kFilterLoModeWrapperGainPermilleDefault);
 
-        size_t offset = 0;
-        size_t prev_valid_row_start = 0;
-        size_t prev_valid_row_len = 0;
-        size_t resid_write = 0;
+        if (!mode3_lower_bound_reject) {
+            const auto t_mode3_eval0 = Clock::now();
+            preds.reserve(active_rows);
+            resids.resize(lo_bytes.size());
 
-        for (uint32_t y = 0; y < pad_h; y++) {
-            int len = row_lens[y];
-            if (len == 0) continue;
+            size_t offset = 0;
+            size_t prev_valid_row_start = 0;
+            size_t prev_valid_row_len = 0;
+            size_t resid_write = 0;
 
-            const uint8_t* curr_row = &lo_bytes[offset];
-            int best_p = 0;
-            int64_t min_cost = -1;
+            for (uint32_t y = 0; y < pad_h; y++) {
+                int len = row_lens[y];
+                if (len == 0) continue;
 
-            for (int p = 0; p < 4; p++) {
-                int64_t cost = 0;
+                const uint8_t* curr_row = &lo_bytes[offset];
+                int best_p = 0;
+                int64_t min_cost = -1;
+
+                for (int p = 0; p < 4; p++) {
+                    int64_t cost = 0;
+                    for (int i = 0; i < len; i++) {
+                        uint8_t pred_val = 0;
+                        if (p == 1) {
+                            pred_val = (i == 0) ? 0 : curr_row[i - 1];
+                        } else if (p == 2) {
+                            pred_val = (prev_valid_row_len > (size_t)i) ? lo_bytes[prev_valid_row_start + i] : 0;
+                        } else if (p == 3) {
+                            uint8_t left = (i == 0) ? 0 : curr_row[i - 1];
+                            uint8_t up = (prev_valid_row_len > (size_t)i) ? lo_bytes[prev_valid_row_start + i] : 0;
+                            pred_val = (left + up) / 2;
+                        }
+                        int diff = (int)curr_row[i] - pred_val;
+                        if (diff < 0) diff += 256;
+                        if (diff > 128) diff = 256 - diff;
+                        cost += diff;
+                        if (min_cost != -1 && cost >= min_cost) break;
+                    }
+                    if (min_cost == -1 || cost < min_cost) {
+                        min_cost = cost;
+                        best_p = p;
+                    }
+                }
+
+                preds.push_back((uint8_t)best_p);
+
                 for (int i = 0; i < len; i++) {
                     uint8_t pred_val = 0;
-                    if (p == 1) {
-                        pred_val = (i == 0) ? 0 : curr_row[i - 1];
-                    } else if (p == 2) {
-                        pred_val = (prev_valid_row_len > (size_t)i) ? lo_bytes[prev_valid_row_start + i] : 0;
-                    } else if (p == 3) {
+                    if (best_p == 1) pred_val = (i == 0) ? 0 : curr_row[i - 1];
+                    else if (best_p == 2) pred_val = (prev_valid_row_len > (size_t)i) ? lo_bytes[prev_valid_row_start + i] : 0;
+                    else if (best_p == 3) {
                         uint8_t left = (i == 0) ? 0 : curr_row[i - 1];
                         uint8_t up = (prev_valid_row_len > (size_t)i) ? lo_bytes[prev_valid_row_start + i] : 0;
                         pred_val = (left + up) / 2;
                     }
-                    int diff = (int)curr_row[i] - pred_val;
-                    if (diff < 0) diff += 256;
-                    if (diff > 128) diff = 256 - diff;
-                    cost += diff;
-                    if (min_cost != -1 && cost >= min_cost) break;
+                    resids[resid_write++] = (uint8_t)(curr_row[i] - pred_val);
                 }
-                if (min_cost == -1 || cost < min_cost) {
-                    min_cost = cost;
-                    best_p = p;
-                }
+
+                prev_valid_row_start = offset;
+                prev_valid_row_len = len;
+                offset += len;
             }
+            resids.resize(resid_write);
 
-            preds.push_back((uint8_t)best_p);
+            auto preds_enc = encode_byte_stream(preds);
+            auto resids_enc = encode_byte_stream(resids);
+            size_t total_sz = 1 + 1 + 4 + 4 + preds_enc.size() + resids_enc.size();
+            if (stats) stats->filter_lo_mode3_eval_ns += ns_since(t_mode3_eval0, Clock::now());
 
-            for (int i = 0; i < len; i++) {
-                uint8_t pred_val = 0;
-                if (best_p == 1) pred_val = (i == 0) ? 0 : curr_row[i - 1];
-                else if (best_p == 2) pred_val = (prev_valid_row_len > (size_t)i) ? lo_bytes[prev_valid_row_start + i] : 0;
-                else if (best_p == 3) {
-                    uint8_t left = (i == 0) ? 0 : curr_row[i - 1];
-                    uint8_t up = (prev_valid_row_len > (size_t)i) ? lo_bytes[prev_valid_row_start + i] : 0;
-                    pred_val = (left + up) / 2;
-                }
-                resids[resid_write++] = (uint8_t)(curr_row[i] - pred_val);
+            if (total_sz < best_size && total_sz * 1000 <= legacy_size * kFilterLoModeWrapperGainPermilleDefault) {
+                best_size = total_sz;
+                best_mode = 3;
+                pred_stream = std::move(preds_enc);
+                resid_stream = std::move(resids_enc);
+                mode3_preds = std::move(preds);
             }
-
-            prev_valid_row_start = offset;
-            prev_valid_row_len = len;
-            offset += len;
-        }
-        resids.resize(resid_write);
-
-        auto preds_enc = encode_byte_stream(preds);
-        auto resids_enc = encode_byte_stream(resids);
-        size_t total_sz = 1 + 1 + 4 + 4 + preds_enc.size() + resids_enc.size();
-        if (stats) stats->filter_lo_mode3_eval_ns += ns_since(t_mode3_eval0, Clock::now());
-
-        if (total_sz < best_size && total_sz * 1000 <= legacy_size * kFilterLoModeWrapperGainPermilleDefault) {
-            best_size = total_sz;
-            best_mode = 3;
-            pred_stream = std::move(preds_enc);
-            resid_stream = std::move(resids_enc);
-            mode3_preds = std::move(preds);
         }
 
         const auto t_mode4_eval0 = Clock::now();
@@ -279,24 +288,33 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
         }
 
         size_t mode4_sz = 1 + 1 + 4 + 6 * 4;
+        int nonempty_ctx = 0;
+        for (int k = 0; k < 6; k++) {
+            if (!lo_ctx[k].empty()) nonempty_ctx++;
+        }
+        const size_t mode4_min_size = mode4_sz + (size_t)nonempty_ctx * kByteStreamMinEncodedBytes;
+        const bool mode4_lower_bound_reject =
+            (nonempty_ctx < 2) ||
+            (mode4_min_size >= best_size) ||
+            ((uint64_t)mode4_min_size * 1000ull >
+             (uint64_t)legacy_size * (uint64_t)kFilterLoModeWrapperGainPermilleDefault);
+
         const size_t mode4_gate_limit =
             (legacy_size * (size_t)kFilterLoModeWrapperGainPermilleDefault + 999u) / 1000u;
-        int nonempty_ctx = 0;
         std::vector<std::vector<uint8_t>> ctx_streams(6);
         std::vector<uint32_t> ctx_raw_counts(6, 0);
-        bool mode4_aborted = false;
+        bool mode4_aborted = mode4_lower_bound_reject;
         thread_budget::ScopedThreadTokens ctx_parallel_tokens;
-        if (hw_threads >= 6 && lo_bytes.size() >= 8192) {
+        if (!mode4_aborted && hw_threads >= 6 && lo_bytes.size() >= 8192) {
             ctx_parallel_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(6);
         }
-        const bool allow_parallel_ctx = ctx_parallel_tokens.acquired();
+        const bool allow_parallel_ctx = (!mode4_aborted && ctx_parallel_tokens.acquired());
         if (allow_parallel_ctx) {
             std::vector<std::future<std::vector<uint8_t>>> futs(6);
             std::vector<bool> launched(6, false);
             for (int k = 0; k < 6; k++) {
                 ctx_raw_counts[k] = (uint32_t)lo_ctx[k].size();
                 if (lo_ctx[k].empty()) continue;
-                nonempty_ctx++;
                 launched[k] = true;
                 futs[k] = worker_pool.submit([&, k]() {
                     thread_budget::ScopedParallelRegion guard;
@@ -309,10 +327,9 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
                 }
                 mode4_sz += ctx_streams[k].size();
             }
-        } else {
+        } else if (!mode4_aborted) {
             for (int k = 0; k < 6; k++) {
                 ctx_raw_counts[k] = (uint32_t)lo_ctx[k].size();
-                if (!lo_ctx[k].empty()) nonempty_ctx++;
                 if (!lo_ctx[k].empty()) {
                     ctx_streams[k] = encode_byte_stream(lo_ctx[k]);
                 }

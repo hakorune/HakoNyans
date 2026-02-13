@@ -16,6 +16,7 @@ work readable and reduce merge conflicts.
 
 - `docs/phase9w/logs/2026-02-12.md`
 - `docs/phase9w/logs/2026-02-13.md`
+- `docs/phase9w/logs/2026-02-14.md`
 
 ## No-Go Archive
 

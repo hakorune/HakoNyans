@@ -4,6 +4,7 @@
 
 - `docs/phase9w/logs/2026-02-12.md`
 - `docs/phase9w/logs/2026-02-13.md`
+- `docs/phase9w/logs/2026-02-14.md`
 
 ## Box Entries
 
@@ -41,6 +42,7 @@
 | 2026-02-13 | Box Definition - mode2 len3-distance Early Reject | `docs/phase9w/logs/2026-02-13.md` |
 | 2026-02-13 | mode2 `match_len_from` XOR/ctz Fast Count | `docs/phase9w/logs/2026-02-13.md` |
 | 2026-02-13 | Box Definition - mode2 len3 Fast-Path (4th-byte gate) | `docs/phase9w/logs/2026-02-13.md` |
+| 2026-02-14 | `filter_lo` mode3/4 Safe Lower-Bound Skip + Encode Adoption CSV | `docs/phase9w/logs/2026-02-14.md` |
 
 ## No-Go Archive
 

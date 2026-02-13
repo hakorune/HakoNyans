@@ -1,6 +1,6 @@
 # Phase 9w Speed Status
 
-Last updated: 2026-02-14
+Last updated: 2026-02-14 (post Trial E)
 
 ## Current Lane
 - Default lane: `balanced`
@@ -13,11 +13,12 @@ Last updated: 2026-02-14
 - Single-core reference:
   - `bench_results/phase9w_singlecore_after_drift_fix_vs_singlecorebase_20260213_runs3.csv`
 - Latest observation run (mode-wise `lo_stream` counters):
-  - `bench_results/phase9w_lostream_obs_final_vs_ctz_20260213_runs3.csv`
+  - `bench_results/phase9w_singlecore_lostream_lbcut_obs_20260214_runs3.csv`
 
 Rationale:
 - Preserves size invariants.
 - Shows consistent stage wins in `route_natural` / `nat_mode2` from the XOR+ctz step.
+- `filter_lo` now has safe lower-bound skip for weak mode3/4 candidates.
 
 ## Latest Box Decisions
 1. `mode2 len3-distance prereject`: no-go (archived and reverted)
@@ -88,6 +89,12 @@ Rationale:
 
 16. `TileLZ::compress` head-init/literal-flush optimization: kept candidate
 - size invariants preserved; single-core reruns showed net wall gain in 3/4 runs.
+- details: `docs/phase9w/logs/2026-02-14.md`
+
+17. `filter_lo` mode3/4 safe lower-bound skip + encode mode adoption CSV: kept
+- size invariants preserved.
+- fixed6 adoption showed every mode (0..5) still appears on at least one image,
+  so static mode disable is on hold.
 - details: `docs/phase9w/logs/2026-02-14.md`
 
 ## Single-Core Snapshot (`HAKONYANS_THREADS=1`)
