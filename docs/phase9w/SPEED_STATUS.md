@@ -11,7 +11,7 @@ Last updated: 2026-02-13
 ## Current Working Baseline CSV
 - `bench_results/phase9w_mode2_ctz_balanced_20260213_runs3_rerun2.csv`
 - Single-core reference:
-  - `bench_results/phase9w_singlecore_threads1_balanced_20260213_runs3.csv`
+  - `bench_results/phase9w_singlecore_after_drift_fix_vs_singlecorebase_20260213_runs3.csv`
 - Latest observation run (mode-wise `lo_stream` counters):
   - `bench_results/phase9w_lostream_obs_final_vs_ctz_20260213_runs3.csv`
 
@@ -74,14 +74,15 @@ Interpretation:
 - Next optimization should prioritize single-core hotspots.
 
 ## Next Tasks
-1. Investigate single-core size drift before further promotion
-- `HAKONYANS_THREADS=1` run shows `hd_01` size delta (`+7,879 bytes`) vs prior single-core baseline; isolate root cause first.
+1. Resume `plane_lo_stream` mode2 optimization
+- `out_limit`-based early abort was reverted; thread-count dependent size drift is resolved.
+- preserve bitstream and keep single-core/multicore output parity.
 
-2. Re-run low-noise single-core measurement after drift isolation
+2. Re-run fixed low-noise validation for each candidate
 - fixed condition: `HAKONYANS_THREADS=1` + `taskset -c 0`, fixed6, `runs=3`, `warmup=1`.
 
-3. Resume `plane_lo_stream` mode2 optimization only after drift is resolved
-- preserve bitstream; avoid thread-count dependent output differences.
+3. Revisit `route_natural` mode2 search-cost reduction after `lo_stream`
+- prioritize per-candidate compute reduction over path-serialization changes.
 
 4. Keep promote protocol and archive-by-default
 - repeated fixed-condition reruns required for promotion.

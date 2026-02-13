@@ -68,8 +68,7 @@ inline const GlobalChainLzParams& global_chain_lz_runtime_params() {
 
 inline std::vector<uint8_t> compress_global_chain_lz(
     const std::vector<uint8_t>& src, const GlobalChainLzParams& p,
-    GlobalChainLzCounters* counters = nullptr,
-    size_t out_limit = std::numeric_limits<size_t>::max()
+    GlobalChainLzCounters* counters = nullptr
 ) {
     if (src.empty()) return {};
 
@@ -118,7 +117,7 @@ inline std::vector<uint8_t> compress_global_chain_lz(
         return (v * 0x1e35a7bdu) >> (32 - HASH_BITS);
     };
 
-    auto flush_literals = [&](size_t start, size_t end) -> bool {
+    auto flush_literals = [&](size_t start, size_t end) {
         size_t cur = start;
         while (cur < end) {
             size_t chunk = std::min<size_t>(255, end - cur);
@@ -129,12 +128,8 @@ inline std::vector<uint8_t> compress_global_chain_lz(
             dst[1] = (uint8_t)chunk;
             std::memcpy(dst + 2, s + cur, chunk);
             if (counters) counters->literal_bytes += (uint64_t)chunk;
-            if (out_limit != std::numeric_limits<size_t>::max() && out.size() > out_limit) {
-                return false;
-            }
             cur += chunk;
         }
-        return true;
     };
 
     auto match_len_from = [&](size_t ref_pos, size_t cur_pos) -> int {
@@ -187,12 +182,6 @@ inline std::vector<uint8_t> compress_global_chain_lz(
     size_t pos = 0;
     size_t lit_start = 0;
     while (pos + 2 < src_size) {
-        if (out_limit != std::numeric_limits<size_t>::max()) {
-            const size_t pending_literals = pos - lit_start;
-            if (out.size() > out_limit) return {};
-            if (pending_literals > (out_limit - out.size())) return {};
-        }
-
         const uint32_t h = hash3(pos);
         int ref = head_get(h);
 
@@ -242,7 +231,7 @@ inline std::vector<uint8_t> compress_global_chain_lz(
         head_set(h, (int)pos);
 
         if (best_len > 0) {
-            if (!flush_literals(lit_start, pos)) return {};
+            flush_literals(lit_start, pos);
             const size_t out_pos = out.size();
             out.resize(out_pos + 4);
             uint8_t* dst = out.data() + out_pos;
@@ -250,9 +239,6 @@ inline std::vector<uint8_t> compress_global_chain_lz(
             dst[1] = (uint8_t)best_len;
             dst[2] = (uint8_t)(best_dist & 0xFF);
             dst[3] = (uint8_t)((best_dist >> 8) & 0xFF);
-            if (out_limit != std::numeric_limits<size_t>::max() && out.size() > out_limit) {
-                return {};
-            }
             if (counters) {
                 counters->match_count++;
                 counters->match_bytes += (uint64_t)best_len;
@@ -272,7 +258,7 @@ inline std::vector<uint8_t> compress_global_chain_lz(
         }
     }
 
-    if (!flush_literals(lit_start, src_size)) return {};
+    flush_literals(lit_start, src_size);
     if (counters) counters->out_bytes += (uint64_t)out.size();
     return out;
 }
@@ -868,9 +854,7 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
                         encode_byte_stream_shared_lz,
                         2,
                         [&](const std::vector<uint8_t>& bytes) -> std::vector<uint8_t> {
-                            return detail::compress_global_chain_lz(
-                                bytes, lz_params, &lz_counters, (size_t)mode2_limit_vs_best
-                            );
+                            return detail::compress_global_chain_lz(bytes, lz_params, &lz_counters);
                         }
                     );
                     const auto t_mode2_1 = Clock::now();
