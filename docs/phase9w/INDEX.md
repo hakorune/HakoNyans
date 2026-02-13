@@ -45,9 +45,18 @@
 | 2026-02-14 | `filter_lo` mode3/4 Safe Lower-Bound Skip + Encode Adoption CSV | `docs/phase9w/logs/2026-02-14.md` |
 | 2026-02-14 | `route_natural mode2` Nice-Length Cutoff (`nice=64` No-Go, infra kept) | `docs/phase9w/logs/2026-02-14.md` |
 | 2026-02-14 | `fast` Lane Binding for `mode2 nice_length` Override | `docs/phase9w/logs/2026-02-14.md` |
+| 2026-02-14 | `mode2 nice_length` High-Range Sweep (`128..255`, `255` only pass) | `docs/phase9w/logs/2026-02-14.md` |
+| 2026-02-14 | `fast` Lane Organization (`fast` default + env-opt-in `fast_nat`) | `docs/phase9w/logs/2026-02-14.md` |
+| 2026-02-14 | `max` Lane mode2 Strategy Switch (`greedy` / `lazy1`) | `docs/phase9w/logs/2026-02-14.md` |
+| 2026-02-14 | `max` Lane mode2 `optparse_dp` (`strategy=2`) | `docs/phase9w/logs/2026-02-14.md` |
+| 2026-02-14 | `max` Lane mode2 `optparse_dp` Conditional Activation Gate | `docs/phase9w/logs/2026-02-14.md` |
+| 2026-02-14 | `optparse_dp` 2-pass Cost Model Trial (No-Go) | `docs/phase9w/logs/2026-02-14.md` |
+| 2026-02-14 | `optparse_dp` Gate Sweep + Tuned Strategy2 Defaults | `docs/phase9w/logs/2026-02-14.md` |
 
 ## No-Go Archive
 
 - `docs/archive/2026-02-13_filter_lo_decode_nogo.md`
 - `docs/archive/2026-02-13_mode2_len3_prereject_nogo.md`
 - `docs/archive/2026-02-14_mode2_nice64_nogo.md`
+- `docs/archive/2026-02-14_mode2_nice_sweep_128_224_nogo.md`
+- `docs/archive/2026-02-14_optparse_costmodel_nogo.md`

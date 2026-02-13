@@ -16,14 +16,34 @@ Do not optimize a single axis in isolation.
 
 ## Lossless Preset Lanes (Fixed API)
 Lossless encode now has three explicit lanes for speed/size trade-off experiments:
-1. `fast`: route competition off (luma/chroma) for maximum throughput exploration.
+1. `fast`: maximum-throughput lane.
+   - default: route competition off (luma/chroma)
+   - optional `fast_nat` mode (env opt-in):
+     - `HKN_FAST_ROUTE_COMPETE=1` (enable luma route competition)
+     - `HKN_FAST_ROUTE_COMPETE_CHROMA=1` (optional chroma route competition)
+     - `HKN_FAST_LZ_NICE_LENGTH` (mode2 nice_length override for fast lane)
+     - `HKN_FAST_LZ_MATCH_STRATEGY` (`0=greedy`, `1=lazy1`, default `0`)
 2. `balanced`: default lane, keeps current promoted behavior and env-policy gates.
 3. `max`: route competition on for all planes (including photo chroma) for compression-first exploration.
+   - mode2 match strategy can be controlled by:
+     - `HKN_MAX_LZ_MATCH_STRATEGY` (`0=greedy`, `1=lazy1`, `2=optparse_dp`, default `1`)
+   - `optparse_dp` policy (max lane only):
+     - keep token format unchanged (`litrun` + `match(len,dist)`)
+     - balanced/fast must not route into DP path
+     - fallback to existing strategy when DP guard fails (`memcap`, `alloc`, `unreachable`)
+   - strategy2 (`optparse_dp`) gate knobs:
+     - `HKN_LZ_OPTPARSE_PROBE_SRC_MAX` (default `2097152`)
+     - `HKN_LZ_OPTPARSE_PROBE_RATIO_MIN` (default `20` permille)
+     - `HKN_LZ_OPTPARSE_PROBE_RATIO_MAX` (default `120` permille)
+     - `HKN_LZ_OPTPARSE_MIN_GAIN_BYTES` (default `1024`)
+     - `HKN_LZ_OPTPARSE_MAX_MATCHES` (default `1`)
+     - `HKN_LZ_OPTPARSE_LIT_MAX` (default `32`)
 
 Rules:
 - `balanced` is the compatibility anchor and baseline for day-to-day promotion.
 - `fast`/`max` are opt-in experiment lanes and must be compared against `balanced`.
 - All lanes must remain format-compatible and lossless.
+- `fast_nat` is not a separate preset value; it is `--preset fast` + env opt-in.
 
 ## Fixed Metrics
 Use these metrics only:
@@ -86,6 +106,22 @@ If any gate fails:
 3. Save both CSVs and report:
 - pass/fail for each gate
 - key deltas (`median PNG/HKN`, total bytes, Enc wall, Dec wall)
+
+4. Max-lane DP (strategy=2) promotion check:
+
+```bash
+HAKONYANS_THREADS=1 taskset -c 0 \
+HKN_MAX_LZ_MATCH_STRATEGY=2 \
+./build/bench_png_compare \
+  --runs 3 --warmup 1 \
+  --preset max \
+  --out bench_results/phase9w_max_optparse_dp.csv
+```
+
+DP-specific acceptance:
+- `ctest` pass
+- `max` lane total bytes improves vs max-lane baseline
+- `balanced`/`fast` unchanged behavior (no regression)
 
 ## Parallelization Rules
 1. Prefer coarse-grain parallelism first:

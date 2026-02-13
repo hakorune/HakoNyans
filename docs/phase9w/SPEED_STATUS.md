@@ -1,6 +1,6 @@
 # Phase 9w Speed Status
 
-Last updated: 2026-02-14 (post Trial G)
+Last updated: 2026-02-14 (post Trial K)
 
 ## Current Lane
 - Default lane: `balanced`
@@ -13,6 +13,12 @@ Last updated: 2026-02-14 (post Trial G)
 - Single-core reference:
   - `bench_results/phase9w_singlecore_after_drift_fix_vs_singlecorebase_20260213_runs3.csv`
 - Latest observation run (mode2 nice cutoff counters):
+  - `bench_results/phase9w_singlecore_mode2_nice255_vs_lostreamlb_20260214_runs3.csv`
+- Latest sweep set (mode2 nice high-range):
+  - `bench_results/phase9w_singlecore_mode2_nice128_vs_lostreamlb_20260214_runs3.csv`
+  - `bench_results/phase9w_singlecore_mode2_nice160_vs_lostreamlb_20260214_runs3.csv`
+  - `bench_results/phase9w_singlecore_mode2_nice192_vs_lostreamlb_20260214_runs3.csv`
+  - `bench_results/phase9w_singlecore_mode2_nice224_vs_lostreamlb_20260214_runs3.csv`
   - `bench_results/phase9w_singlecore_mode2_nice255_vs_lostreamlb_20260214_runs3.csv`
 
 Rationale:
@@ -111,6 +117,37 @@ Rationale:
   does not execute natural route yet.
 - details: `docs/phase9w/logs/2026-02-14.md`
 
+20. `mode2 nice_length` high-range sweep (`128..255`): no-go except `255`
+- `128/160/192/224` all failed fixed6 size gate.
+- `255` is the only passing value and remains baseline-equivalent.
+- archive: `docs/archive/2026-02-14_mode2_nice_sweep_128_224_nogo.md`
+- details: `docs/phase9w/logs/2026-02-14.md`
+
+21. `fast` lane organization (`fast` + env-opt-in `fast_nat`): kept
+- `fast` default remains route-competition OFF.
+- `HKN_FAST_ROUTE_COMPETE=1` enables fast-lane luma route-competition opt-in.
+- current smoke shows `fast_nat` is diagnostic-only (no size gain, slower encode).
+- details: `docs/phase9w/logs/2026-02-14.md`
+
+22. `max` lane mode2 strategy switch (`greedy` / `lazy1`): kept
+- `lazy1` is wired as max-lane compression-first default
+  (`HKN_MAX_LZ_MATCH_STRATEGY=1`).
+- smoke shows small size gain but clear encode-time regression vs greedy.
+- keep `lazy1` scoped to `max`; do not promote to `balanced`/`fast`.
+- details: `docs/phase9w/logs/2026-02-14.md`
+
+23. `max` lane mode2 `optparse_dp` (`strategy=2`): kept as experimental
+- strategy `2` is implemented with guarded fallback (`memcap`/alloc/unreachable)
+  and conditional DP activation gate.
+- gate-parameter sweep completed; tuned defaults are:
+  - `opt_max_matches=1`
+  - `opt_lit_max=32`
+  - `opt_min_gain_bytes=1024`
+- fixed6 size improved vs max-lane `lazy1` baseline (`-954 B` total),
+  while encode wall is still slower (`230.732 -> 338.453 ms`).
+- keep opt-in only (`HKN_MAX_LZ_MATCH_STRATEGY=2`), default stays `1`.
+- details: `docs/phase9w/logs/2026-02-14.md`
+
 ## Single-Core Snapshot (`HAKONYANS_THREADS=1`)
 - source: `bench_results/phase9w_singlecore_tilelz_compress_fast_vs_step2_20260214_runs3_rerun2.csv`
 - median Enc(ms) HKN/PNG: `175.056 / 107.321` (`HKN/PNG=1.631`)
@@ -125,20 +162,30 @@ Interpretation:
 - Next optimization should prioritize single-core hotspots.
 
 ## Next Tasks
-1. Sweep `HKN_LZ_NICE_LENGTH` with strict size gate (`balanced`)
-- target range: `128, 160, 192, 224, 255`
-- promote only if fixed6 total bytes is non-worsening
+1. Explore stronger size gain on strategy2 with bounded runtime
+- target: recover >1KB gain while keeping strategy2 median Enc under ~`+100 ms` vs strategy1 baseline.
+- knobs: `HKN_LZ_OPTPARSE_PROBE_SRC_MAX`, `HKN_LZ_OPTPARSE_PROBE_RATIO_MIN/MAX`,
+  `HKN_LZ_OPTPARSE_MAX_MATCHES`, `HKN_LZ_OPTPARSE_LIT_MAX`.
 
-2. Optional: fast route-competition opt-in experiment
-- evaluate whether enabling fast-lane route competition plus
-  `HKN_FAST_LZ_NICE_LENGTH` improves fast lane Pareto
+2. Optimize mode2 candidate-check path without cutoff tuning
+- target: bit-identical speed-up of inner candidate evaluation
+  (`match_len`/precheck loop cost reduction only; no pruning policy change).
 
-3. Re-run fixed low-noise validation for each candidate
+3. Fast-lane opt-in (`fast_nat`) targeted sweeps
+- with `HKN_FAST_ROUTE_COMPETE=1`, sweep:
+  `HKN_FAST_LZ_NICE_LENGTH` and optional chroma enable
+  under fast-specific gates (speed-first, bounded size regression).
+
+4. Max-lane strategy follow-up (`lazy1` tuning)
+- evaluate `lazy1` accept rule/tie-break to recover some speed
+  while keeping max-lane size gain.
+
+5. Re-run fixed low-noise validation for each candidate
 - fixed condition: `HAKONYANS_THREADS=1` + `taskset -c 0`, fixed6, `runs=3`, `warmup=1`.
 
-4. Resume `plane_lo_stream` mode2 optimization after Trial F
+6. Resume `plane_lo_stream` mode2 optimization after Trial H
 - keep prior no-go constraints (`out_limit` path gating remains disabled)
 
-5. Keep promote protocol and archive-by-default
+7. Keep promote protocol and archive-by-default
 - repeated fixed-condition reruns required for promotion.
 - all no-go and hold outcomes must be recorded with CSV links.

@@ -1120,3 +1120,107 @@ ctest --test-dir build --output-on-failure
        - `bench_results/phase9w_tilelz_compress_fast_vs_step2_multi_20260214_runs3.csv`
        - `bench_results/phase9w_tilelz_compress_fast_vs_step2_multi_20260214_runs3_rerun.csv`
    - size/ratio維持: `total=2,977,544`, `median PNG/HKN=0.261035`
+10. [x] fastレーン整理（`fast` と `fast_nat` の運用分離）
+   - 実装: `src/codec/encode.h`
+     - `HKN_FAST_ROUTE_COMPETE=1` で fastレーンの luma route competition を opt-in
+     - `HKN_FAST_ROUTE_COMPETE_CHROMA=1` で chroma route competition も opt-in
+     - `HKN_FAST_ROUTE_COMPETE_CHROMA_CONSERVATIVE` で chroma保守ポリシー制御
+     - `HKN_FAST_LZ_NICE_LENGTH` は fast route competition opt-in 時のみ適用
+   - デフォルト挙動:
+     - `--preset fast` は従来通り route competition OFF（最速優先）
+   - 方針ドキュメント:
+     - `docs/PHASE9W_SPEED_SIZE_BALANCE_POLICY.md` に `fast_nat`（env opt-in）運用を追記
+11. [x] maxレーンに `mode2 lazy1`（レーン切替）を実装
+   - 実装:
+     - `src/codec/lossless_natural_route.h`
+       - `GlobalChainLzParams::match_strategy` 追加（`0=greedy`, `1=lazy1`）
+       - `compress_global_chain_lz` に 1-byte lookahead lazy を追加
+       - `HKN_LZ_MATCH_STRATEGY` と per-call override を追加
+     - `src/codec/encode.h`
+       - preset計画に `natural_route_mode2_match_strategy_override` を追加
+       - `HKN_FAST_LZ_MATCH_STRATEGY`（default `0`）
+       - `HKN_MAX_LZ_MATCH_STRATEGY`（default `1`）
+       - `max` は lazy1 をデフォルト化、`balanced` は非変更
+   - 検証:
+     - `ctest` 17/17 PASS
+     - smoke:
+       - greedy: `bench_results/phase9w_max_lane_match_strategy0_smoke_20260214_runs1.csv`
+       - lazy1: `bench_results/phase9w_max_lane_match_strategy1_smoke_20260214_runs1.csv`
+     - 傾向:
+       - size: `2,977,544 -> 2,977,040`（-504 B）
+       - Enc(ms): `198.207 -> 234.420`（+36.213 ms）
+12. [x] maxレーンに `mode2 optparse_dp`（strategy=2）を段階導入
+   - 目的:
+     - greedy/lazy に加えて圧縮率優先の DP 解析器を max レーン専用で実装
+     - token 形式は不変（デコーダ互換維持）
+   - 実装:
+     - `src/codec/encode.h`
+       - `HKN_MAX_LZ_MATCH_STRATEGY` を `0..2` に拡張
+     - `src/codec/lossless_natural_route.h`
+       - `match_strategy=2` 分岐追加
+       - `compress_global_chain_lz_optparse` 新設
+       - DP失敗時の fallback（既存mode2）
+     - `src/codec/lossless_mode_debug_stats.h`
+       - optparse one-shot counter 追加（導入確認用）
+   - 検証:
+     - build + `ctest` 17/17 PASS
+     - fixed6 single-core A/B:
+       - `HKN_MAX_LZ_MATCH_STRATEGY=1` vs `2`
+       - `--preset max --runs 3 --warmup 1`
+       - baseline: `bench_results/phase9w_max_lane_match_strategy1_vs_optparse_20260214_runs3.csv`
+       - candidate: `bench_results/phase9w_max_lane_match_strategy2_optparse_20260214_runs3.csv`
+     - 判定:
+       - size: `2,977,040 -> 2,975,045`（`-1,995 B`）
+       - Enc(ms): `229.730 -> 496.291`（`+266.561 ms`）
+       - Decision: `strategy=2` は maxレーン実験枠として保持（defaultは `1` 維持）
+       - balanced/fast 非回帰（DP経路には未接続）
+13. [x] `optparse_dp` 条件付き発動ゲートを導入（strategy=2）
+   - 実装:
+     - `src/codec/lossless_natural_route.h`
+       - strategy2で `lazy1` 事前圧縮を実行
+       - 事前判定:
+         - `HKN_LZ_OPTPARSE_PROBE_SRC_MAX`（default `2MiB`）
+         - `HKN_LZ_OPTPARSE_PROBE_RATIO_MIN/MAX`（default `20..120` permille）
+       - 最小改善しきい値:
+         - `HKN_LZ_OPTPARSE_MIN_GAIN_BYTES`（default `256B`）
+       - 上記を満たす場合のみ DP 実行、かつ gain 閾値を満たす場合のみ採用
+   - 検証:
+     - baseline:
+       - `bench_results/phase9w_max_lane_match_strategy1_after_dp_gate_20260214_runs3.csv`
+     - candidate:
+       - `bench_results/phase9w_max_lane_match_strategy2_dp_gate_final_20260214_runs3.csv`
+     - 結果:
+       - size: `2,977,040 -> 2,975,171`（`-1,869 B`）
+       - Enc(ms): `230.732 -> 363.941`（`+133.209 ms`）
+       - always-on DPより大幅に速度悪化を圧縮（`496.291 -> 363.941`）
+14. [x] `optparse_dp` 2-passコストモデル（lazy1ヒスト由来）試行 → no-goでrevert
+   - 計測:
+     - `bench_results/phase9w_max_lane_match_strategy2_dp_gate_costmodel_20260214_runs3.csv`
+   - 結果:
+     - gain縮小（`-1,683 B`）かつ Enc 悪化
+   - 判定:
+     - no-go、flat-cost DPに戻す
+   - 記録:
+      - `docs/archive/2026-02-14_optparse_costmodel_nogo.md`
+15. [x] `optparse_dp` 条件ゲートの閾値スイープ + strategy2既定値調整
+   - 実装:
+     - `tools/sweep_optparse_gate.py` を追加（runs=1粗探索）
+     - 探索軸:
+       - `HKN_LZ_OPTPARSE_PROBE_RATIO_MAX` (`80,120`)
+       - `HKN_LZ_OPTPARSE_MIN_GAIN_BYTES` (`256,512,1024`)
+       - `HKN_LZ_OPTPARSE_MAX_MATCHES` (`1,2,4`)
+       - `HKN_LZ_OPTPARSE_LIT_MAX` (`32,64,128`)
+   - 粗探索結果:
+     - `bench_results/phase9w_optparse_gate_sweep_runs1_20260214.csv`
+     - `bench_results/phase9w_optparse_gate_sweep_top10_20260214.txt`
+   - 上位再計測（runs=3）:
+     - `bench_results/phase9w_optparse_gate_top_c46_runs3_20260214.csv` ほか5本
+   - 反映したstrategy2既定値:
+     - `opt_max_matches=1`
+     - `opt_lit_max=32`
+     - `opt_min_gain_bytes=1024`
+   - 最終確認:
+     - `bench_results/phase9w_max_lane_match_strategy2_dp_gate_tuned_default_20260214_runs3.csv`
+     - vs strategy1 baseline:
+       - size: `-954 B`
+       - Enc(ms): `+107.721 ms`

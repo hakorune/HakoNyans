@@ -100,6 +100,7 @@ private:
         bool route_compete_chroma = true;
         bool conservative_chroma_route_policy = false;
         int natural_route_mode2_nice_length_override = -1;
+        int natural_route_mode2_match_strategy_override = -1; // -1=runtime default
     };
 
 public:
@@ -482,7 +483,8 @@ public:
             profile,
             preset_plan.route_compete_luma,
             false,
-            preset_plan.natural_route_mode2_nice_length_override
+            preset_plan.natural_route_mode2_nice_length_override,
+            preset_plan.natural_route_mode2_match_strategy_override
         );
         const auto t_plane1 = Clock::now();
         tl_lossless_mode_debug_stats_.perf_encode_plane_y_ns +=
@@ -552,7 +554,15 @@ public:
         const bool conservative_chroma_route_policy = preset_plan.conservative_chroma_route_policy;
         const int natural_route_mode2_nice_length_override =
             preset_plan.natural_route_mode2_nice_length_override;
-        auto run_plane_task = [width, height, profile, natural_route_mode2_nice_length_override](
+        const int natural_route_mode2_match_strategy_override =
+            preset_plan.natural_route_mode2_match_strategy_override;
+        auto run_plane_task = [
+            width,
+            height,
+            profile,
+            natural_route_mode2_nice_length_override,
+            natural_route_mode2_match_strategy_override
+        ](
             const int16_t* plane, bool enable_route_compete, bool conservative_chroma_policy
         ) -> PlaneEncodeTaskResult {
             using TaskClock = std::chrono::steady_clock;
@@ -565,7 +575,8 @@ public:
                 profile,
                 enable_route_compete,
                 conservative_chroma_policy,
-                natural_route_mode2_nice_length_override
+                natural_route_mode2_nice_length_override,
+                natural_route_mode2_match_strategy_override
             );
             const auto t1 = TaskClock::now();
 
@@ -643,7 +654,8 @@ public:
                 profile,
                 enable_y_route_compete,
                 false,
-                natural_route_mode2_nice_length_override
+                natural_route_mode2_nice_length_override,
+                natural_route_mode2_match_strategy_override
             );
             const auto t_plane_y1 = Clock::now();
             tl_lossless_mode_debug_stats_.perf_encode_plane_y_ns +=
@@ -657,7 +669,8 @@ public:
                 profile,
                 allow_chroma_route_compete,
                 conservative_chroma_route_policy,
-                natural_route_mode2_nice_length_override
+                natural_route_mode2_nice_length_override,
+                natural_route_mode2_match_strategy_override
             );
             const auto t_plane_co1 = Clock::now();
             tl_lossless_mode_debug_stats_.perf_encode_plane_co_ns +=
@@ -671,7 +684,8 @@ public:
                 profile,
                 allow_chroma_route_compete,
                 conservative_chroma_route_policy,
-                natural_route_mode2_nice_length_override
+                natural_route_mode2_nice_length_override,
+                natural_route_mode2_match_strategy_override
             );
             const auto t_plane_cg1 = Clock::now();
             tl_lossless_mode_debug_stats_.perf_encode_plane_cg_ns +=
@@ -808,9 +822,39 @@ public:
         return kEnabled;
     }
 
+    static bool route_fast_compete_enabled() {
+        static const bool kEnabled = parse_bool_env("HKN_FAST_ROUTE_COMPETE", false);
+        return kEnabled;
+    }
+
+    static bool route_fast_compete_chroma_enabled() {
+        static const bool kEnabled = parse_bool_env("HKN_FAST_ROUTE_COMPETE_CHROMA", false);
+        return kEnabled;
+    }
+
+    static bool route_fast_compete_chroma_conservative() {
+        static const bool kEnabled =
+            parse_bool_env("HKN_FAST_ROUTE_COMPETE_CHROMA_CONSERVATIVE", true);
+        return kEnabled;
+    }
+
     static uint16_t route_fast_lz_nice_length() {
         static const uint16_t kV = parse_natural_threshold_env(
             "HKN_FAST_LZ_NICE_LENGTH", 64, 4, 255
+        );
+        return kV;
+    }
+
+    static uint16_t route_fast_lz_match_strategy() {
+        static const uint16_t kV = parse_natural_threshold_env(
+            "HKN_FAST_LZ_MATCH_STRATEGY", 0, 0, 1
+        );
+        return kV;
+    }
+
+    static uint16_t route_max_lz_match_strategy() {
+        static const uint16_t kV = parse_natural_threshold_env(
+            "HKN_MAX_LZ_MATCH_STRATEGY", 1, 0, 2
         );
         return kV;
     }
@@ -821,11 +865,15 @@ public:
         LosslessPresetPlan plan{};
         switch (preset) {
             case LosslessPreset::FAST:
-                plan.route_compete_luma = false;
-                plan.route_compete_chroma = false;
-                plan.conservative_chroma_route_policy = false;
+                plan.route_compete_luma = route_fast_compete_enabled();
+                plan.route_compete_chroma =
+                    plan.route_compete_luma && route_fast_compete_chroma_enabled();
+                plan.conservative_chroma_route_policy =
+                    plan.route_compete_chroma && route_fast_compete_chroma_conservative();
                 plan.natural_route_mode2_nice_length_override =
-                    (int)route_fast_lz_nice_length();
+                    plan.route_compete_luma ? (int)route_fast_lz_nice_length() : -1;
+                plan.natural_route_mode2_match_strategy_override =
+                    plan.route_compete_luma ? (int)route_fast_lz_match_strategy() : -1;
                 break;
             case LosslessPreset::BALANCED:
                 plan.route_compete_luma = true;
@@ -836,6 +884,7 @@ public:
                 plan.conservative_chroma_route_policy =
                     parse_bool_env("HKN_ROUTE_COMPETE_CHROMA_CONSERVATIVE", false);
                 plan.natural_route_mode2_nice_length_override = -1;
+                plan.natural_route_mode2_match_strategy_override = -1;
                 break;
             case LosslessPreset::MAX:
                 // Max mode favors compression: always evaluate route competition on all planes.
@@ -843,6 +892,8 @@ public:
                 plan.route_compete_chroma = true;
                 plan.conservative_chroma_route_policy = false;
                 plan.natural_route_mode2_nice_length_override = -1;
+                plan.natural_route_mode2_match_strategy_override =
+                    (int)route_max_lz_match_strategy();
                 break;
         }
         return plan;
@@ -923,7 +974,8 @@ public:
     static std::vector<uint8_t> encode_plane_lossless_natural_row_tile(
         const int16_t* plane, uint32_t width, uint32_t height,
         LosslessModeDebugStats* stats = nullptr,
-        int mode2_nice_length_override = -1
+        int mode2_nice_length_override = -1,
+        int mode2_match_strategy_override = -1
     ) {
         return lossless_natural_route::encode_plane_lossless_natural_row_tile(
             plane, width, height,
@@ -935,14 +987,16 @@ public:
                 return GrayscaleEncoder::encode_byte_stream(bytes);
             },
             stats,
-            mode2_nice_length_override
+            mode2_nice_length_override,
+            mode2_match_strategy_override
         );
     }
 
     static std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
         const int16_t* padded, uint32_t pad_w, uint32_t pad_h,
         LosslessModeDebugStats* stats = nullptr,
-        int mode2_nice_length_override = -1
+        int mode2_nice_length_override = -1,
+        int mode2_match_strategy_override = -1
     ) {
         return lossless_natural_route::encode_plane_lossless_natural_row_tile_padded(
             padded, pad_w, pad_h,
@@ -954,7 +1008,8 @@ public:
                 return GrayscaleEncoder::encode_byte_stream(bytes);
             },
             stats,
-            mode2_nice_length_override
+            mode2_nice_length_override,
+            mode2_match_strategy_override
         );
     }
 
@@ -979,6 +1034,7 @@ public:
             use_photo_mode_bias ? LosslessProfile::PHOTO : LosslessProfile::UI,
             true,
             false,
+            -1,
             -1);
     }
 
@@ -987,7 +1043,8 @@ public:
         LosslessProfile profile = LosslessProfile::UI,
         bool enable_route_competition = true,
         bool conservative_chroma_route_policy = false,
-        int natural_route_mode2_nice_length_override = -1
+        int natural_route_mode2_nice_length_override = -1,
+        int natural_route_mode2_match_strategy_override = -1
     ) {
         using Clock = std::chrono::steady_clock;
         const auto t_plane_total0 = Clock::now();
@@ -1235,7 +1292,8 @@ public:
             [](const ScreenPreflightMetrics& m) {
                 return GrayscaleEncoder::is_natural_like(m);
             },
-            [&padded, pad_w, pad_h, natural_route_mode2_nice_length_override](
+            [&padded, pad_w, pad_h, natural_route_mode2_nice_length_override,
+             natural_route_mode2_match_strategy_override](
                 const int16_t*, uint32_t, uint32_t
             ) {
                 return GrayscaleEncoder::encode_plane_lossless_natural_row_tile_padded(
@@ -1243,7 +1301,8 @@ public:
                     pad_w,
                     pad_h,
                     &tl_lossless_mode_debug_stats_,
-                    natural_route_mode2_nice_length_override
+                    natural_route_mode2_nice_length_override,
+                    natural_route_mode2_match_strategy_override
                 );
             }
         );
