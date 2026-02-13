@@ -696,3 +696,58 @@ Interpretation:
 ### Current Promoted Baseline For Next Work
 - Use this CSV as baseline for subsequent A/B:
   - `bench_results/tmp_mode2_lz_opt_20260213_rerun.csv`
+
+## 2026-02-13: Mode0/Mode1Prep Scan Simplification (Consult Plan #3)
+
+### Objective
+- Reduce `route_natural` pre-compute overhead (mode0 / mode1prep) while preserving:
+  - format
+  - selection policy
+  - compressed size behavior
+
+### Implementation
+- `src/codec/lossless_natural_route.h`
+  - `build_mode0_payload(...)`
+    - removed temporary `recon` allocation and switched to direct row pointers (`row`, `up_row`)
+    - merged predictor cost evaluation into a single pass (`cost0/cost1/cost2`)
+    - switched residual output from `push_back` to `resize + pointer write`
+    - moved per-pixel predictor branch to per-row branch (`best_p` specialized loops)
+  - `build_mode1_prepared(...)`
+    - removed temporary `recon` allocation
+    - merged predictor cost evaluation into a single pass (`cost0..cost4`)
+    - switched residual output to contiguous pointer writes
+    - moved predictor switch to per-row specialized loops for residual generation
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `cd build && ctest --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- baseline:
+  - `bench_results/tmp_mode2_lz_opt_20260213_rerun.csv`
+- candidates:
+  - `bench_results/tmp_plan3_mode01prep_opt_20260213.csv`
+  - `bench_results/tmp_plan3_mode01prep_opt_20260213_rerun.csv`
+  - `bench_results/tmp_plan3_mode01prep_opt_20260213_runs5.csv`
+  - `bench_results/tmp_plan3_mode01prep_opt_20260213_v2.csv` (promoted)
+
+### Result Summary (promoted run: v2)
+- Compression invariants:
+  - `median PNG/HKN = 0.2610` unchanged
+  - `total HKN bytes = 2,977,544` unchanged
+- Median deltas vs baseline (`tmp_mode2_lz_opt_20260213_rerun.csv`):
+  - `hkn_enc_ms`: `98.445622 -> 97.609977` (`-0.835645`)
+  - `hkn_dec_ms`: `13.268487 -> 13.566274` (`+0.297787`)
+  - `hkn_enc_plane_route_ms`: `48.661896 -> 44.292525` (`-4.369371`)
+  - `hkn_enc_plane_route_natural_candidate_ms`: `38.462874 -> 34.149253` (`-4.313621`)
+  - `hkn_enc_route_nat_mode0_ms`: `17.431942 -> 12.898642` (`-4.533300`)
+  - `hkn_enc_route_nat_mode1prep_ms`: `10.400007 -> 4.956338` (`-5.443669`)
+
+Interpretation:
+- Stage-level natural-route precompute time was materially reduced.
+- Wall-clock remains host-noise sensitive, so stage counters remain the primary gate.
+
+### Current Promoted Baseline For Next Work
+- Use this CSV as baseline for subsequent A/B:
+  - `bench_results/tmp_plan3_mode01prep_opt_20260213_v2.csv`

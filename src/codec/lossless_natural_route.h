@@ -191,40 +191,64 @@ inline std::vector<uint8_t> build_mode0_payload(
 ) {
     std::vector<uint8_t> row_pred_ids(pad_h, 0);
     std::vector<uint8_t> residual_bytes;
-    residual_bytes.reserve((size_t)pixel_count * 2);
+    residual_bytes.resize((size_t)pixel_count * 2);
+    uint8_t* resid_dst = residual_bytes.data();
 
-    std::vector<int16_t> recon(pixel_count, 0);
     for (uint32_t y = 0; y < pad_h; y++) {
-        int best_p = 0;
-        uint64_t best_cost = std::numeric_limits<uint64_t>::max();
+        const int16_t* row = padded + (size_t)y * pad_w;
+        const int16_t* up_row = (y > 0) ? (padded + (size_t)(y - 1) * pad_w) : nullptr;
 
-        for (int p = 0; p < 3; p++) {
-            uint64_t cost = 0;
-            for (uint32_t x = 0; x < pad_w; x++) {
-                int16_t left = (x > 0) ? recon[(size_t)y * pad_w + (x - 1)] : 0;
-                int16_t up = (y > 0) ? recon[(size_t)(y - 1) * pad_w + x] : 0;
-                int16_t pred = (p == 0) ? left : (p == 1 ? up : (int16_t)(((int)left + (int)up) / 2));
-                int16_t cur = padded[(size_t)y * pad_w + x];
-                cost += (uint64_t)std::abs((int)cur - (int)pred);
-            }
-            if (cost < best_cost) {
-                best_cost = cost;
-                best_p = p;
-            }
+        uint64_t cost0 = 0; // SUB (left=0 in current cost evaluation semantics)
+        uint64_t cost1 = 0; // UP
+        uint64_t cost2 = 0; // AVG(left=0,up)
+        for (uint32_t x = 0; x < pad_w; x++) {
+            const int cur = (int)row[x];
+            const int up = up_row ? (int)up_row[x] : 0;
+            cost0 += (uint64_t)std::abs(cur);
+            cost1 += (uint64_t)std::abs(cur - up);
+            cost2 += (uint64_t)std::abs(cur - (up / 2));
+        }
+
+        int best_p = 0;
+        uint64_t best_cost = cost0;
+        if (cost1 < best_cost) {
+            best_cost = cost1;
+            best_p = 1;
+        }
+        if (cost2 < best_cost) {
+            best_p = 2;
         }
         row_pred_ids[y] = (uint8_t)best_p;
 
-        for (uint32_t x = 0; x < pad_w; x++) {
-            int16_t left = (x > 0) ? recon[(size_t)y * pad_w + (x - 1)] : 0;
-            int16_t up = (y > 0) ? recon[(size_t)(y - 1) * pad_w + x] : 0;
-            int16_t pred = (best_p == 0) ? left : (best_p == 1 ? up : (int16_t)(((int)left + (int)up) / 2));
-            int16_t cur = padded[(size_t)y * pad_w + x];
-            int16_t resid = (int16_t)(cur - pred);
-            recon[(size_t)y * pad_w + x] = (int16_t)(pred + resid);
-
-            uint16_t zz = zigzag_encode_val(resid);
-            residual_bytes.push_back((uint8_t)(zz & 0xFF));
-            residual_bytes.push_back((uint8_t)((zz >> 8) & 0xFF));
+        if (best_p == 0) {
+            for (uint32_t x = 0; x < pad_w; x++) {
+                const int16_t left = (x > 0) ? row[x - 1] : 0;
+                const int16_t resid = (int16_t)((int)row[x] - (int)left);
+                const uint16_t zz = zigzag_encode_val(resid);
+                resid_dst[0] = (uint8_t)(zz & 0xFF);
+                resid_dst[1] = (uint8_t)((zz >> 8) & 0xFF);
+                resid_dst += 2;
+            }
+        } else if (best_p == 1) {
+            for (uint32_t x = 0; x < pad_w; x++) {
+                const int16_t up = up_row ? up_row[x] : 0;
+                const int16_t resid = (int16_t)((int)row[x] - (int)up);
+                const uint16_t zz = zigzag_encode_val(resid);
+                resid_dst[0] = (uint8_t)(zz & 0xFF);
+                resid_dst[1] = (uint8_t)((zz >> 8) & 0xFF);
+                resid_dst += 2;
+            }
+        } else {
+            for (uint32_t x = 0; x < pad_w; x++) {
+                const int16_t left = (x > 0) ? row[x - 1] : 0;
+                const int16_t up = up_row ? up_row[x] : 0;
+                const int16_t pred = (int16_t)(((int)left + (int)up) / 2);
+                const int16_t resid = (int16_t)((int)row[x] - (int)pred);
+                const uint16_t zz = zigzag_encode_val(resid);
+                resid_dst[0] = (uint8_t)(zz & 0xFF);
+                resid_dst[1] = (uint8_t)((zz >> 8) & 0xFF);
+                resid_dst += 2;
+            }
         }
     }
 
@@ -292,53 +316,104 @@ inline Mode1Prepared build_mode1_prepared(
 ) {
     Mode1Prepared prepared;
     prepared.row_pred_ids.resize(pad_h, 0);
-    prepared.residual_bytes.reserve((size_t)pixel_count * 2);
+    prepared.residual_bytes.resize((size_t)pixel_count * 2);
+    uint8_t* resid_dst = prepared.residual_bytes.data();
 
-    std::vector<int16_t> recon(pixel_count, 0);
     for (uint32_t y = 0; y < pad_h; y++) {
-        int best_p = 0;
-        uint64_t best_cost = std::numeric_limits<uint64_t>::max();
+        const int16_t* row = padded + (size_t)y * pad_w;
+        const int16_t* up_row = (y > 0) ? (padded + (size_t)(y - 1) * pad_w) : nullptr;
 
-        for (int p = 0; p < 5; p++) {
-            uint64_t cost = 0;
-            for (uint32_t x = 0; x < pad_w; x++) {
-                int16_t a = (x > 0) ? recon[(size_t)y * pad_w + (x - 1)] : 0;
-                int16_t b = (y > 0) ? recon[(size_t)(y - 1) * pad_w + x] : 0;
-                int16_t c = (x > 0 && y > 0) ? recon[(size_t)(y - 1) * pad_w + (x - 1)] : 0;
-                int16_t pred = 0;
-                if (p == 0) pred = a; // SUB
-                else if (p == 1) pred = b; // UP
-                else if (p == 2) pred = (int16_t)(((int)a + (int)b) / 2); // AVG
-                else if (p == 3) pred = LosslessFilter::paeth_predictor(a, b, c); // PAETH
-                else pred = LosslessFilter::med_predictor(a, b, c); // MED
-                int16_t cur = padded[(size_t)y * pad_w + x];
-                cost += (uint64_t)std::abs((int)cur - (int)pred);
-            }
-            if (cost < best_cost) {
-                best_cost = cost;
-                best_p = p;
-            }
+        uint64_t cost0 = 0; // SUB (left=0 in current cost evaluation semantics)
+        uint64_t cost1 = 0; // UP
+        uint64_t cost2 = 0; // AVG(left=0,up)
+        uint64_t cost3 = 0; // PAETH
+        uint64_t cost4 = 0; // MED
+        for (uint32_t x = 0; x < pad_w; x++) {
+            const int cur = (int)row[x];
+            const int16_t b = up_row ? up_row[x] : 0;
+            const int16_t c = (up_row && x > 0) ? up_row[x - 1] : 0;
+            const int pred2 = ((int)b / 2);
+            const int pred3 = (int)LosslessFilter::paeth_predictor(0, b, c);
+            const int pred4 = (int)LosslessFilter::med_predictor(0, b, c);
+            cost0 += (uint64_t)std::abs(cur);
+            cost1 += (uint64_t)std::abs(cur - (int)b);
+            cost2 += (uint64_t)std::abs(cur - pred2);
+            cost3 += (uint64_t)std::abs(cur - pred3);
+            cost4 += (uint64_t)std::abs(cur - pred4);
+        }
+
+        int best_p = 0;
+        uint64_t best_cost = cost0;
+        if (cost1 < best_cost) {
+            best_cost = cost1;
+            best_p = 1;
+        }
+        if (cost2 < best_cost) {
+            best_cost = cost2;
+            best_p = 2;
+        }
+        if (cost3 < best_cost) {
+            best_cost = cost3;
+            best_p = 3;
+        }
+        if (cost4 < best_cost) {
+            best_p = 4;
         }
         prepared.row_pred_ids[y] = (uint8_t)best_p;
 
-        for (uint32_t x = 0; x < pad_w; x++) {
-            int16_t a = (x > 0) ? recon[(size_t)y * pad_w + (x - 1)] : 0;
-            int16_t b = (y > 0) ? recon[(size_t)(y - 1) * pad_w + x] : 0;
-            int16_t c = (x > 0 && y > 0) ? recon[(size_t)(y - 1) * pad_w + (x - 1)] : 0;
-            int16_t pred = 0;
-            if (best_p == 0) pred = a;
-            else if (best_p == 1) pred = b;
-            else if (best_p == 2) pred = (int16_t)(((int)a + (int)b) / 2);
-            else if (best_p == 3) pred = LosslessFilter::paeth_predictor(a, b, c);
-            else pred = LosslessFilter::med_predictor(a, b, c);
-
-            int16_t cur = padded[(size_t)y * pad_w + x];
-            int16_t resid = (int16_t)(cur - pred);
-            recon[(size_t)y * pad_w + x] = (int16_t)(pred + resid);
-
-            uint16_t zz = zigzag_encode_val(resid);
-            prepared.residual_bytes.push_back((uint8_t)(zz & 0xFF));
-            prepared.residual_bytes.push_back((uint8_t)((zz >> 8) & 0xFF));
+        if (best_p == 0) {
+            for (uint32_t x = 0; x < pad_w; x++) {
+                const int16_t a = (x > 0) ? row[x - 1] : 0;
+                const int16_t resid = (int16_t)((int)row[x] - (int)a);
+                const uint16_t zz = zigzag_encode_val(resid);
+                resid_dst[0] = (uint8_t)(zz & 0xFF);
+                resid_dst[1] = (uint8_t)((zz >> 8) & 0xFF);
+                resid_dst += 2;
+            }
+        } else if (best_p == 1) {
+            for (uint32_t x = 0; x < pad_w; x++) {
+                const int16_t b = up_row ? up_row[x] : 0;
+                const int16_t resid = (int16_t)((int)row[x] - (int)b);
+                const uint16_t zz = zigzag_encode_val(resid);
+                resid_dst[0] = (uint8_t)(zz & 0xFF);
+                resid_dst[1] = (uint8_t)((zz >> 8) & 0xFF);
+                resid_dst += 2;
+            }
+        } else if (best_p == 2) {
+            for (uint32_t x = 0; x < pad_w; x++) {
+                const int16_t a = (x > 0) ? row[x - 1] : 0;
+                const int16_t b = up_row ? up_row[x] : 0;
+                const int16_t pred = (int16_t)(((int)a + (int)b) / 2);
+                const int16_t resid = (int16_t)((int)row[x] - (int)pred);
+                const uint16_t zz = zigzag_encode_val(resid);
+                resid_dst[0] = (uint8_t)(zz & 0xFF);
+                resid_dst[1] = (uint8_t)((zz >> 8) & 0xFF);
+                resid_dst += 2;
+            }
+        } else if (best_p == 3) {
+            for (uint32_t x = 0; x < pad_w; x++) {
+                const int16_t a = (x > 0) ? row[x - 1] : 0;
+                const int16_t b = up_row ? up_row[x] : 0;
+                const int16_t c = (up_row && x > 0) ? up_row[x - 1] : 0;
+                const int16_t pred = LosslessFilter::paeth_predictor(a, b, c);
+                const int16_t resid = (int16_t)((int)row[x] - (int)pred);
+                const uint16_t zz = zigzag_encode_val(resid);
+                resid_dst[0] = (uint8_t)(zz & 0xFF);
+                resid_dst[1] = (uint8_t)((zz >> 8) & 0xFF);
+                resid_dst += 2;
+            }
+        } else {
+            for (uint32_t x = 0; x < pad_w; x++) {
+                const int16_t a = (x > 0) ? row[x - 1] : 0;
+                const int16_t b = up_row ? up_row[x] : 0;
+                const int16_t c = (up_row && x > 0) ? up_row[x - 1] : 0;
+                const int16_t pred = LosslessFilter::med_predictor(a, b, c);
+                const int16_t resid = (int16_t)((int)row[x] - (int)pred);
+                const uint16_t zz = zigzag_encode_val(resid);
+                resid_dst[0] = (uint8_t)(zz & 0xFF);
+                resid_dst[1] = (uint8_t)((zz >> 8) & 0xFF);
+                resid_dst += 2;
+            }
         }
     }
     return prepared;
