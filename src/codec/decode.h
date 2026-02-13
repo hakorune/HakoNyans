@@ -653,6 +653,7 @@ public:
         for (uint32_t i=0; i<tc; i++) t.emplace_back((TokenType)dec.decode_symbol(cdf), 0, 0);
         uint32_t rc; size_t off = 12+cs+rs; std::memcpy(&rc, s+off, 4); off += 4;
         size_t ri = 0; for (auto& x : t) if ((int)x.type >= 64 && (int)x.type > 64) { if (ri < rc) { x.raw_bits_count = s[off]; x.raw_bits = s[off+1] | (s[off+2]<<8); off += 3; ri++; } }
+        CDFBuilder::cleanup(cdf);
         return t;
     }
 
@@ -672,6 +673,7 @@ public:
         for (int x : syms) t.emplace_back((TokenType)x, 0, 0);
         uint32_t rc; size_t off = 12+cs+rs; std::memcpy(&rc, s+off, 4); off += 4;
         size_t ri = 0; for (auto& x : t) if ((int)x.type >= 64 && (int)x.type > 64) { if (ri < rc) { x.raw_bits_count = s[off]; x.raw_bits = s[off+1] | (s[off+2]<<8); off += 3; ri++; } }
+        CDFBuilder::cleanup(cdf);
         return t;
     }
 
@@ -1073,6 +1075,7 @@ public:
                 }
             }
         }
+        CDFBuilder::cleanup(cdf);
         if (expected_count > 0 && result.size() != expected_count) {
             result.resize(expected_count, 0);
         }

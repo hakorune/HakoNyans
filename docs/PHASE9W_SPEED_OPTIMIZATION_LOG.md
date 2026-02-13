@@ -962,3 +962,77 @@ Interpretation:
 - step1 and step2 are safe to keep enabled for the current baseline strategy.
 - Therefore step3 remains implemented but is now default-off (opt-in via env) until a
   stronger scheduler design removes the encode-side instability.
+
+## 2026-02-13: `plane_reconstruct` DCT Row-Kernel Fast Path
+
+### Objective
+- Reduce decode-side `plane_reconstruct` cost without format or size changes.
+- Keep COPY/TM4 behavior identical and optimize only DCT residual application path.
+
+### Implementation
+- `src/codec/lossless_plane_decode_core.h`
+  - DCT reconstruction loop now uses row-kernel fast paths by `ftype` (0..5).
+  - Added fast guard (`residual_idx + 8 <= residual_size`) and kept malformed-stream
+    slow fallback for exact existing error accounting.
+  - `ftype=0` (None predictor) now applies 8 residuals via direct memcpy.
+  - `ftype=1/2/3/4/5` now run specialized row loops without per-pixel predictor switch.
+  - Existing residual consumed/missing counters are preserved.
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `cd build && ctest --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- baseline:
+  - `bench_results/tmp_isolate_default_step12_20260213_runs5.csv`
+- candidates:
+  - `bench_results/tmp_decode_recon_kernel_opt_20260213_runs5.csv`
+  - `bench_results/tmp_decode_recon_kernel_opt_threadbudget_20260213_runs5_rerun.csv`
+
+### Result Summary
+- Compression invariants preserved:
+  - `median PNG/HKN = 0.2610` unchanged
+  - `total HKN bytes = 2,977,544` unchanged
+- Stable decode-stage improvement:
+  - `plane_reconstruct` reduced from baseline class (`~5.48 ms`) to `~3.39-3.45 ms`
+    in repeated runs.
+- Wall decode moved in the expected direction:
+  - typical runs observed `hkn_dec_ms` in `~7.6-8.3 ms` class vs baseline `8.626 ms`.
+- Remaining decode wall bottleneck is now primarily scheduler wait (`plane_wait`) and
+  `filter_lo` (`decode_rans`) rather than reconstruct math itself.
+
+## 2026-02-13: Batch Thread-Budget Opt-in + CDF Lifecycle Cleanup
+
+### Objective
+- Improve batch-processing operability (outer image-level parallelism) while keeping
+  default single-process behavior unchanged.
+- Remove repeated dynamic CDF allocations that were not explicitly released in hot paths.
+
+### Implementation
+- `src/platform/thread_budget.h`
+  - Added opt-in batch knobs:
+    - `HAKONYANS_AUTO_INNER_THREADS=1`
+    - `HAKONYANS_OUTER_WORKERS=<N>`
+    - `HAKONYANS_INNER_THREADS_CAP=<N>` (optional)
+  - Default behavior remains unchanged unless opt-in flag is enabled.
+- `src/codec/decode.h`
+  - Added explicit `CDFBuilder::cleanup(cdf)` in dynamic CDF decode paths:
+    - `decode_stream(...)`
+    - `decode_stream_parallel(...)`
+    - `decode_byte_stream(...)`
+- `src/codec/byte_stream_encoder.h`
+  - Added explicit cleanup in `encode_byte_stream(...)`.
+- `src/codec/encode.h`
+  - Reworked token-stream encode callsites to hold CDF objects and release them
+    explicitly after use (`dc/ac band paths`).
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `cd build && ctest --output-on-failure`
+- Result: `17/17 PASS`
+
+### Notes
+- These changes do not alter bitstream format or compression decisions.
+- Batch-thread knobs are operational controls for throughput tuning under outer-worker
+  parallelism and are intentionally opt-in.

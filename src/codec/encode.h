@@ -289,23 +289,31 @@ public:
         std::vector<uint8_t> pindex_data;
         std::vector<uint8_t> cfl_data = build_cfl_payload(analysis.cfl_params);
 
-        auto dc_stream = encode_tokens(analysis.dc_tokens, build_cdf(analysis.dc_tokens));
+        auto dc_cdf = build_cdf(analysis.dc_tokens);
+        auto dc_stream = encode_tokens(analysis.dc_tokens, dc_cdf);
+        CDFBuilder::cleanup(dc_cdf);
         std::vector<uint8_t> tile_data;
         if (use_band_group_cdf) {
             constexpr size_t kBandPindexMinStreamBytes = 32 * 1024;
             std::vector<uint8_t> pindex_low, pindex_mid, pindex_high;
+            auto ac_low_cdf = build_cdf(analysis.ac_low_tokens);
             auto ac_low_stream = encode_tokens(
-                analysis.ac_low_tokens, build_cdf(analysis.ac_low_tokens), pi ? &pindex_low : nullptr,
+                analysis.ac_low_tokens, ac_low_cdf, pi ? &pindex_low : nullptr,
                 target_pindex_meta_ratio_percent, kBandPindexMinStreamBytes
             );
+            CDFBuilder::cleanup(ac_low_cdf);
+            auto ac_mid_cdf = build_cdf(analysis.ac_mid_tokens);
             auto ac_mid_stream = encode_tokens(
-                analysis.ac_mid_tokens, build_cdf(analysis.ac_mid_tokens), pi ? &pindex_mid : nullptr,
+                analysis.ac_mid_tokens, ac_mid_cdf, pi ? &pindex_mid : nullptr,
                 target_pindex_meta_ratio_percent, kBandPindexMinStreamBytes
             );
+            CDFBuilder::cleanup(ac_mid_cdf);
+            auto ac_high_cdf = build_cdf(analysis.ac_high_tokens);
             auto ac_high_stream = encode_tokens(
-                analysis.ac_high_tokens, build_cdf(analysis.ac_high_tokens), pi ? &pindex_high : nullptr,
+                analysis.ac_high_tokens, ac_high_cdf, pi ? &pindex_high : nullptr,
                 target_pindex_meta_ratio_percent, kBandPindexMinStreamBytes
             );
+            CDFBuilder::cleanup(ac_high_cdf);
             pindex_data = serialize_band_pindex_blob(pindex_low, pindex_mid, pindex_high);
             tile_data = lossy_tile_packer::pack_band_group_tile(
                 dc_stream,
@@ -320,10 +328,12 @@ public:
                 cpy_data
             );
         } else {
+            auto ac_cdf = build_cdf(analysis.ac_tokens);
             auto ac_stream = encode_tokens(
-                analysis.ac_tokens, build_cdf(analysis.ac_tokens), pi ? &pindex_data : nullptr,
+                analysis.ac_tokens, ac_cdf, pi ? &pindex_data : nullptr,
                 target_pindex_meta_ratio_percent
             );
+            CDFBuilder::cleanup(ac_cdf);
             tile_data = lossy_tile_packer::pack_legacy_tile(
                 dc_stream,
                 ac_stream,

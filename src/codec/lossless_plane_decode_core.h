@@ -535,6 +535,82 @@ inline std::vector<int16_t> decode_plane_lossless(
                 }
 
                 if (perf_stats) perf_stats->plane_recon_dct_pixels += 8;
+                int16_t* const dst = padded.data() + row_base + (size_t)x_base;
+                const int16_t* const up = (y > 0) ? (padded.data() + up_row_base + (size_t)x_base) : nullptr;
+
+                constexpr size_t kRun = 8;
+                if (residual_idx + kRun <= residual_size) {
+                    const int16_t* const rs = filter_residuals.data() + residual_idx;
+                    switch (ftype) {
+                        case 0: {
+                            std::memcpy(dst, rs, kRun * sizeof(int16_t));
+                            break;
+                        }
+                        case 1: {
+                            int16_t left = (x_base > 0) ? dst[-1] : 0;
+                            for (size_t px = 0; px < kRun; px++) {
+                                left = (int16_t)(left + rs[px]);
+                                dst[px] = left;
+                            }
+                            break;
+                        }
+                        case 2: {
+                            if (up) {
+                                for (size_t px = 0; px < kRun; px++) {
+                                    dst[px] = (int16_t)(up[px] + rs[px]);
+                                }
+                            } else {
+                                std::memcpy(dst, rs, kRun * sizeof(int16_t));
+                            }
+                            break;
+                        }
+                        case 3: {
+                            int16_t left = (x_base > 0) ? dst[-1] : 0;
+                            for (size_t px = 0; px < kRun; px++) {
+                                const int16_t b = up ? up[px] : 0;
+                                const int16_t pred = (int16_t)(((int)left + (int)b) / 2);
+                                const int16_t cur = (int16_t)(pred + rs[px]);
+                                dst[px] = cur;
+                                left = cur;
+                            }
+                            break;
+                        }
+                        case 4: {
+                            int16_t left = (x_base > 0) ? dst[-1] : 0;
+                            int16_t up_left = (up && x_base > 0) ? up[-1] : 0;
+                            for (size_t px = 0; px < kRun; px++) {
+                                const int16_t b = up ? up[px] : 0;
+                                const int16_t pred = LosslessFilter::paeth_predictor(left, b, up_left);
+                                const int16_t cur = (int16_t)(pred + rs[px]);
+                                dst[px] = cur;
+                                left = cur;
+                                up_left = b;
+                            }
+                            break;
+                        }
+                        case 5: {
+                            int16_t left = (x_base > 0) ? dst[-1] : 0;
+                            int16_t up_left = (up && x_base > 0) ? up[-1] : 0;
+                            for (size_t px = 0; px < kRun; px++) {
+                                const int16_t b = up ? up[px] : 0;
+                                const int16_t pred = LosslessFilter::med_predictor(left, b, up_left);
+                                const int16_t cur = (int16_t)(pred + rs[px]);
+                                dst[px] = cur;
+                                left = cur;
+                                up_left = b;
+                            }
+                            break;
+                        }
+                        default: {
+                            std::memcpy(dst, rs, kRun * sizeof(int16_t));
+                            break;
+                        }
+                    }
+                    residual_idx += kRun;
+                    if (perf_stats) perf_stats->plane_recon_residual_consumed += kRun;
+                    continue;
+                }
+
                 for (uint32_t px = 0; px < 8; px++) {
                     const uint32_t x = x_base + px;
                     const size_t pos = row_base + (size_t)x;

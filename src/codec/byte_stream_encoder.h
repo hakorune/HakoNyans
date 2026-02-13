@@ -53,6 +53,7 @@ inline std::vector<uint8_t> encode_byte_stream(const std::vector<uint8_t>& bytes
     std::memcpy(&output[off], &rans_size, 4);
 
     output.insert(output.end(), rans_bytes.begin(), rans_bytes.end());
+    CDFBuilder::cleanup(cdf);
     return output;
 }
 

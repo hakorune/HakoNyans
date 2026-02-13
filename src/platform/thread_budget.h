@@ -7,6 +7,25 @@
 
 namespace hakonyans::thread_budget {
 
+inline bool env_bool(const char* key, bool fallback = false) {
+    const char* env = std::getenv(key);
+    if (!env || env[0] == '\0') return fallback;
+    const char c = env[0];
+    if (c == '0' || c == 'f' || c == 'F' || c == 'n' || c == 'N') return false;
+    if (c == '1' || c == 't' || c == 'T' || c == 'y' || c == 'Y') return true;
+    return fallback;
+}
+
+inline unsigned int env_uint(const char* key, unsigned int fallback, unsigned int min_v, unsigned int max_v) {
+    const char* env = std::getenv(key);
+    if (!env || env[0] == '\0') return fallback;
+    char* end = nullptr;
+    long parsed = std::strtol(env, &end, 10);
+    if (end == env || parsed < (long)min_v) return fallback;
+    if (parsed > (long)max_v) parsed = (long)max_v;
+    return (unsigned int)parsed;
+}
+
 inline unsigned int hardware_threads() {
     unsigned int n = std::thread::hardware_concurrency();
     if (n == 0) n = 4;
@@ -16,14 +35,25 @@ inline unsigned int hardware_threads() {
 inline unsigned int configured_threads() {
     static const unsigned int kConfigured = []() {
         unsigned int n = hardware_threads();
-        const char* env = std::getenv("HAKONYANS_THREADS");
-        if (!env || env[0] == '\0') return n;
+        const unsigned int env_threads = env_uint("HAKONYANS_THREADS", 0, 1, 256);
+        if (env_threads > 0) n = env_threads;
 
-        char* end = nullptr;
-        long parsed = std::strtol(env, &end, 10);
-        if (end == env || parsed <= 0) return n;
-        if (parsed > 256) parsed = 256;
-        return (unsigned int)parsed;
+        // Opt-in batch mode:
+        // split total CPU budget by outer worker count to avoid oversubscription.
+        // Example:
+        //   HAKONYANS_AUTO_INNER_THREADS=1 HAKONYANS_OUTER_WORKERS=8
+        if (env_bool("HAKONYANS_AUTO_INNER_THREADS", false)) {
+            const unsigned int outer_workers = env_uint("HAKONYANS_OUTER_WORKERS", 1, 1, 256);
+            if (outer_workers > 1) {
+                n = std::max(1u, n / outer_workers);
+            }
+            const unsigned int inner_cap = env_uint("HAKONYANS_INNER_THREADS_CAP", 0, 1, 256);
+            if (inner_cap > 0) {
+                n = std::min(n, inner_cap);
+            }
+        }
+
+        return n;
     }();
     return kConfigured;
 }
