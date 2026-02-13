@@ -370,6 +370,14 @@ struct PackedPredictorStream {
     bool valid = false;
 };
 
+inline size_t mode12_min_candidate_size(const PackedPredictorStream& packed_pred) {
+    if (!packed_pred.valid || packed_pred.payload.empty()) {
+        return std::numeric_limits<size_t>::max();
+    }
+    // mode1/mode2 wrapper fixed header (27 bytes) + pred payload + residual payload (>=1 byte)
+    return 27u + packed_pred.payload.size() + 1u;
+}
+
 template <typename EncodeByteStreamFn>
 inline PackedPredictorStream build_packed_predictor_stream(
     const std::vector<uint8_t>& row_pred_ids,
@@ -750,6 +758,13 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
             else stats->natural_row_pred_mode_rans_count++;
         }
 
+        const size_t mode2_min_size = detail::mode12_min_candidate_size(mode1_pred);
+        const uint64_t mode2_limit_vs_mode0 =
+            ((uint64_t)mode0.size() * (uint64_t)lz_params.bias_permille) / 1000ull;
+        const bool mode2_possible_vs_mode0 =
+            (mode2_min_size != std::numeric_limits<size_t>::max()) &&
+            (mode2_min_size <= mode2_limit_vs_mode0);
+
         constexpr uint32_t kMode12ParallelPixelThreshold = 262144u;
         thread_budget::ScopedThreadTokens mode12_tokens;
         if (pixel_count >= kMode12ParallelPixelThreshold) {
@@ -760,7 +775,7 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
             uint64_t elapsed_ns = 0;
             detail::GlobalChainLzCounters lz;
         };
-        if (mode12_tokens.acquired()) {
+        if (mode12_tokens.acquired() && mode2_possible_vs_mode0) {
             if (stats) {
                 stats->natural_row_mode12_parallel_count++;
                 stats->natural_row_mode12_parallel_tokens_sum += (uint64_t)mode12_tokens.count();
@@ -820,22 +835,36 @@ inline std::vector<uint8_t> encode_plane_lossless_natural_row_tile_padded(
             );
             const auto t_mode1_1 = Clock::now();
             if (stats) stats->natural_row_mode1_build_ns += ns_since(t_mode1_0, t_mode1_1);
-            const auto t_mode2_0 = Clock::now();
-            detail::GlobalChainLzCounters lz_counters;
-            mode2 = detail::build_mode1_payload_from_prepared(
-                mode1_prepared,
-                mode1_pred,
-                pad_h,
-                pixel_count,
-                encode_byte_stream_shared_lz,
-                2,
-                [&](const std::vector<uint8_t>& bytes) -> std::vector<uint8_t> {
-                    return detail::compress_global_chain_lz(bytes, lz_params, &lz_counters);
+            if (mode2_possible_vs_mode0) {
+                const uint64_t best_after_mode1 =
+                    std::min<uint64_t>((uint64_t)mode0.size(), (uint64_t)mode1.size());
+                const uint64_t mode2_limit_vs_best =
+                    (best_after_mode1 * (uint64_t)lz_params.bias_permille) / 1000ull;
+                const bool mode2_possible_vs_best =
+                    (mode2_min_size <= mode2_limit_vs_best);
+                if (mode2_possible_vs_best) {
+                    const auto t_mode2_0 = Clock::now();
+                    detail::GlobalChainLzCounters lz_counters;
+                    mode2 = detail::build_mode1_payload_from_prepared(
+                        mode1_prepared,
+                        mode1_pred,
+                        pad_h,
+                        pixel_count,
+                        encode_byte_stream_shared_lz,
+                        2,
+                        [&](const std::vector<uint8_t>& bytes) -> std::vector<uint8_t> {
+                            return detail::compress_global_chain_lz(bytes, lz_params, &lz_counters);
+                        }
+                    );
+                    const auto t_mode2_1 = Clock::now();
+                    if (stats) stats->natural_row_mode2_build_ns += ns_since(t_mode2_0, t_mode2_1);
+                    accumulate_mode2_lz(lz_counters);
+                } else if (stats) {
+                    stats->natural_row_mode2_bias_reject_count++;
                 }
-            );
-            const auto t_mode2_1 = Clock::now();
-            if (stats) stats->natural_row_mode2_build_ns += ns_since(t_mode2_0, t_mode2_1);
-            accumulate_mode2_lz(lz_counters);
+            } else if (stats) {
+                stats->natural_row_mode2_bias_reject_count++;
+            }
         }
     }
     if (mode0.empty()) return {};

@@ -36,6 +36,7 @@ struct BlockEval {
     int64_t variance_proxy = 0;
 
     bool copy_found = false;
+    bool copy_shortcut_forced = false;
     CopyParams copy_candidate{};
     bool palette_found = false;
     Palette palette_candidate{};
@@ -155,26 +156,6 @@ inline ClassificationResult classify_blocks(
         ev.variance_proxy = sum_sq - ((sum * sum) / 64);
 
         ev.palette_transitions = ev.transitions;
-        if (ev.unique_cnt <= mode_params.palette_max_colors) {
-            ev.palette_candidate = PaletteExtractor::extract(ev.block.data(), mode_params.palette_max_colors);
-            if (ev.palette_candidate.size > 0 && ev.palette_candidate.size <= mode_params.palette_max_colors) {
-                bool transition_ok = (ev.transitions <= mode_params.palette_transition_limit) ||
-                                     (ev.palette_candidate.size <= 1);
-                bool variance_ok = ev.variance_proxy <= mode_params.palette_variance_limit;
-                if (transition_ok && variance_ok) {
-                    ev.palette_found = true;
-                    ev.palette_index_candidate =
-                        PaletteExtractor::map_indices(ev.block.data(), ev.palette_candidate);
-                    ev.palette_transitions = 0;
-                    for (int k = 1; k < 64; k++) {
-                        if (ev.palette_index_candidate[(size_t)k] !=
-                            ev.palette_index_candidate[(size_t)k - 1]) {
-                            ev.palette_transitions++;
-                        }
-                    }
-                }
-            }
-        }
 
         if (i > 0) {
             for (const auto& cand : kLosslessCopyCandidates) {
@@ -202,85 +183,136 @@ inline ClassificationResult classify_blocks(
                 }
             }
         }
-
-        {
-            int matches = 0;
-            for (int q = 0; q < 4; q++) {
-                int qx = (q % 2) * 4;
-                int qy = (q / 2) * 4;
-                int cur_qx = cur_x + qx;
-                int cur_qy = cur_y + qy;
-
-                bool q_match_found = false;
-                for (int cand_idx = 0; cand_idx < 16; cand_idx++) {
-                    const auto& cand = kTileMatch4Candidates[cand_idx];
-                    int src_x = cur_qx + cand.dx;
-                    int src_y = cur_qy + cand.dy;
-
-                    if (src_x < 0 || src_y < 0 || src_x + 3 >= (int)pad_w || src_y + 3 >= (int)pad_h) continue;
-                    if (!(src_y < cur_qy || (src_y == cur_qy && src_x < cur_qx))) continue;
-
-                    bool match = true;
-                    for (int dy = 0; dy < 4; dy++) {
-                        const int16_t* dst_row =
-                            &padded[(size_t)(cur_qy + dy) * (size_t)pad_w + (size_t)cur_qx];
-                        const int16_t* src_row =
-                            &padded[(size_t)(src_y + dy) * (size_t)pad_w + (size_t)src_x];
-                        if (std::memcmp(dst_row, src_row, 4 * sizeof(int16_t)) != 0) {
-                            match = false;
-                            break;
-                        }
-                    }
-                    if (match) {
-                        ev.tile4_candidate.indices[q] = (uint8_t)cand_idx;
-                        q_match_found = true;
-                        break;
-                    }
-                }
-                if (q_match_found) matches++;
-                else break;
+        if (ev.copy_found) {
+            ev.copy_bits2 = lossless_mode_select::estimate_copy_bits(
+                ev.copy_candidate, (int)pad_w, profile_id
+            );
+            // COPY (small-vector candidates only) always beats the minimum non-copy
+            // token floors in current lossless mode model.
+            const int non_copy_floor_bits2 =
+                (profile_id == lossless_mode_select::PROFILE_PHOTO) ? 32 : 36;
+            if (ev.copy_bits2 < non_copy_floor_bits2) {
+                ev.copy_shortcut_forced = true;
+                return ev;
             }
-            ev.tile4_found = (matches == 4);
         }
 
         ev.filter_bits2 = lossless_mode_select::estimate_filter_bits(
             padded.data(), pad_w, pad_h, cur_x, cur_y, profile_id
         );
 
+        if (!ev.copy_found) {
+            Palette extracted_palette{};
+            bool extracted_palette_valid = false;
+            if (ev.unique_cnt <= mode_params.palette_max_colors) {
+                extracted_palette = PaletteExtractor::extract(
+                    ev.block.data(), mode_params.palette_max_colors
+                );
+                if (extracted_palette.size > 0 &&
+                    extracted_palette.size <= mode_params.palette_max_colors) {
+                    extracted_palette_valid = true;
+                    bool transition_ok = (ev.transitions <= mode_params.palette_transition_limit) ||
+                                         (extracted_palette.size <= 1);
+                    bool variance_ok = ev.variance_proxy <= mode_params.palette_variance_limit;
+                    if (transition_ok && variance_ok) {
+                        ev.palette_found = true;
+                        ev.palette_candidate = extracted_palette;
+                        ev.palette_index_candidate =
+                            PaletteExtractor::map_indices(ev.block.data(), ev.palette_candidate);
+                        ev.palette_transitions = 0;
+                        for (int k = 1; k < 64; k++) {
+                            if (ev.palette_index_candidate[(size_t)k] !=
+                                ev.palette_index_candidate[(size_t)k - 1]) {
+                                ev.palette_transitions++;
+                            }
+                        }
+                    }
+                }
+            }
+
+            {
+                int matches = 0;
+                for (int q = 0; q < 4; q++) {
+                    int qx = (q % 2) * 4;
+                    int qy = (q / 2) * 4;
+                    int cur_qx = cur_x + qx;
+                    int cur_qy = cur_y + qy;
+
+                    bool q_match_found = false;
+                    for (int cand_idx = 0; cand_idx < 16; cand_idx++) {
+                        const auto& cand = kTileMatch4Candidates[cand_idx];
+                        int src_x = cur_qx + cand.dx;
+                        int src_y = cur_qy + cand.dy;
+
+                        if (src_x < 0 || src_y < 0 ||
+                            src_x + 3 >= (int)pad_w || src_y + 3 >= (int)pad_h) {
+                            continue;
+                        }
+                        if (!(src_y < cur_qy || (src_y == cur_qy && src_x < cur_qx))) continue;
+
+                        bool match = true;
+                        for (int dy = 0; dy < 4; dy++) {
+                            const int16_t* dst_row =
+                                &padded[(size_t)(cur_qy + dy) * (size_t)pad_w + (size_t)cur_qx];
+                            const int16_t* src_row =
+                                &padded[(size_t)(src_y + dy) * (size_t)pad_w + (size_t)src_x];
+                            if (std::memcmp(dst_row, src_row, 4 * sizeof(int16_t)) != 0) {
+                                match = false;
+                                break;
+                            }
+                        }
+                        if (match) {
+                            ev.tile4_candidate.indices[q] = (uint8_t)cand_idx;
+                            q_match_found = true;
+                            break;
+                        }
+                    }
+                    if (q_match_found) matches++;
+                    else break;
+                }
+                ev.tile4_found = (matches == 4);
+            }
+
+            if (!ev.palette_found && profile_id != 2 && ev.unique_cnt <= 8) {
+                Palette rescue_palette{};
+                if (extracted_palette_valid) {
+                    rescue_palette = extracted_palette;
+                } else {
+                    rescue_palette = PaletteExtractor::extract(ev.block.data(), 8);
+                }
+                if (rescue_palette.size > 0 && rescue_palette.size <= 8) {
+                    ev.rescue_attempted_count++;
+                    auto rescue_indices = PaletteExtractor::map_indices(ev.block.data(), rescue_palette);
+                    int rescue_transitions = 0;
+                    for (int k = 1; k < 64; k++) {
+                        if (rescue_indices[(size_t)k] != rescue_indices[(size_t)k - 1]) {
+                            rescue_transitions++;
+                        }
+                    }
+                    int rescue_bits2 = lossless_mode_select::estimate_palette_bits(
+                        rescue_palette, rescue_transitions, profile_id
+                    );
+                    if (profile_id == 1 && rescue_palette.size >= 2 && rescue_transitions <= 60) {
+                        rescue_bits2 -= 24;
+                    }
+                    if (rescue_bits2 + 8 < ev.filter_bits2) {
+                        ev.palette_found = true;
+                        ev.palette_candidate = rescue_palette;
+                        ev.palette_index_candidate = std::move(rescue_indices);
+                        ev.palette_transitions = rescue_transitions;
+                        ev.rescue_adopted = true;
+                        ev.rescue_gain_bytes =
+                            (uint64_t)std::max(0, (ev.filter_bits2 - rescue_bits2) / 2);
+                    }
+                }
+            }
+        }
+
         if (ev.tile4_found) ev.tile4_bits2 = 36;
         if (ev.copy_found) {
             ev.copy_bits2 = lossless_mode_select::estimate_copy_bits(
                 ev.copy_candidate, (int)pad_w, profile_id
             );
-        }
-
-        if (!ev.palette_found && profile_id != 2 && ev.unique_cnt <= 8) {
-            Palette rescue_palette = PaletteExtractor::extract(ev.block.data(), 8);
-            if (rescue_palette.size > 0 && rescue_palette.size <= 8) {
-                ev.rescue_attempted_count++;
-                auto rescue_indices = PaletteExtractor::map_indices(ev.block.data(), rescue_palette);
-                int rescue_transitions = 0;
-                for (int k = 1; k < 64; k++) {
-                    if (rescue_indices[(size_t)k] != rescue_indices[(size_t)k - 1]) {
-                        rescue_transitions++;
-                    }
-                }
-                int rescue_bits2 = lossless_mode_select::estimate_palette_bits(
-                    rescue_palette, rescue_transitions, profile_id
-                );
-                if (profile_id == 1 && rescue_palette.size >= 2 && rescue_transitions <= 60) {
-                    rescue_bits2 -= 24;
-                }
-                if (rescue_bits2 + 8 < ev.filter_bits2) {
-                    ev.palette_found = true;
-                    ev.palette_candidate = rescue_palette;
-                    ev.palette_index_candidate = std::move(rescue_indices);
-                    ev.palette_transitions = rescue_transitions;
-                    ev.rescue_adopted = true;
-                    ev.rescue_gain_bytes =
-                        (uint64_t)std::max(0, (ev.filter_bits2 - rescue_bits2) / 2);
-                }
-            }
         }
 
         if (ev.palette_found) {
@@ -345,6 +377,20 @@ inline ClassificationResult classify_blocks(
 
     for (int i = 0; i < nb; i++) {
         auto& ev = evals[(size_t)i];
+        if (ev.copy_shortcut_forced) {
+            out.block_types[(size_t)i] = FileHeader::BlockType::COPY;
+            prev_mode = FileHeader::BlockType::COPY;
+            out.copy_ops.push_back(ev.copy_candidate);
+            if (stats) {
+                stats->class_copy_shortcut_selected++;
+                stats->total_blocks++;
+                stats->copy_candidates++;
+                stats->copy_selected++;
+                stats->est_copy_bits_sum += (uint64_t)(ev.copy_bits2 / 2);
+                stats->est_selected_bits_sum += (uint64_t)(ev.copy_bits2 / 2);
+            }
+            continue;
+        }
 
         int tile4_bits2 = ev.tile4_bits2;
         int copy_bits2 = ev.copy_bits2;

@@ -241,6 +241,7 @@ struct LosslessModeDebugStats {
     uint64_t class_copy_hit_x1000_sum;
     uint64_t class_mean_abs_diff_x1000_sum;
     uint64_t class_active_bins_sum;
+    uint64_t class_copy_shortcut_selected;
     uint64_t anime_palette_bonus_applied;
 
     // Encode-side perf counters (nanoseconds), accumulated per encode call.

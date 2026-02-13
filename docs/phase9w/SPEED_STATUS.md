@@ -27,12 +27,33 @@ Rationale:
 - `nat_mode2` improved across reruns, wall-clock noisy
 - details: `docs/phase9w/logs/2026-02-13.md`
 
+4. `plane_lo_stream` pruning trial: no-go (reverted)
+- details: `docs/phase9w/logs/2026-02-13.md`
+
+5. `block_class copy-shortcut + palette extract reuse + mode2 feasibility skip`: hold candidate
+- invariants preserved
+- stage gains are mixed under host noise, baseline promotion on hold
+- details: `docs/phase9w/logs/2026-02-13.md`
+
+6. `mode2 pipeline feasibility gate`: no-go (reverted)
+- invariants preserved but route wall-time regressed due reduced overlap
+- archive: `docs/archive/2026-02-13_mode2_pipeline_limit_gating_nogo.md`
+
+7. `block_class copy forced shortcut`: hold candidate
+- invariants preserved
+- `plane_block_classify` stage improved consistently, wall-clock was mixed across reruns
+- observation counter `hkn_enc_class_copy_shortcut_selected` added to CSV
+- details: `docs/phase9w/logs/2026-02-13.md`
+
 ## Next Tasks
 1. Reduce host-noise sensitivity for promote decisions
 - use repeated fixed-condition reruns for route-level promotion
 
-2. Continue high-ROI encode work in `route_natural` / `plane_route_comp`
-- prioritize changes with stable stage-counter improvements
+2. Continue high-ROI encode work in `plane_block_classify` / `route_natural`
+- prioritize isolated single-change runs for clearer attribution
 
-3. Keep archive-by-default
+3. Isolate side-effects of copy forced shortcut
+- re-run with current host lock conditions and verify whether `lo_stream` drift is noise
+
+4. Keep archive-by-default
 - all no-go and hold outcomes must be recorded with CSV links

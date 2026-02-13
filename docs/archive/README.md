@@ -10,3 +10,5 @@
 - `2026-02-13_plane_reconstruct_copy_tm4_fastpath.md`
 - `2026-02-13_filter_lo_decode_nogo.md`
 - `2026-02-13_mode2_len3_prereject_nogo.md`
+- `2026-02-13_mode2_pipeline_limit_gating_nogo.md`
+- `2026-02-13_plane_lo_stream_pruning_nogo.md`
