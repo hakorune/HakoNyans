@@ -11,6 +11,7 @@
 #include "../entropy/nyans_p/parallel_decode.h"
 #include "../simd/simd_dispatch.h"
 #include "../platform/thread_budget.h"
+#include "../platform/thread_pool.h"
 #include <vector>
 #include <chrono>
 #include <cstring>
@@ -63,6 +64,11 @@ private:
     static bool decode_use_plane_caller_y_path() {
         static const bool enabled = env_bool_flag("HKN_DECODE_PLANE_CALLER_Y", false);
         return enabled;
+    }
+
+    static ThreadPool& decode_worker_pool() {
+        static ThreadPool pool((int)std::max(1u, thread_budget::max_threads(8)));
+        return pool;
     }
 
     static bool try_build_cdf_from_serialized_freq(
@@ -808,6 +814,13 @@ public:
 
         std::vector<int16_t> y_plane, co_plane, cg_plane;
         const unsigned int hw_threads = thread_budget::max_threads();
+        ThreadPool& worker_pool = decode_worker_pool();
+        auto submit_plane_task = [&](size_t offset, size_t size, bool reset_task_stats) {
+            return worker_pool.submit([&, offset, size, reset_task_stats]() {
+                thread_budget::ScopedParallelRegion guard;
+                return run_plane_task(offset, size, reset_task_stats);
+            });
+        };
         const auto t_plane_dispatch0 = Clock::now();
         auto plane_decode_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(3);
         if (plane_decode_tokens.acquired()) {
@@ -825,14 +838,8 @@ public:
 
         if (plane_decode_tokens.acquired()) {
             if (decode_use_plane_caller_y_path()) {
-                auto fco = std::async(std::launch::async, [&]() {
-                    thread_budget::ScopedParallelRegion guard;
-                    return run_plane_task(t1->offset, t1->size, true);
-                });
-                auto fcg = std::async(std::launch::async, [&]() {
-                    thread_budget::ScopedParallelRegion guard;
-                    return run_plane_task(t2->offset, t2->size, true);
-                });
+                auto fco = submit_plane_task(t1->offset, t1->size, true);
+                auto fcg = submit_plane_task(t2->offset, t2->size, true);
 
                 PlaneDecodeTaskResult y_res;
                 {
@@ -860,18 +867,9 @@ public:
                 tl_lossless_decode_debug_stats_.decode_plane_co_ns += co_res.elapsed_ns;
                 tl_lossless_decode_debug_stats_.decode_plane_cg_ns += cg_res.elapsed_ns;
             } else {
-                auto fy = std::async(std::launch::async, [&]() {
-                    thread_budget::ScopedParallelRegion guard;
-                    return run_plane_task(t0->offset, t0->size, true);
-                });
-                auto fco = std::async(std::launch::async, [&]() {
-                    thread_budget::ScopedParallelRegion guard;
-                    return run_plane_task(t1->offset, t1->size, true);
-                });
-                auto fcg = std::async(std::launch::async, [&]() {
-                    thread_budget::ScopedParallelRegion guard;
-                    return run_plane_task(t2->offset, t2->size, true);
-                });
+                auto fy = submit_plane_task(t0->offset, t0->size, true);
+                auto fco = submit_plane_task(t1->offset, t1->size, true);
+                auto fcg = submit_plane_task(t2->offset, t2->size, true);
 
                 const auto t_plane_wait0 = Clock::now();
                 auto y_res = fy.get();
@@ -981,7 +979,7 @@ public:
             for (unsigned int t = 1; t < rgb_threads; t++) {
                 const int sy = (int)(((uint64_t)t * (uint64_t)h) / (uint64_t)rgb_threads);
                 const int ey = (int)(((uint64_t)(t + 1) * (uint64_t)h) / (uint64_t)rgb_threads);
-                futs.push_back(std::async(std::launch::async, [&, sy, ey]() {
+                futs.push_back(worker_pool.submit([&, sy, ey]() {
                     thread_budget::ScopedParallelRegion guard;
                     return run_rows(sy, ey);
                 }));

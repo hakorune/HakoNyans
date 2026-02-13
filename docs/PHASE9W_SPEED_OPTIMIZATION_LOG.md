@@ -1113,3 +1113,68 @@ Interpretation:
   longer get reset by the Y task running in caller thread).
 - Caller-Y remains **opt-in / default-off**:
   - wall-clock gain was not stable enough to promote default behavior in this pass.
+
+## 2026-02-13: Decode Worker-Pool Path + Mode3/4 Contiguous Writes + Batch Indicators
+
+### Objective
+- Reduce decode-side scheduler overhead (`dispatch/wait`) by removing repeated
+  `std::async` thread creation in hot paths.
+- Reduce `filter_lo` mode3/mode4 byte materialization overhead by avoiding
+  per-byte `push_back`.
+- Improve benchmark observability for batch workloads with explicit
+  `images/s` and `cpu/wall` indicators.
+
+### Implementation
+- `src/codec/decode.h`
+  - Added fixed decode worker pool (`decode_worker_pool()`) based on
+    `thread_budget::max_threads(8)`.
+  - In `decode_color_lossless(...)`:
+    - replaced 3-plane decode `std::async` launches with pool `submit(...)`.
+    - replaced YCoCg row-task `std::async` launches with pool `submit(...)`.
+  - Kept existing thread-budget token gating and parallel counters unchanged.
+- `src/codec/lossless_filter_lo_decode.h`
+  - mode3 (`lo_mode==3`):
+    - switched residual materialization from `reserve+push_back` to
+      `assign(raw_count,0)` + contiguous indexed writes.
+    - specialized predictor loops (`p=1/2/3/default`) to avoid per-byte
+      branch dispatch.
+  - mode4 (`lo_mode==4`):
+    - switched from `push_back` fill to contiguous `assign(raw_count,0)` +
+      row-wise indexed copy (`memcpy` for context slices).
+- `bench/bench_png_compare.cpp`
+  - Added batch indicators in CSV and console:
+    - `hkn_enc_images_per_s`, `hkn_dec_images_per_s`,
+      `png_enc_images_per_s`, `png_dec_images_per_s`
+    - `hkn_enc_cpu_over_wall`, `hkn_dec_cpu_over_wall`
+  - Added `=== Batch Indicators (median per image) ===` console section.
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `cd build && ctest --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- baseline:
+  - `bench_results/tmp_filterlo_cdf_fastpath_20260213_runs5.csv`
+- candidates:
+  - `bench_results/tmp_step_next_pool_batch_mode34_20260213_runs5.csv`
+  - `bench_results/tmp_step_next_pool_batch_mode34_20260213_runs5_rerun.csv`
+
+### Result Summary (rerun promoted)
+- Compression invariants preserved:
+  - `median PNG/HKN = 0.2610` unchanged
+  - `total HKN bytes = 2,977,544` unchanged
+- Median deltas vs baseline:
+  - `hkn_dec_ms`: `8.010 -> 6.186` (`-22.8%`)
+  - `hkn_dec_plane_filter_lo_ms`: `5.628 -> 4.317` (`-23.3%`)
+  - `hkn_dec_plane_wait_ms`: `6.482 -> 5.272` (`-18.7%`)
+  - `hkn_dec_plane_reconstruct_ms`: `3.444 -> 3.345` (`-2.9%`)
+- Batch indicators (rerun):
+  - `images/s Dec HKN/PNG`: `161.658 / 158.025` (`HKN/PNG = 1.023`)
+  - `cpu/wall Dec(HKN)`: `1.946`
+
+Interpretation:
+- Fixed worker-pool scheduling gave a stable decode-wall reduction in repeated runs.
+- Mode3/4 contiguous writes reduced allocation/write overhead in `filter_lo`.
+- Added batch indicators now expose throughput/cpu-utilization trends directly in
+  both CSV and terminal output.

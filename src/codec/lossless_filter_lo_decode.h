@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <future>
 #include <vector>
 
@@ -130,9 +131,11 @@ inline std::vector<uint8_t> decode_filter_lo_stream(
                 auto preds = timed_decode_rans(pred_ptr, pred_sz, active_rows);
                 auto resids = timed_decode_rans(resid_ptr, resid_sz, raw_count);
 
-                lo_bytes.reserve(raw_count);
+                lo_bytes.assign(raw_count, 0);
+                uint8_t* lo_ptr = lo_bytes.data();
                 size_t resid_idx = 0;
                 size_t pred_idx = 0;
+                size_t out_idx = 0;
                 size_t prev_valid_row_start = 0;
                 size_t prev_valid_row_len = 0;
 
@@ -141,24 +144,44 @@ inline std::vector<uint8_t> decode_filter_lo_stream(
                     if (len == 0) continue;
 
                     int p = (pred_idx < preds.size()) ? preds[pred_idx++] : 0;
-                    size_t start_idx = lo_bytes.size();
+                    size_t start_idx = out_idx;
+                    if (start_idx >= raw_count) break;
+                    size_t safe_len = std::min<size_t>((size_t)len, raw_count - start_idx);
+                    if (safe_len == 0) continue;
 
-                    for (int i = 0; i < len; i++) {
-                        uint8_t resid = (resid_idx < resids.size()) ? resids[resid_idx++] : 0;
-                        uint8_t pred_val = 0;
-                        if (p == 1) {
-                            pred_val = (i == 0) ? 0 : lo_bytes[start_idx + i - 1];
-                        } else if (p == 2) {
-                            pred_val = (prev_valid_row_len > (size_t)i) ? lo_bytes[prev_valid_row_start + i] : 0;
-                        } else if (p == 3) {
-                            uint8_t left = (i == 0) ? 0 : lo_bytes[start_idx + i - 1];
-                            uint8_t up = (prev_valid_row_len > (size_t)i) ? lo_bytes[prev_valid_row_start + i] : 0;
-                            pred_val = (left + up) / 2;
+                    if (p == 1) {
+                        uint8_t left = 0;
+                        for (size_t i = 0; i < safe_len; i++) {
+                            uint8_t resid = (resid_idx < resids.size()) ? resids[resid_idx++] : 0;
+                            uint8_t v = (uint8_t)(resid + left);
+                            lo_ptr[start_idx + i] = v;
+                            left = v;
                         }
-                        lo_bytes.push_back((uint8_t)(resid + pred_val));
+                    } else if (p == 2) {
+                        for (size_t i = 0; i < safe_len; i++) {
+                            uint8_t resid = (resid_idx < resids.size()) ? resids[resid_idx++] : 0;
+                            uint8_t up = (prev_valid_row_len > i) ? lo_ptr[prev_valid_row_start + i] : 0;
+                            lo_ptr[start_idx + i] = (uint8_t)(resid + up);
+                        }
+                    } else if (p == 3) {
+                        uint8_t left = 0;
+                        for (size_t i = 0; i < safe_len; i++) {
+                            uint8_t resid = (resid_idx < resids.size()) ? resids[resid_idx++] : 0;
+                            uint8_t up = (prev_valid_row_len > i) ? lo_ptr[prev_valid_row_start + i] : 0;
+                            uint8_t pred_val = (uint8_t)((left + up) / 2u);
+                            uint8_t v = (uint8_t)(resid + pred_val);
+                            lo_ptr[start_idx + i] = v;
+                            left = v;
+                        }
+                    } else {
+                        for (size_t i = 0; i < safe_len; i++) {
+                            uint8_t resid = (resid_idx < resids.size()) ? resids[resid_idx++] : 0;
+                            lo_ptr[start_idx + i] = resid;
+                        }
                     }
+                    out_idx += safe_len;
                     prev_valid_row_start = start_idx;
-                    prev_valid_row_len = len;
+                    prev_valid_row_len = safe_len;
                 }
             }
         } else if (lo_mode == 4 && payload_size >= 24) {
@@ -273,20 +296,24 @@ inline std::vector<uint8_t> decode_filter_lo_stream(
                 }
 
                 std::vector<size_t> ctx_pos(6, 0);
-                lo_bytes.clear();
-                lo_bytes.reserve(raw_count);
-                for (uint32_t y = 0; y < pad_h && lo_bytes.size() < raw_count; y++) {
+                lo_bytes.assign(raw_count, 0);
+                uint8_t* lo_ptr = lo_bytes.data();
+                size_t out_idx = 0;
+                for (uint32_t y = 0; y < pad_h && out_idx < raw_count; y++) {
                     int len = row_lens[y];
                     if (len <= 0) continue;
                     uint8_t fid = (y < filter_ids.size()) ? filter_ids[y] : 0;
                     if (fid > 5) fid = 0;
-                    for (int i = 0; i < len && lo_bytes.size() < raw_count; i++) {
-                        if (ctx_pos[fid] < ctx_decoded[fid].size()) {
-                            lo_bytes.push_back(ctx_decoded[fid][ctx_pos[fid]++]);
-                        } else {
-                            lo_bytes.push_back(0);
-                        }
+                    size_t take = std::min<size_t>((size_t)len, raw_count - out_idx);
+                    const auto& ctx = ctx_decoded[fid];
+                    size_t pos = ctx_pos[fid];
+                    size_t available = (pos < ctx.size()) ? (ctx.size() - pos) : 0;
+                    size_t copy_n = std::min(take, available);
+                    if (copy_n > 0) {
+                        std::memcpy(lo_ptr + out_idx, ctx.data() + pos, copy_n);
+                        ctx_pos[fid] += copy_n;
                     }
+                    out_idx += take;
                 }
             }
         } else {
