@@ -852,3 +852,61 @@ Interpretation:
 ### Current Promoted Baseline For Next Work
 - Use this CSV as baseline for subsequent A/B:
   - `bench_results/tmp_ycocg_sched_opt_20260213_runs5.csv`
+
+## 2026-02-13: Sequential Next-Move Implementation (Step1/2/3)
+
+### Objective
+- Implement the next three optimization targets in order:
+  1. natural route `mode2` global-chain LZ micro-optimization
+  2. `filter_lo` rANS decode loop-call overhead reduction
+  3. decode plane scheduling wait reduction
+- Keep bitstream format and compression behavior unchanged.
+
+### Implementation
+- `src/codec/lossless_natural_route.h`
+  - `compress_global_chain_lz(...)`:
+    - strengthened output reserve sizing for literal-heavy worst case.
+    - factored match-length extension into a tighter pointer-based loop.
+    - switched MATCH token emission to contiguous `resize + direct write`.
+  - Search order / accept condition / tie-break were unchanged.
+- `src/entropy/nyans_p/rans_flat_interleaved.h`
+  - Added bulk decode helpers:
+    - `decode_symbols(...)`
+    - `decode_symbols_lut(...)`
+  - These decode into caller-provided output buffers in one pass.
+- `src/codec/decode.h`
+  - `decode_byte_stream(...)` and `decode_byte_stream_shared_lz(...)` now use bulk decode helpers.
+  - In `decode_color_lossless(...)` plane decode parallel path:
+    - launch async for `Co` / `Cg`
+    - run `Y` plane on caller thread
+    - wait only for remaining futures
+  - This preserves 3-plane parallel work while reducing pure idle wait in caller.
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `cd build && ctest --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- baseline:
+  - `bench_results/tmp_ycocg_sched_opt_20260213_runs5.csv`
+- candidates:
+  - `bench_results/tmp_seq_opt_step123_20260213.csv`
+  - `bench_results/tmp_seq_opt_step123_20260213_rerun.csv`
+  - `bench_results/tmp_seq_opt_step123_20260213_runs5.csv`
+
+### Result Summary (runs=5 vs promoted baseline)
+- Compression invariants:
+  - `median PNG/HKN = 0.2610` unchanged
+  - `total HKN bytes = 2,977,544` unchanged
+- Stage-level movement:
+  - `hkn_enc_plane_route_natural_candidate_ms: 35.142984 -> 34.874849` (`-0.268135`)
+  - `hkn_enc_route_nat_mode2_ms: 29.533722 -> 28.380656` (`-1.153066`)
+  - `hkn_dec_plane_wait_ms: 8.047220 -> 0.085119` (`-7.962101`)
+- Wall decode movement:
+  - `hkn_dec_ms: 9.583383 -> 8.324305` (`-1.259078`)
+- Wall encode note:
+  - fixed-6 median encode wall was higher in this run set (`99.472817 -> 123.392145`),
+    while route-natural internals were improved or near-neutral.
+  - Large-image host variance remained significant; this step is kept as implemented
+    and should be re-judged with additional reruns when promoting a new baseline.

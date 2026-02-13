@@ -159,6 +159,77 @@ public:
         return static_cast<int>(symbol);
     }
 
+    void decode_symbols(uint8_t* dst, uint32_t count, const CDFTable& cdf) {
+        if (count == 0) return;
+        int lane = current_lane_;
+        const uint8_t* ptr = ptr_;
+        uint32_t* states = states_.data();
+
+        for (uint32_t i = 0; i < count; ++i) {
+            uint32_t st = states[lane];
+            uint32_t slot = st & (RANS_TOTAL - 1);
+
+            int symbol = 0;
+            for (int k = 0; k < cdf.alphabet_size; ++k) {
+                if (slot < cdf.cdf[k + 1]) {
+                    symbol = k;
+                    break;
+                }
+            }
+
+            uint32_t freq = cdf.freq[symbol];
+            uint32_t bias = cdf.cdf[symbol];
+            st = (st >> RANS_LOG2_TOTAL) * freq + slot - bias;
+            while (st < RANS_LOWER_BOUND) {
+                st = (st << 8) | *ptr++;
+            }
+
+            states[lane] = st;
+            dst[i] = (uint8_t)symbol;
+            if constexpr ((N & (N - 1)) == 0) {
+                lane = (lane + 1) & (N - 1);
+            } else {
+                lane++;
+                if (lane == N) lane = 0;
+            }
+        }
+
+        current_lane_ = lane;
+        ptr_ = ptr;
+    }
+
+    void decode_symbols_lut(uint8_t* dst, uint32_t count, const SIMDDecodeTable& tbl) {
+        if (count == 0) return;
+        int lane = current_lane_;
+        const uint8_t* ptr = ptr_;
+        uint32_t* states = states_.data();
+        const uint32_t* slot_to_symbol = tbl.slot_to_symbol;
+        const uint32_t* freq = tbl.freq;
+        const uint32_t* bias = tbl.bias;
+
+        for (uint32_t i = 0; i < count; ++i) {
+            uint32_t st = states[lane];
+            uint32_t slot = st & (RANS_TOTAL - 1);
+            uint32_t symbol = slot_to_symbol[slot];
+            st = (st >> RANS_LOG2_TOTAL) * freq[symbol] + slot - bias[symbol];
+            while (st < RANS_LOWER_BOUND) {
+                st = (st << 8) | *ptr++;
+            }
+
+            states[lane] = st;
+            dst[i] = (uint8_t)symbol;
+            if constexpr ((N & (N - 1)) == 0) {
+                lane = (lane + 1) & (N - 1);
+            } else {
+                lane++;
+                if (lane == N) lane = 0;
+            }
+        }
+
+        current_lane_ = lane;
+        ptr_ = ptr;
+    }
+
 private:
     uint32_t read_u32_be() {
         uint32_t v = 0;

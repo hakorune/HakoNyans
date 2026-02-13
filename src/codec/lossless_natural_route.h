@@ -67,7 +67,8 @@ inline std::vector<uint8_t> compress_global_chain_lz(
     const size_t src_size = src.size();
     const uint8_t* s = src.data();
     std::vector<uint8_t> out;
-    out.reserve(src_size + (src_size / 3) + 64);
+    const size_t worst_lit_chunks = (src_size + 254) / 255;
+    out.reserve(src_size + (worst_lit_chunks * 2) + 64);
 
     thread_local std::array<int, HASH_SIZE> head{};
     thread_local std::array<uint32_t, HASH_SIZE> head_epoch{};
@@ -112,6 +113,33 @@ inline std::vector<uint8_t> compress_global_chain_lz(
         }
     };
 
+    auto match_len_from = [&](size_t ref_pos, size_t cur_pos) -> int {
+        const size_t max_len = std::min<size_t>(255, src_size - cur_pos);
+        int len = 3;
+
+        const uint8_t* a = s + ref_pos + 3;
+        const uint8_t* b = s + cur_pos + 3;
+        size_t remain = max_len - 3;
+        while (remain >= sizeof(uint64_t)) {
+            uint64_t va = 0;
+            uint64_t vb = 0;
+            std::memcpy(&va, a, sizeof(uint64_t));
+            std::memcpy(&vb, b, sizeof(uint64_t));
+            if (va != vb) break;
+            a += sizeof(uint64_t);
+            b += sizeof(uint64_t);
+            len += (int)sizeof(uint64_t);
+            remain -= sizeof(uint64_t);
+        }
+        while (remain > 0 && *a == *b) {
+            ++a;
+            ++b;
+            ++len;
+            --remain;
+        }
+        return len;
+    };
+
     size_t pos = 0;
     size_t lit_start = 0;
     while (pos + 2 < src_size) {
@@ -128,20 +156,7 @@ inline std::vector<uint8_t> compress_global_chain_lz(
                 if (s[ref_pos] == s[pos] &&
                     s[ref_pos + 1] == s[pos + 1] &&
                     s[ref_pos + 2] == s[pos + 2]) {
-                    const size_t max_len = std::min<size_t>(255, src_size - pos);
-                    int len = 3;
-                    while ((size_t)len + sizeof(uint64_t) <= max_len) {
-                        uint64_t a = 0;
-                        uint64_t b = 0;
-                        std::memcpy(&a, s + ref_pos + (size_t)len, sizeof(uint64_t));
-                        std::memcpy(&b, s + pos + (size_t)len, sizeof(uint64_t));
-                        if (a != b) break;
-                        len += (int)sizeof(uint64_t);
-                    }
-                    while ((size_t)len < max_len &&
-                           s[ref_pos + (size_t)len] == s[pos + (size_t)len]) {
-                        len++;
-                    }
+                    const int len = match_len_from(ref_pos, pos);
                     const bool acceptable = (len >= 4) || (len == 3 && dist <= min_dist_len3);
                     if (acceptable && (len > best_len || (len == best_len && dist < best_dist))) {
                         best_len = len;
@@ -161,10 +176,13 @@ inline std::vector<uint8_t> compress_global_chain_lz(
 
         if (best_len > 0) {
             flush_literals(lit_start, pos);
-            out.push_back(1); // MATCH
-            out.push_back((uint8_t)best_len);
-            out.push_back((uint8_t)(best_dist & 0xFF));
-            out.push_back((uint8_t)((best_dist >> 8) & 0xFF));
+            const size_t out_pos = out.size();
+            out.resize(out_pos + 4);
+            uint8_t* dst = out.data() + out_pos;
+            dst[0] = 1; // MATCH
+            dst[1] = (uint8_t)best_len;
+            dst[2] = (uint8_t)(best_dist & 0xFF);
+            dst[3] = (uint8_t)((best_dist >> 8) & 0xFF);
 
             for (int i = 1; i < best_len && pos + (size_t)i + 2 < src_size; i++) {
                 size_t p = pos + (size_t)i;

@@ -750,10 +750,6 @@ public:
             ).count();
 
         if (plane_decode_tokens.acquired()) {
-            auto fy = std::async(std::launch::async, [&]() {
-                thread_budget::ScopedParallelRegion guard;
-                return run_plane_task(t0->offset, t0->size);
-            });
             auto fco = std::async(std::launch::async, [&]() {
                 thread_budget::ScopedParallelRegion guard;
                 return run_plane_task(t1->offset, t1->size);
@@ -763,8 +759,13 @@ public:
                 return run_plane_task(t2->offset, t2->size);
             });
 
+            PlaneDecodeTaskResult y_res;
+            {
+                thread_budget::ScopedParallelRegion guard;
+                y_res = run_plane_task(t0->offset, t0->size);
+            }
+
             const auto t_plane_wait0 = Clock::now();
-            auto y_res = fy.get();
             auto co_res = fco.get();
             auto cg_res = fcg.get();
             const auto t_plane_wait1 = Clock::now();
@@ -993,16 +994,13 @@ public:
         FlatInterleavedDecoder dec(std::span<const uint8_t>(data + 12 + cdf_size, rans_size));
         std::vector<uint8_t> result(count);
         if (count > 0) {
+            uint8_t* dst = result.data();
             constexpr uint32_t kUseLutMinCount = 128;
             if (count >= kUseLutMinCount) {
                 auto tbl = CDFBuilder::build_simd_table(cdf);
-                for (uint32_t i = 0; i < count; i++) {
-                    result[i] = (uint8_t)dec.decode_symbol_lut(*tbl);
-                }
+                dec.decode_symbols_lut(dst, count, *tbl);
             } else {
-                for (uint32_t i = 0; i < count; i++) {
-                    result[i] = (uint8_t)dec.decode_symbol(cdf);
-                }
+                dec.decode_symbols(dst, count, cdf);
             }
         }
         if (expected_count > 0 && result.size() != expected_count) {
@@ -1032,9 +1030,7 @@ public:
         std::vector<uint8_t> result(count);
         if (count > 0) {
             const SIMDDecodeTable& tbl = get_mode5_shared_lz_simd_table();
-            for (uint32_t i = 0; i < count; i++) {
-                result[i] = (uint8_t)dec.decode_symbol_lut(tbl);
-            }
+            dec.decode_symbols_lut(result.data(), count, tbl);
         }
         if (expected_count > 0 && result.size() != expected_count) {
             result.resize(expected_count, 0);
