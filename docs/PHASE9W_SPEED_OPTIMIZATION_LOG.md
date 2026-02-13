@@ -1078,3 +1078,38 @@ Interpretation:
   - `hkn_dec_filter_lo_decode_rans_ms`: `5.180 -> 4.896` (`-5.48%`)
 - The gain is consistent with reducing per-stream CDF/LUT setup overhead in the
   `filter_lo` hot path.
+
+## 2026-02-13: Caller-Y Decode Path Stats Isolation Fix (Experimental)
+
+### Objective
+- Keep `HKN_DECODE_PLANE_CALLER_Y=1` experimentation debuggable by avoiding
+  main-thread stats reset during caller-executed Y-plane decode.
+
+### Implementation
+- `src/codec/decode.h`
+  - `run_plane_task(...)` now accepts `reset_task_stats`:
+    - async worker tasks (`Co`, `Cg`) use `true` (reset + capture local stats).
+    - caller-thread Y task uses `false` (no reset of top-level stats object).
+  - In caller-Y path, removed `accumulate_from(y_res.stats)` because Y-plane stats are
+    already accumulated on the main thread.
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `cd build && ctest --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- baseline:
+  - `bench_results/tmp_filterlo_cdf_fastpath_20260213_runs5.csv`
+- caller-Y checks:
+  - `bench_results/tmp_decode_plane_caller_y_recheck_20260213_runs5.csv`
+  - `bench_results/tmp_decode_plane_caller_y_fixstats_20260213_runs5.csv`
+
+### Result Summary
+- Compression invariants preserved:
+  - `median PNG/HKN = 0.2610` unchanged
+  - `total HKN bytes = 2,977,544` unchanged
+- Debug counters are now coherent under caller-Y mode (scheduler/deep counters no
+  longer get reset by the Y task running in caller thread).
+- Caller-Y remains **opt-in / default-off**:
+  - wall-clock gain was not stable enough to promote default behavior in this pass.

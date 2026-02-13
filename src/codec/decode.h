@@ -789,16 +789,18 @@ public:
             uint64_t elapsed_ns = 0;
         };
 
-        auto run_plane_task = [&](size_t offset, size_t size) -> PlaneDecodeTaskResult {
+        auto run_plane_task = [&](size_t offset, size_t size, bool reset_task_stats) -> PlaneDecodeTaskResult {
             using TaskClock = std::chrono::steady_clock;
-            GrayscaleDecoder::reset_lossless_decode_debug_stats();
+            if (reset_task_stats) GrayscaleDecoder::reset_lossless_decode_debug_stats();
             const auto t0p = TaskClock::now();
             auto plane = GrayscaleDecoder::decode_plane_lossless(&hkn[offset], size, w, h, hdr.version);
             const auto t1p = TaskClock::now();
 
             PlaneDecodeTaskResult out;
             out.plane = std::move(plane);
-            out.stats = GrayscaleDecoder::get_lossless_decode_debug_stats();
+            if (reset_task_stats) {
+                out.stats = GrayscaleDecoder::get_lossless_decode_debug_stats();
+            }
             out.elapsed_ns =
                 (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t1p - t0p).count();
             return out;
@@ -825,17 +827,17 @@ public:
             if (decode_use_plane_caller_y_path()) {
                 auto fco = std::async(std::launch::async, [&]() {
                     thread_budget::ScopedParallelRegion guard;
-                    return run_plane_task(t1->offset, t1->size);
+                    return run_plane_task(t1->offset, t1->size, true);
                 });
                 auto fcg = std::async(std::launch::async, [&]() {
                     thread_budget::ScopedParallelRegion guard;
-                    return run_plane_task(t2->offset, t2->size);
+                    return run_plane_task(t2->offset, t2->size, true);
                 });
 
                 PlaneDecodeTaskResult y_res;
                 {
                     thread_budget::ScopedParallelRegion guard;
-                    y_res = run_plane_task(t0->offset, t0->size);
+                    y_res = run_plane_task(t0->offset, t0->size, false);
                 }
 
                 const auto t_plane_wait0 = Clock::now();
@@ -851,7 +853,6 @@ public:
                 co_plane = std::move(co_res.plane);
                 cg_plane = std::move(cg_res.plane);
 
-                tl_lossless_decode_debug_stats_.accumulate_from(y_res.stats);
                 tl_lossless_decode_debug_stats_.accumulate_from(co_res.stats);
                 tl_lossless_decode_debug_stats_.accumulate_from(cg_res.stats);
 
@@ -861,15 +862,15 @@ public:
             } else {
                 auto fy = std::async(std::launch::async, [&]() {
                     thread_budget::ScopedParallelRegion guard;
-                    return run_plane_task(t0->offset, t0->size);
+                    return run_plane_task(t0->offset, t0->size, true);
                 });
                 auto fco = std::async(std::launch::async, [&]() {
                     thread_budget::ScopedParallelRegion guard;
-                    return run_plane_task(t1->offset, t1->size);
+                    return run_plane_task(t1->offset, t1->size, true);
                 });
                 auto fcg = std::async(std::launch::async, [&]() {
                     thread_budget::ScopedParallelRegion guard;
-                    return run_plane_task(t2->offset, t2->size);
+                    return run_plane_task(t2->offset, t2->size, true);
                 });
 
                 const auto t_plane_wait0 = Clock::now();
