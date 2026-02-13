@@ -140,11 +140,12 @@ Rationale:
 - strategy `2` is implemented with guarded fallback (`memcap`/alloc/unreachable)
   and conditional DP activation gate.
 - gate-parameter sweep completed; tuned defaults are:
-  - `opt_max_matches=1`
-  - `opt_lit_max=32`
-  - `opt_min_gain_bytes=1024`
-- fixed6 size improved vs max-lane `lazy1` baseline (`-954 B` total),
-  while encode wall is still slower (`230.732 -> 338.453 ms`).
+  - `opt_probe_ratio_max_x1000=80`
+  - `opt_min_gain_bytes=512`
+  - `opt_max_matches=4`
+  - `opt_lit_max=128`
+- fixed6 size improved vs max-lane `lazy1` baseline (`-1,795 B` total),
+  while encode wall is still slower (`230.732 -> 339.049 ms`).
 - keep opt-in only (`HKN_MAX_LZ_MATCH_STRATEGY=2`), default stays `1`.
 - details: `docs/phase9w/logs/2026-02-14.md`
 

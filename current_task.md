@@ -1216,11 +1216,12 @@ ctest --test-dir build --output-on-failure
    - 上位再計測（runs=3）:
      - `bench_results/phase9w_optparse_gate_top_c46_runs3_20260214.csv` ほか5本
    - 反映したstrategy2既定値:
-     - `opt_max_matches=1`
-     - `opt_lit_max=32`
-     - `opt_min_gain_bytes=1024`
+     - `opt_probe_ratio_max_x1000=80`
+     - `opt_min_gain_bytes=512`
+     - `opt_max_matches=4`
+     - `opt_lit_max=128`
    - 最終確認:
-     - `bench_results/phase9w_max_lane_match_strategy2_dp_gate_tuned_default_20260214_runs3.csv`
+     - `bench_results/phase9w_optparse_report_check_r80_g512_m4_l128_runs3.csv`
      - vs strategy1 baseline:
-       - size: `-954 B`
-       - Enc(ms): `+107.721 ms`
+       - size: `-1,795 B`
+       - Enc(ms): `+108.317 ms`

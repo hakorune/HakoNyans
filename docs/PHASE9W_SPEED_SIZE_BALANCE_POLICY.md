@@ -34,10 +34,10 @@ Lossless encode now has three explicit lanes for speed/size trade-off experiment
    - strategy2 (`optparse_dp`) gate knobs:
      - `HKN_LZ_OPTPARSE_PROBE_SRC_MAX` (default `2097152`)
      - `HKN_LZ_OPTPARSE_PROBE_RATIO_MIN` (default `20` permille)
-     - `HKN_LZ_OPTPARSE_PROBE_RATIO_MAX` (default `120` permille)
-     - `HKN_LZ_OPTPARSE_MIN_GAIN_BYTES` (default `1024`)
-     - `HKN_LZ_OPTPARSE_MAX_MATCHES` (default `1`)
-     - `HKN_LZ_OPTPARSE_LIT_MAX` (default `32`)
+     - `HKN_LZ_OPTPARSE_PROBE_RATIO_MAX` (default `80` permille)
+     - `HKN_LZ_OPTPARSE_MIN_GAIN_BYTES` (default `512`)
+     - `HKN_LZ_OPTPARSE_MAX_MATCHES` (default `4`)
+     - `HKN_LZ_OPTPARSE_LIT_MAX` (default `128`)
 
 Rules:
 - `balanced` is the compatibility anchor and baseline for day-to-day promotion.

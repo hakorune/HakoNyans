@@ -31,13 +31,13 @@ struct GlobalChainLzParams {
     int bias_permille = 990;
     int nice_length = 255;
     int match_strategy = 0; // 0=greedy, 1=lazy1, 2=optparse_dp (max lane)
-    int opt_max_matches = 1;
-    int opt_lit_max = 32;
+    int opt_max_matches = 4;
+    int opt_lit_max = 128;
     int opt_memcap_mb = 64;
     int opt_probe_src_max_bytes = 2 * 1024 * 1024;
     int opt_probe_ratio_min_x1000 = 20;
-    int opt_probe_ratio_max_x1000 = 120;
-    int opt_min_gain_bytes = 1024;
+    int opt_probe_ratio_max_x1000 = 80;
+    int opt_min_gain_bytes = 512;
 };
 
 struct GlobalChainLzCounters {
@@ -89,8 +89,8 @@ inline const GlobalChainLzParams& global_chain_lz_runtime_params() {
         t.bias_permille = parse_lz_env_int("HKN_LZ_BIAS_PERMILLE", 990, 900, 1100);
         t.nice_length = parse_lz_env_int("HKN_LZ_NICE_LENGTH", 255, 4, 255);
         t.match_strategy = parse_lz_env_int("HKN_LZ_MATCH_STRATEGY", 0, 0, 2);
-        t.opt_max_matches = parse_lz_env_int("HKN_LZ_OPTPARSE_MAX_MATCHES", 1, 1, 32);
-        t.opt_lit_max = parse_lz_env_int("HKN_LZ_OPTPARSE_LIT_MAX", 32, 1, 255);
+        t.opt_max_matches = parse_lz_env_int("HKN_LZ_OPTPARSE_MAX_MATCHES", 4, 1, 32);
+        t.opt_lit_max = parse_lz_env_int("HKN_LZ_OPTPARSE_LIT_MAX", 128, 1, 255);
         t.opt_memcap_mb = parse_lz_env_int("HKN_LZ_OPTPARSE_MEMCAP_MB", 64, 4, 1024);
         t.opt_probe_src_max_bytes = parse_lz_env_int(
             "HKN_LZ_OPTPARSE_PROBE_SRC_MAX", 2 * 1024 * 1024, 65536, 64 * 1024 * 1024
@@ -99,10 +99,10 @@ inline const GlobalChainLzParams& global_chain_lz_runtime_params() {
             "HKN_LZ_OPTPARSE_PROBE_RATIO_MIN", 20, 0, 1000
         );
         t.opt_probe_ratio_max_x1000 = parse_lz_env_int(
-            "HKN_LZ_OPTPARSE_PROBE_RATIO_MAX", 120, 0, 1000
+            "HKN_LZ_OPTPARSE_PROBE_RATIO_MAX", 80, 0, 1000
         );
         t.opt_min_gain_bytes = parse_lz_env_int(
-            "HKN_LZ_OPTPARSE_MIN_GAIN_BYTES", 1024, 0, 1 << 20
+            "HKN_LZ_OPTPARSE_MIN_GAIN_BYTES", 512, 0, 1 << 20
         );
         return t;
     }();
