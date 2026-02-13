@@ -4,6 +4,8 @@
 #include "lossless_mode_debug_stats.h"
 #include "lossless_screen_route.h"
 #include "../platform/thread_budget.h"
+#include "../platform/thread_pool.h"
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -14,6 +16,11 @@
 namespace hakonyans::lossless_route_competition {
 
 enum class ExtraRoute : uint8_t { LEGACY = 0, SCREEN = 1, NATURAL = 2 };
+
+inline ThreadPool& route_competition_worker_pool() {
+    static ThreadPool pool((int)std::max(1u, thread_budget::max_threads(8)));
+    return pool;
+}
 
 template <typename AnalyzeScreenPreflightFn,
           typename EncodeScreenTileFn,
@@ -94,6 +101,11 @@ inline std::vector<uint8_t> choose_best_tile(
         screen_prefilter_valid && (pre_metrics.unique_sample >= kNaturalCompeteUniqueMin);
     const bool allow_natural_route = natural_like && natural_compete_prefilter;
     const bool try_natural_route = large_image && allow_natural_route;
+    if (!allow_screen_route && !try_natural_route) {
+        return best_tile;
+    }
+
+    ThreadPool& compete_pool = route_competition_worker_pool();
     thread_budget::ScopedThreadTokens compete_tokens;
     if (allow_screen_route && try_natural_route) {
         compete_tokens = thread_budget::ScopedThreadTokens::try_acquire_exact(2);
@@ -143,11 +155,11 @@ inline std::vector<uint8_t> choose_best_tile(
     ScreenCandidateResult screen_res;
     NaturalCandidateResult natural_res;
     if (can_parallel_compete) {
-        auto f_screen = std::async(std::launch::async, [&]() {
+        auto f_screen = compete_pool.submit([&]() {
             thread_budget::ScopedParallelRegion guard;
             return run_screen_candidate();
         });
-        auto f_natural = std::async(std::launch::async, [&]() {
+        auto f_natural = compete_pool.submit([&]() {
             thread_budget::ScopedParallelRegion guard;
             return run_natural_candidate();
         });

@@ -7,6 +7,7 @@
 #include "lossless_tile4_codec.h"
 #include "palette.h"
 #include "../platform/thread_budget.h"
+#include "../platform/thread_pool.h"
 #include <algorithm>
 #include <array>
 #include <cstdlib>
@@ -71,6 +72,11 @@ inline ClassificationResult classify_blocks(
     int profile_id,
     LosslessModeDebugStats* stats
 ) {
+    ThreadPool& eval_pool = []() -> ThreadPool& {
+        static ThreadPool pool((int)std::max(1u, thread_budget::max_threads(8)));
+        return pool;
+    }();
+
     ClassificationResult out;
 
     const int nx = (int)(pad_w / 8);
@@ -114,26 +120,37 @@ inline ClassificationResult classify_blocks(
 
         int64_t sum = 0;
         int64_t sum_sq = 0;
+        int16_t unique_vals[9];
+        int unique_cnt = 0;
+        bool has_prev = false;
+        int16_t prev_v = 0;
         for (int y = 0; y < 8; y++) {
+            const int16_t* src_row =
+                &padded[(size_t)(cur_y + y) * (size_t)pad_w + (size_t)cur_x];
+            const int row_base = y * 8;
             for (int x = 0; x < 8; x++) {
-                int idx = y * 8 + x;
-                int16_t v = padded[(size_t)(cur_y + y) * (size_t)pad_w + (size_t)(cur_x + x)];
+                const int idx = row_base + x;
+                const int16_t v = src_row[x];
                 ev.block[(size_t)idx] = v;
                 sum += v;
                 sum_sq += (int64_t)v * (int64_t)v;
-                if (idx > 0 && ev.block[(size_t)idx - 1] != v) ev.transitions++;
-            }
-        }
+                if (has_prev && prev_v != v) ev.transitions++;
+                prev_v = v;
+                has_prev = true;
 
-        {
-            int16_t vals[64];
-            std::memcpy(vals, ev.block.data(), sizeof(vals));
-            std::sort(vals, vals + 64);
-            ev.unique_cnt = 1;
-            for (int k = 1; k < 64; k++) {
-                if (vals[k] != vals[k - 1]) ev.unique_cnt++;
+                bool found = false;
+                for (int u = 0; u < unique_cnt; u++) {
+                    if (unique_vals[u] == v) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found && unique_cnt < 9) {
+                    unique_vals[unique_cnt++] = v;
+                }
             }
         }
+        ev.unique_cnt = unique_cnt;
 
         ev.variance_proxy = sum_sq - ((sum * sum) / 64);
 
@@ -309,7 +326,7 @@ inline ClassificationResult classify_blocks(
             int begin = t * chunk;
             int end = std::min(nb, begin + chunk);
             if (begin >= end) continue;
-            futs.push_back(std::async(std::launch::async, [&, begin, end]() {
+            futs.push_back(eval_pool.submit([&, begin, end]() {
                 thread_budget::ScopedParallelRegion guard;
                 for (int j = begin; j < end; j++) {
                     evals[(size_t)j] = evaluate_block(j);

@@ -1178,3 +1178,70 @@ Interpretation:
 - Mode3/4 contiguous writes reduced allocation/write overhead in `filter_lo`.
 - Added batch indicators now expose throughput/cpu-utilization trends directly in
   both CSV and terminal output.
+
+## 2026-02-13: Encode Floor Step (BlockClass / LoStream / Route Low-Effect Skip)
+
+### Objective
+- Follow next encode-floor priority:
+  1. `plane_block_class` loop cost reduction
+  2. `plane_lo_stream` mode2/LZ preprocess overhead reduction
+  3. `plane_route_comp` low-effect path skip / scheduler overhead reduction
+
+### Implementation
+- `src/codec/lossless_block_classifier.h`
+  - Added classifier worker pool (`ThreadPool`) and replaced eval-chunk
+    `std::async` launches with pool `submit(...)`.
+  - Reworked block scan:
+    - removed per-block `sort(64)` for unique counting.
+    - switched to bounded unique tracking (`<=9`) during block load.
+    - kept decision-equivalent behavior for all `unique<=8` cases.
+- `src/codec/lossless_filter_lo_codec.h`
+  - Added lo-stream worker pool and replaced base/ctx parallel `std::async`
+    launches with pool `submit(...)`.
+  - Mode3 build:
+    - precomputed DCT-row lengths per 8-row block row.
+    - `preds.reserve(active_rows)`, `resids.resize(...)` + indexed writes.
+    - added predictor-cost early break when current cost already exceeds best.
+  - Mode4 build:
+    - pre-reserved ctx buffers from row-lens histogram.
+    - switched ctx fill to contiguous `resize+memcpy`.
+    - added safe early-abort in sequential ctx encode when gate/best cannot be met.
+- `src/codec/lossless_route_competition.h`
+  - Added route-competition worker pool for screen/natural parallel section.
+  - Added early return when both routes are prefiltered out
+    (`!allow_screen_route && !try_natural_route`).
+- `src/codec/encode.h`
+  - conservative chroma route-policy path now reuses precomputed prefilter metrics
+    inside `choose_best_tile(...)` lambda to avoid duplicate prefilter work.
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `cd build && ctest --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- baseline:
+  - `bench_results/tmp_step_next_pool_batch_mode34_20260213_runs5_rerun.csv`
+- candidates:
+  - `bench_results/tmp_step_encode_floor123_20260213_runs5.csv`
+  - `bench_results/tmp_step_encode_floor123_20260213_runs5_rerun.csv`
+  - `bench_results/tmp_step_encode_floor123_20260213_runs5_rerun2.csv`
+
+### Result Summary
+- Compression invariants preserved in all runs:
+  - `median PNG/HKN = 0.2610` unchanged
+  - `total HKN bytes = 2,977,544` unchanged
+- Stable stage-level encode improvements (rerun2 vs baseline):
+  - `hkn_enc_plane_block_classify_ms`: `64.822 -> 54.448` (`-16.0%`)
+  - `hkn_enc_plane_lo_stream_ms`: `58.615 -> 55.623` (`-5.1%`)
+  - `hkn_enc_plane_route_ms`: `43.360 -> 41.755` (`-3.7%`)
+  - `hkn_enc_plane_route_natural_candidate_ms`: `32.395 -> 31.781` (`-1.9%`)
+- Decode side was non-regressive and slightly better in rerun2:
+  - `hkn_dec_ms`: `6.186 -> 6.086` (`-1.6%`)
+  - `hkn_dec_plane_filter_lo_ms`: `4.317 -> 4.117` (`-4.6%`)
+
+Interpretation:
+- Encode wall-clock remained host-noise sensitive across reruns, but hotspot stage
+  counters improved consistently in all three runs.
+- The implemented changes are low-risk and maintain size behavior while reducing
+  persistent encode hotspot costs.

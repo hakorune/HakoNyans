@@ -1095,8 +1095,12 @@ public:
                 (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t_pack1 - t_plane_total0).count();
             return tile_data;
         }
+        bool route_prefilter_cached = false;
+        ScreenPreflightMetrics route_prefilter_cache{};
         if (conservative_chroma_route_policy) {
             const auto m = analyze_screen_indexed_preflight(data, width, height);
+            route_prefilter_cached = true;
+            route_prefilter_cache = m;
             const bool allow_chroma_route =
                 (m.mean_abs_diff_x100 <= route_chroma_mad_max_x100()) &&
                 (m.avg_run_x100 >= route_chroma_avg_run_min_x100());
@@ -1116,7 +1120,8 @@ public:
             height,
             static_cast<int>(profile),
             &tl_lossless_mode_debug_stats_,
-            [](const int16_t* p, uint32_t w, uint32_t h) {
+            [route_prefilter_cached, route_prefilter_cache](const int16_t* p, uint32_t w, uint32_t h) {
+                if (route_prefilter_cached) return route_prefilter_cache;
                 return GrayscaleEncoder::analyze_screen_indexed_preflight(p, w, h);
             },
             [&padded, pad_w, pad_h](const int16_t*, uint32_t, uint32_t, ScreenBuildFailReason* fail_reason) {
