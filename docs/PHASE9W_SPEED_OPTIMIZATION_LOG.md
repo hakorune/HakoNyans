@@ -1036,3 +1036,45 @@ Interpretation:
 - These changes do not alter bitstream format or compression decisions.
 - Batch-thread knobs are operational controls for throughput tuning under outer-worker
   parallelism and are intentionally opt-in.
+
+## 2026-02-13: `filter_lo` CDF Fast Path + LUT Table Reuse
+
+### Objective
+- Reduce `plane_filter_lo` rANS decode overhead in `decode_byte_stream(...)` without
+  changing format, compression ratio, or decode output.
+
+### Implementation
+- `src/codec/decode.h`
+  - Added `try_build_cdf_from_serialized_freq(...)`:
+    - directly maps serialized frequency table to `CDFTable` when valid
+      (`sum==RANS_TOTAL`, all `freq>0`, alphabet `<=256`).
+    - keeps existing `CDFBuilder().build_from_freq(...)` path as fallback.
+  - Added `build_simd_table_inplace(...)`:
+    - fills a thread-local `SIMDDecodeTable` in place.
+    - removes per-call LUT object allocation for the `count>=128` decode path.
+  - Updated `decode_byte_stream(...)`:
+    - uses direct CDF fast path when possible.
+    - uses thread-local LUT table for `decode_symbols_lut(...)` /
+      `decode_symbol_lut(...)`.
+    - calls `CDFBuilder::cleanup(cdf)` only when dynamic fallback builder is used.
+
+### Validation
+- Build: `cmake --build build -j`
+- Tests: `cd build && ctest --output-on-failure`
+- Result: `17/17 PASS`
+
+### Benchmark Artifacts
+- baseline:
+  - `bench_results/tmp_isolate_default_step12_20260213_runs5.csv`
+- candidate:
+  - `bench_results/tmp_filterlo_cdf_fastpath_20260213_runs5.csv`
+
+### Result Summary
+- Compression invariants preserved:
+  - `median PNG/HKN = 0.2610` unchanged
+  - `total HKN bytes = 2,977,544` unchanged
+- Stage-level decode movement (baseline -> candidate):
+  - `hkn_dec_ms`: `8.626 -> 8.010` (`-7.15%`)
+  - `hkn_dec_filter_lo_decode_rans_ms`: `5.180 -> 4.896` (`-5.48%`)
+- The gain is consistent with reducing per-stream CDF/LUT setup overhead in the
+  `filter_lo` hot path.

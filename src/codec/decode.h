@@ -65,6 +65,56 @@ private:
         return enabled;
     }
 
+    static bool try_build_cdf_from_serialized_freq(
+        const uint8_t* cdf_data,
+        uint32_t cdf_size,
+        CDFTable& out
+    ) {
+        if (!cdf_data || cdf_size == 0 || (cdf_size & 3u) != 0u) return false;
+        const int alpha = (int)(cdf_size / 4u);
+        if (alpha <= 0 || alpha > 256) return false;
+
+        thread_local std::vector<uint32_t> tl_freq;
+        thread_local std::vector<uint32_t> tl_cdf;
+        if ((int)tl_freq.size() < alpha) tl_freq.resize((size_t)alpha);
+        if ((int)tl_cdf.size() < alpha + 1) tl_cdf.resize((size_t)alpha + 1);
+
+        std::memcpy(tl_freq.data(), cdf_data, cdf_size);
+        uint32_t sum = 0;
+        tl_cdf[0] = 0;
+        for (int i = 0; i < alpha; i++) {
+            const uint32_t f = tl_freq[(size_t)i];
+            if (f == 0) return false;
+            sum += f;
+            tl_cdf[(size_t)i + 1] = sum;
+        }
+        if (sum != RANS_TOTAL) return false;
+
+        out.total = RANS_TOTAL;
+        out.cdf = tl_cdf.data();
+        out.freq = tl_freq.data();
+        out.alphabet_size = alpha;
+        return true;
+    }
+
+    static void build_simd_table_inplace(const CDFTable& cdf, SIMDDecodeTable& table) {
+        table.alphabet_size = cdf.alphabet_size;
+        std::memset(table.freq, 0, sizeof(table.freq));
+        std::memset(table.bias, 0, sizeof(table.bias));
+
+        for (int i = 0; i < cdf.alphabet_size; i++) {
+            table.freq[i] = cdf.freq[i];
+            table.bias[i] = cdf.cdf[i];
+        }
+        for (int sym = 0; sym < cdf.alphabet_size; sym++) {
+            const uint32_t lo = cdf.cdf[sym];
+            const uint32_t hi = cdf.cdf[sym + 1];
+            for (uint32_t slot = lo; slot < hi; slot++) {
+                table.slot_to_symbol[slot] = (uint32_t)sym;
+            }
+        }
+    }
+
 public:
     static std::vector<uint8_t> pad_image(const uint8_t* p, uint32_t w, uint32_t h, uint32_t pw, uint32_t ph) {
         std::vector<uint8_t> out(pw * ph); for (uint32_t y = 0; y < ph; y++) for (uint32_t x = 0; x < pw; x++) out[y * pw + x] = p[std::min(y, h-1) * w + std::min(x, w-1)]; return out;
@@ -1037,9 +1087,14 @@ public:
         if ((cdf_size & 3u) != 0u) return std::vector<uint8_t>(expected_count, 0);
         if ((size_t)cdf_size > size - 12) return std::vector<uint8_t>(expected_count, 0);
 
-        std::vector<uint32_t> freq(cdf_size / 4);
-        std::memcpy(freq.data(), data + 4, cdf_size);
-        CDFTable cdf = CDFBuilder().build_from_freq(freq);
+        CDFTable cdf{};
+        bool cdf_owned = false;
+        if (!try_build_cdf_from_serialized_freq(data + 4, cdf_size, cdf)) {
+            std::vector<uint32_t> freq(cdf_size / 4u);
+            std::memcpy(freq.data(), data + 4, cdf_size);
+            cdf = CDFBuilder().build_from_freq(freq);
+            cdf_owned = true;
+        }
 
         uint32_t count;
         std::memcpy(&count, data + 4 + cdf_size, 4);
@@ -1057,12 +1112,13 @@ public:
             constexpr uint32_t kUseLutMinCount = 128;
             const bool use_bulk = decode_use_bulk_rans();
             if (count >= kUseLutMinCount) {
-                auto tbl = CDFBuilder::build_simd_table(cdf);
+                thread_local SIMDDecodeTable tbl;
+                build_simd_table_inplace(cdf, tbl);
                 if (use_bulk) {
-                    dec.decode_symbols_lut(dst, count, *tbl);
+                    dec.decode_symbols_lut(dst, count, tbl);
                 } else {
                     for (uint32_t i = 0; i < count; i++) {
-                        dst[i] = (uint8_t)dec.decode_symbol_lut(*tbl);
+                        dst[i] = (uint8_t)dec.decode_symbol_lut(tbl);
                     }
                 }
             } else {
@@ -1075,7 +1131,7 @@ public:
                 }
             }
         }
-        CDFBuilder::cleanup(cdf);
+        if (cdf_owned) CDFBuilder::cleanup(cdf);
         if (expected_count > 0 && result.size() != expected_count) {
             result.resize(expected_count, 0);
         }
