@@ -5,9 +5,11 @@
 #include "../platform/thread_budget.h"
 #include "../platform/thread_pool.h"
 #include <algorithm>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <future>
 #include <limits>
 #include <chrono>
@@ -18,6 +20,37 @@ namespace hakonyans::lossless_filter_lo_codec {
 inline ThreadPool& lo_codec_worker_pool() {
     static ThreadPool pool((int)std::max(1u, thread_budget::max_threads(8)));
     return pool;
+}
+
+// Mode5 runtime parameters (env-configurable)
+struct Mode5RuntimeParams {
+    int gain_permille;
+    int min_raw_bytes;
+    int min_lz_bytes;
+    int vs_lz_permille;
+};
+
+inline int parse_env_int(const char* key, int fallback, int min_v, int max_v) {
+    const char* raw = std::getenv(key);
+    if (!raw || raw[0] == '\0') return fallback;
+    char* end = nullptr;
+    errno = 0;
+    long v = std::strtol(raw, &end, 10);
+    if (errno != 0 || end == raw || *end != '\0') return fallback;
+    if (v < (long)min_v || v > (long)max_v) return fallback;
+    return (int)v;
+}
+
+inline const Mode5RuntimeParams& get_mode5_runtime_params() {
+    static const Mode5RuntimeParams params = []() {
+        Mode5RuntimeParams p;
+        p.gain_permille = parse_env_int("HKN_FILTER_LO_MODE5_GAIN_PERMILLE", 995, 900, 1100);
+        p.min_raw_bytes = parse_env_int("HKN_FILTER_LO_MODE5_MIN_RAW_BYTES", 2048, 0, 8192);
+        p.min_lz_bytes = parse_env_int("HKN_FILTER_LO_MODE5_MIN_LZ_BYTES", 1024, 0, 4096);
+        p.vs_lz_permille = parse_env_int("HKN_FILTER_LO_MODE5_VS_LZ_PERMILLE", 990, 900, 1100);
+        return p;
+    }();
+    return params;
 }
 
 // profile_code: 0=UI, 1=ANIME, 2=PHOTO
@@ -71,10 +104,10 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
     if (stats) stats->filter_lo_raw_bytes_sum += lo_bytes.size();
 
     constexpr int kFilterLoModeWrapperGainPermilleDefault = 990;
-    constexpr int kFilterLoMode5GainPermille = 995;
-    constexpr int kFilterLoMode5MinRawBytes = 2048;
-    constexpr int kFilterLoMode5MinLZBytes = 1024;
     constexpr size_t kByteStreamMinEncodedBytes = 4 + (256 * 4) + 4 + 4; // cdf_size+cdf+count+rans_size
+
+    // Mode5 runtime parameters (env-configurable)
+    const auto& mode5_params = get_mode5_runtime_params();
 
     std::vector<uint8_t> delta_bytes(lo_bytes.size());
     delta_bytes[0] = lo_bytes[0];
@@ -99,7 +132,7 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
 
     std::vector<uint8_t> lo_lz_rans;
     size_t lz_rans_wrapped = std::numeric_limits<size_t>::max();
-    if (lo_bytes.size() >= kFilterLoMode5MinRawBytes && lo_lz.size() >= kFilterLoMode5MinLZBytes) {
+    if (lo_bytes.size() >= (size_t)mode5_params.min_raw_bytes && lo_lz.size() >= (size_t)mode5_params.min_lz_bytes) {
         if (stats) stats->filter_lo_mode5_candidates++;
         const auto t_mode5_eval0 = Clock::now();
         lo_lz_rans = encode_byte_stream_shared_lz(lo_lz);
@@ -133,8 +166,8 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
     }
 
     if (lz_rans_wrapped != std::numeric_limits<size_t>::max()) {
-        bool better_than_legacy = (lz_rans_wrapped * 1000 <= legacy_size * kFilterLoMode5GainPermille);
-        bool better_than_lz = (lz_rans_wrapped * 100 <= lz_wrapped * 99);
+        bool better_than_legacy = (lz_rans_wrapped * 1000 <= legacy_size * (size_t)mode5_params.gain_permille);
+        bool better_than_lz = (lz_rans_wrapped * 1000 <= lz_wrapped * (size_t)mode5_params.vs_lz_permille);
 
         if (better_than_legacy && better_than_lz) {
             if (lz_rans_wrapped < best_size) {

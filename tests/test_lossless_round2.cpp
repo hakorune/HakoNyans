@@ -6,12 +6,15 @@
 #include <cmath>
 #include <algorithm>
 #include <array>
+#include <cstdlib>
+#include <string>
 
 #include "../src/codec/encode.h"
 #include "../src/codec/decode.h"
 #include "../src/codec/headers.h"
 #include "../src/codec/lossless_natural_decode.h"
 #include "../src/codec/lossless_filter.h"
+#include "../src/codec/lossless_filter_rows.h"
 
 using namespace hakonyans;
 
@@ -34,6 +37,35 @@ static int tests_passed = 0;
     do { \
         std::cout << "FAIL: " << msg << std::endl; \
     } while(0)
+
+class ScopedEnvVar {
+public:
+    ScopedEnvVar(const char* key, const char* value) : key_(key), had_old_(false) {
+        const char* old = std::getenv(key_.c_str());
+        if (old) {
+            had_old_ = true;
+            old_ = old;
+        }
+        if (value) {
+            setenv(key_.c_str(), value, 1);
+        } else {
+            unsetenv(key_.c_str());
+        }
+    }
+
+    ~ScopedEnvVar() {
+        if (had_old_) {
+            setenv(key_.c_str(), old_.c_str(), 1);
+        } else {
+            unsetenv(key_.c_str());
+        }
+    }
+
+private:
+    std::string key_;
+    std::string old_;
+    bool had_old_;
+};
 
 // ============================================================
 // Test 1: Grayscale Lossless Roundtrip (bit-exact)
@@ -248,6 +280,21 @@ static bool lossless_tile_has_filter_id(const std::vector<uint8_t>& tile_data, u
     return std::find(fids, fids + filter_ids_size, filter_id) != (fids + filter_ids_size);
 }
 
+static void build_filter_rows_all_dct(
+    const std::vector<int16_t>& padded,
+    uint32_t w,
+    uint32_t h,
+    int profile_id,
+    std::vector<uint8_t>& filter_ids,
+    std::vector<int16_t>& residuals
+) {
+    std::vector<FileHeader::BlockType> block_types((w / 8) * (h / 8), FileHeader::BlockType::DCT);
+    LosslessModeDebugStats stats{};
+    lossless_filter_rows::build_filter_rows_and_residuals(
+        padded, w, h, (int)(w / 8), block_types, profile_id, &stats, filter_ids, residuals
+    );
+}
+
 // ============================================================
 // Test 8: MED filter should be disabled outside photo-like mode
 // ============================================================
@@ -280,6 +327,105 @@ void test_med_filter_photo_gate() {
 
     if (found_med_case) { PASS(); }
     else { FAIL("No MED-selected seed found in search range"); }
+}
+
+void test_filter_rows_force_paeth_env() {
+    TEST("Filter rows force filter env (Paeth=4)");
+
+    const int W = 32, H = 32;
+    std::mt19937 rng(2468);
+    std::uniform_int_distribution<int> dist(-128, 127);
+    std::vector<int16_t> padded(W * H);
+    for (auto& v : padded) v = (int16_t)dist(rng);
+
+    std::vector<uint8_t> filter_ids;
+    std::vector<int16_t> residuals;
+    {
+        ScopedEnvVar force_filter("HKN_FILTER_ROWS_FORCE_FILTER_ID", "4");
+        ScopedEnvVar cost_model("HKN_FILTER_ROWS_COST_MODEL", "sad");
+        build_filter_rows_all_dct(
+            padded, W, H, lossless_mode_select::PROFILE_ANIME, filter_ids, residuals
+        );
+    }
+
+    if (filter_ids.size() != (size_t)H) {
+        FAIL("filter_ids size mismatch");
+        return;
+    }
+    if (residuals.size() != (size_t)W * (size_t)H) {
+        FAIL("residual size mismatch");
+        return;
+    }
+    for (uint8_t fid : filter_ids) {
+        if (fid != LosslessFilter::FILTER_PAETH) {
+            FAIL("force filter id did not apply to all rows");
+            return;
+        }
+    }
+    PASS();
+}
+
+void test_filter_rows_bits2_differs_from_sad() {
+    TEST("Filter rows bits2 cost differs from SAD");
+
+    const int W = 32, H = 32;
+    bool found_diff = false;
+
+    ScopedEnvVar force_filter("HKN_FILTER_ROWS_FORCE_FILTER_ID", "-1");
+    for (int seed = 1; seed <= 1024 && !found_diff; seed++) {
+        std::mt19937 rng(seed);
+        std::uniform_int_distribution<int> dist(-128, 127);
+        std::vector<int16_t> padded(W * H);
+        for (auto& v : padded) v = (int16_t)dist(rng);
+
+        std::vector<uint8_t> ids_sad, ids_bits2;
+        std::vector<int16_t> resid_sad, resid_bits2;
+        {
+            ScopedEnvVar cost_model("HKN_FILTER_ROWS_COST_MODEL", "sad");
+            build_filter_rows_all_dct(
+                padded, W, H, lossless_mode_select::PROFILE_PHOTO, ids_sad, resid_sad
+            );
+        }
+        {
+            ScopedEnvVar cost_model("HKN_FILTER_ROWS_COST_MODEL", "bits2");
+            build_filter_rows_all_dct(
+                padded, W, H, lossless_mode_select::PROFILE_PHOTO, ids_bits2, resid_bits2
+            );
+        }
+        if (ids_sad != ids_bits2) {
+            found_diff = true;
+        }
+    }
+
+    if (found_diff) {
+        PASS();
+    } else {
+        FAIL("No seed produced a SAD/BITS2 filter selection difference");
+    }
+}
+
+void test_filter_rows_bits2_env_roundtrip() {
+    TEST("Filter rows bits2 env roundtrip");
+
+    const int W = 64, H = 64;
+    std::mt19937 rng(13579);
+    std::uniform_int_distribution<int> dist(0, 255);
+    std::vector<uint8_t> pixels(W * H * 3);
+    for (auto& v : pixels) v = (uint8_t)dist(rng);
+
+    std::vector<uint8_t> hkn;
+    {
+        ScopedEnvVar force_filter("HKN_FILTER_ROWS_FORCE_FILTER_ID", "-1");
+        ScopedEnvVar cost_model("HKN_FILTER_ROWS_COST_MODEL", "bits2");
+        hkn = GrayscaleEncoder::encode_color_lossless(pixels.data(), W, H);
+    }
+    int dw = 0, dh = 0;
+    auto decoded = GrayscaleDecoder::decode_color(hkn, dw, dh);
+    if (dw != W || dh != H || decoded != pixels) {
+        FAIL("bits2 env roundtrip mismatch");
+        return;
+    }
+    PASS();
 }
 
 // ============================================================
@@ -1803,6 +1949,9 @@ int main() {
     test_flat_image();
     test_header_flags();
     test_med_filter_photo_gate();
+    test_filter_rows_force_paeth_env();
+    test_filter_rows_bits2_differs_from_sad();
+    test_filter_rows_bits2_env_roundtrip();
     test_tile_match4_roundtrip();
     test_copy_mode3_long_runs();
     test_copy_mode3_mixed_runs();
