@@ -1487,3 +1487,21 @@ ChatGPTとの議論で「いいところどり」方針が確定。
 記録:
 - `bench_results/phase9w_filter_lo_probe_sweep_max_runs1.csv`
 - `bench_results/phase9w_filter_lo_probe_sweep_top10_max_runs1.txt`
+
+---
+
+## 2026-02-14 ソース分割（filter_lo codec/decode）
+
+実装:
+- [x] `src/codec/lossless_filter_lo_codec.h` から mode6 / mode7+mode8 を分離
+  - `src/codec/lossless_filter_lo_codec_mode6.inc`
+  - `src/codec/lossless_filter_lo_codec_mode7_mode8.inc`
+- [x] `src/codec/lossless_filter_lo_decode.h` から mode6 / mode7 / mode8 を分離
+  - `src/codec/lossless_filter_lo_decode_mode6.inc`
+  - `src/codec/lossless_filter_lo_decode_mode7.inc`
+  - `src/codec/lossless_filter_lo_decode_mode8.inc`
+
+結果:
+- `lossless_filter_lo_codec.h`: 895行 → 605行
+- `lossless_filter_lo_decode.h`: 914行 → 348行
+- 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
