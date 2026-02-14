@@ -152,7 +152,11 @@ if(HAKONYANS_BUILD_BENCH)
   target_link_libraries(bench_lossless PRIVATE pthread)
 
   # PNG vs HKN Lossless comparison benchmark (Phase 8b)
-  add_executable(bench_png_compare bench/bench_png_compare.cpp)
+  add_executable(
+    bench_png_compare
+    bench/bench_png_compare.cpp
+    bench/bench_png_compare_runner.cpp
+  )
   target_compile_options(bench_png_compare PRIVATE -O3 -march=native)
   target_link_libraries(bench_png_compare PRIVATE ${PNG_LIBRARIES} pthread)
 
