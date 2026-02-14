@@ -1607,3 +1607,42 @@ ChatGPTとの議論で「いいところどり」方針が確定。
 - `bench_png_compare_runner.cpp`: 526行 → 37行
 - `bench_png_compare` build PASS
 - 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
+
+## 2026-02-14 ソース分割（lossless_round2_tests_basic）
+
+実装:
+- [x] `tests/lossless_round2_tests_basic.inc` を集約化
+- [x] 基本テスト群を分離: `tests/lossless_round2_tests_basic_core.inc`
+- [x] filter/copyテスト群を分離: `tests/lossless_round2_tests_basic_filters_and_copy.inc`
+- [x] filter_lo/TileLZテスト群を分離: `tests/lossless_round2_tests_basic_filter_lo.inc`
+
+結果:
+- `lossless_round2_tests_basic.inc`: 994行 → 3行
+- 全体 build PASS（`cmake --build build -j8`）
+- 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
+
+## 2026-02-14 ソース分割（lossless_round2_tests_routes）
+
+実装:
+- [x] `tests/lossless_round2_tests_routes.inc` を集約化
+- [x] screen/paletteテスト群を分離: `tests/lossless_round2_tests_routes_screen_palette.inc`
+- [x] mode4/profile前半テスト群を分離: `tests/lossless_round2_tests_routes_mode4_profile.inc`
+- [x] profile/naturalテスト群を分離: `tests/lossless_round2_tests_routes_profile_natural.inc`
+
+結果:
+- `lossless_round2_tests_routes.inc`: 886行 → 3行
+- 全体 build PASS（`cmake --build build -j8`）
+- 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
+
+## 2026-02-14 ソース分割（lossless_filter_lo_codec 追加）
+
+実装:
+- [x] `src/codec/lossless_filter_lo_codec.h` を集約化
+- [x] base評価処理を分離: `src/codec/lossless_filter_lo_codec_eval_base.inc`
+- [x] mode3/mode4評価処理を分離: `src/codec/lossless_filter_lo_codec_eval_modes34.inc`
+- [x] wrapper出力処理を分離: `src/codec/lossless_filter_lo_codec_emit_output.inc`
+
+結果:
+- `lossless_filter_lo_codec.h`: 605行 → 48行
+- 全体 build PASS（`cmake --build build -j8`）
+- 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
