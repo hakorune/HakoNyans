@@ -1505,3 +1505,14 @@ ChatGPTとの議論で「いいところどり」方針が確定。
 - `lossless_filter_lo_codec.h`: 895行 → 605行
 - `lossless_filter_lo_decode.h`: 914行 → 348行
 - 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
+
+## 2026-02-14 ソース分割（encode_lossless_impl）
+
+実装:
+- [x] `src/codec/encode_lossless_impl.h` を集約ヘッダー化
+- [x] API層を分離: `src/codec/encode_lossless_api_impl.h`
+- [x] ルート/補助ロジックを分離: `src/codec/encode_lossless_routes_impl.h`
+
+結果:
+- `encode_lossless_impl.h`: 913行 → 4行
+- 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
