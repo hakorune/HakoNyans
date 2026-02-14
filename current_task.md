@@ -1567,3 +1567,17 @@ ChatGPTとの議論で「いいところどり」方針が確定。
 - `bench_png_compare.cpp`: 688行 → 154行
 - `bench_png_compare` build PASS
 - 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
+
+## 2026-02-14 ソース分割（decode_api_impl）
+
+実装:
+- [x] `src/codec/decode_api_impl.h` を集約ヘッダー化
+- [x] color入口を分離: `src/codec/decode_api_color_impl.inc`
+- [x] plane補助を分離: `src/codec/decode_api_plane_helpers_impl.inc`
+- [x] plane本体を分離: `src/codec/decode_api_plane_impl.inc`
+- [x] token stream復号を分離: `src/codec/decode_api_token_stream_impl.inc`
+
+結果:
+- `decode_api_impl.h`: 615行 → 9行
+- 全体 build PASS（`cmake --build build -j8`）
+- 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
