@@ -1685,3 +1685,16 @@ ChatGPTとの議論で「いいところどり」方針が確定。
 - `bench_png_compare_common.h`: 529行 → 24行
 - `bench_png_compare` build PASS
 - 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
+
+## 2026-02-14 ソース分割（lossless_plane_decode_core）
+
+実装:
+- [x] `src/codec/lossless_plane_decode_core.h` を関数内セクション分割
+- [x] 導入/ラッパ判定を分離: `src/codec/lossless_plane_decode_core_stage1.inc`
+- [x] ストリーム復号/パラメータ展開を分離: `src/codec/lossless_plane_decode_core_stage2.inc`
+- [x] 再構成/クロップ処理を分離: `src/codec/lossless_plane_decode_core_stage3.inc`
+
+結果:
+- `lossless_plane_decode_core.h`: 595行 → 39行
+- 全体 build PASS（`cmake --build build -j8`）
+- 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
