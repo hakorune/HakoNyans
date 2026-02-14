@@ -117,6 +117,7 @@ inline const LzProbeRuntimeParams& get_lz_probe_runtime_params() {
 // Mode6: Parse TileLZ output into token streams for separate entropy coding.
 // TileLZ format: [tag=0][len][literals...] for LITRUN, [tag=1][len][dist_lo][dist_hi] for MATCH
 // Returns true if parsing succeeded and fills type[], len[], dist[], lit[] streams.
+// NOTE: This is the v0x0015 legacy format. For v0x0016 compact format, use parse_tilelz_to_tokens_compact.
 inline bool parse_tilelz_to_tokens(
     const std::vector<uint8_t>& lz_bytes,
     std::vector<uint8_t>& type_stream,
@@ -166,6 +167,70 @@ inline bool parse_tilelz_to_tokens(
             dist_lo_stream.push_back(dist_lo);
             dist_hi_stream.push_back(dist_hi);
             token_count_out++;
+        } else {
+            // Unknown tag
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Mode6 Compact (v0x0016): Parse TileLZ output into token streams.
+// DIST is only stored for MATCH tokens (not LITRUN).
+// Returns true if parsing succeeded.
+// match_count_out: number of MATCH tokens (dist stream size)
+inline bool parse_tilelz_to_tokens_compact(
+    const std::vector<uint8_t>& lz_bytes,
+    std::vector<uint8_t>& type_stream,
+    std::vector<uint8_t>& len_stream,
+    std::vector<uint8_t>& dist_lo_stream,
+    std::vector<uint8_t>& dist_hi_stream,
+    std::vector<uint8_t>& lit_stream,
+    uint32_t& token_count_out,
+    uint32_t& match_count_out
+) {
+    type_stream.clear();
+    len_stream.clear();
+    dist_lo_stream.clear();
+    dist_hi_stream.clear();
+    lit_stream.clear();
+    token_count_out = 0;
+    match_count_out = 0;
+
+    size_t pos = 0;
+    const size_t sz = lz_bytes.size();
+
+    while (pos < sz) {
+        if (pos >= sz) break;
+        uint8_t tag = lz_bytes[pos++];
+
+        if (tag == 0) { // LITRUN
+            if (pos >= sz) return false;
+            uint8_t len = lz_bytes[pos++];
+            if (len == 0) continue;
+            if (pos + len > sz) return false;
+
+            type_stream.push_back(0);
+            len_stream.push_back(len);
+            // LITRUN has no dist - compact format saves space
+
+            lit_stream.insert(lit_stream.end(), lz_bytes.data() + pos, lz_bytes.data() + pos + len);
+            pos += len;
+            token_count_out++;
+        } else if (tag == 1) { // MATCH
+            if (pos >= sz) return false;
+            uint8_t len = lz_bytes[pos++];
+            if (pos + 2 > sz) return false;
+            uint8_t dist_lo = lz_bytes[pos++];
+            uint8_t dist_hi = lz_bytes[pos++];
+
+            type_stream.push_back(1);
+            len_stream.push_back(len);
+            dist_lo_stream.push_back(dist_lo);
+            dist_hi_stream.push_back(dist_hi);
+            token_count_out++;
+            match_count_out++;
         } else {
             // Unknown tag
             return false;
@@ -396,8 +461,9 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
         const auto t_mode6_eval0 = Clock::now();
 
         std::vector<uint8_t> type_stream, len_stream, dist_lo_stream, dist_hi_stream, lit_stream;
-        mode6_parse_ok = parse_tilelz_to_tokens(
-            lo_lz, type_stream, len_stream, dist_lo_stream, dist_hi_stream, lit_stream, mode6_token_count
+        uint32_t mode6_match_count = 0;
+        mode6_parse_ok = parse_tilelz_to_tokens_compact(
+            lo_lz, type_stream, len_stream, dist_lo_stream, dist_hi_stream, lit_stream, mode6_token_count, mode6_match_count
         );
 
         if (mode6_parse_ok) {
@@ -407,8 +473,9 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
             auto dist_hi_enc = encode_byte_stream_shared_lz(dist_hi_stream);
             auto lit_enc = encode_byte_stream_shared_lz(lit_stream);
 
-            // Payload: [magic=0xAB][mode=6][raw_count][token_count][type_sz][len_sz][dist_lo_sz][dist_hi_sz][lit_sz][type_enc][len_enc][dist_lo_enc][dist_hi_enc][lit_enc]
-            size_t header_size = 2 + 4 + 4 + 4 + 4 + 4 + 4 + 4; // magic+mode + raw_count + token_count + 5 stream sizes
+            // Payload v0x0016 (compact): [magic=0xAB][mode=6][raw_count][token_count][match_count][type_sz][len_sz][dist_lo_sz][dist_hi_sz][lit_sz][type_enc][len_enc][dist_lo_enc][dist_hi_enc][lit_enc]
+            // Header: 2 + 4 + 4 + 4 + 4*5 = 2 + 4 + 4 + 4 + 20 = 34 bytes minimum
+            size_t header_size = 2 + 4 + 4 + 4 + 4 * 5; // magic+mode + raw_count + token_count + match_count + 5 stream sizes
             mode6_wrapped = header_size + type_enc.size() + len_enc.size() + dist_lo_enc.size()
                             + dist_hi_enc.size() + lit_enc.size();
 
@@ -426,6 +493,10 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
                 lo_mode6_encoded.push_back((uint8_t)((mode6_token_count >> 8) & 0xFF));
                 lo_mode6_encoded.push_back((uint8_t)((mode6_token_count >> 16) & 0xFF));
                 lo_mode6_encoded.push_back((uint8_t)((mode6_token_count >> 24) & 0xFF));
+                lo_mode6_encoded.push_back((uint8_t)(mode6_match_count & 0xFF));
+                lo_mode6_encoded.push_back((uint8_t)((mode6_match_count >> 8) & 0xFF));
+                lo_mode6_encoded.push_back((uint8_t)((mode6_match_count >> 16) & 0xFF));
+                lo_mode6_encoded.push_back((uint8_t)((mode6_match_count >> 24) & 0xFF));
                 auto push_size = [&](size_t sz) {
                     lo_mode6_encoded.push_back((uint8_t)(sz & 0xFF));
                     lo_mode6_encoded.push_back((uint8_t)((sz >> 8) & 0xFF));
@@ -442,6 +513,16 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
                 lo_mode6_encoded.insert(lo_mode6_encoded.end(), dist_lo_enc.begin(), dist_lo_enc.end());
                 lo_mode6_encoded.insert(lo_mode6_encoded.end(), dist_hi_enc.begin(), dist_hi_enc.end());
                 lo_mode6_encoded.insert(lo_mode6_encoded.end(), lit_enc.begin(), lit_enc.end());
+            }
+
+            if (stats) {
+                stats->filter_lo_mode6_match_tokens_sum += mode6_match_count;
+                stats->filter_lo_mode6_lit_tokens_sum += (mode6_token_count - mode6_match_count);
+                stats->filter_lo_mode6_token_count_sum += mode6_token_count;
+                stats->filter_lo_mode6_match_count_sum += mode6_match_count;
+                // Calculate dist bytes saved by compact format vs legacy
+                uint64_t dist_saved = (uint64_t)(mode6_token_count - mode6_match_count) * 2; // 2 bytes per LITRUN token
+                stats->filter_lo_mode6_dist_saved_bytes_sum += dist_saved;
             }
         } else {
             if (stats) stats->filter_lo_mode6_malformed_input++;

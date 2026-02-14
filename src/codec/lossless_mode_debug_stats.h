@@ -170,6 +170,12 @@ struct LosslessModeDebugStats {
     uint64_t filter_lo_mode6_fallback_to_mode0;
     uint64_t filter_lo_mode6_fallback_to_mode5;
     uint64_t filter_lo_mode6_malformed_input;
+    // Mode6 compact dist telemetry (Phase 9X)
+    uint64_t filter_lo_mode6_match_tokens_sum;
+    uint64_t filter_lo_mode6_lit_tokens_sum;
+    uint64_t filter_lo_mode6_token_count_sum;
+    uint64_t filter_lo_mode6_match_count_sum;
+    uint64_t filter_lo_mode6_dist_saved_bytes_sum;
     uint64_t filter_lo_lz_probe_enabled;
     uint64_t filter_lo_lz_probe_checked;
     uint64_t filter_lo_lz_probe_pass;

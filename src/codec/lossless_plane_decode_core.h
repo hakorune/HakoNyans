@@ -218,6 +218,7 @@ inline std::vector<int16_t> decode_plane_lossless(
         nx,
         file_version >= FileHeader::VERSION_FILTER_LO_LZ_RANS_SHARED_CDF,
         file_version >= FileHeader::VERSION_FILTER_LO_LZ_TOKEN_RANS,
+        file_version,
         [&](const uint8_t* data, size_t size, size_t raw_count) {
             return decode_byte_stream(data, size, raw_count);
         },

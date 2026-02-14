@@ -688,6 +688,23 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
                 double avg_leg  = (double)s.filter_lo_mode6_legacy_bytes_sum / (double)s.filter_lo_mode6_candidates;
                 std::cout << "    avg_bytes(LZ/Wrap/Leg) " << std::fixed << std::setprecision(1)
                           << avg_cand << " / " << avg_wrap << " / " << avg_leg << "\n";
+                // Mode6 compact dist telemetry (Phase 9X)
+                if (s.filter_lo_mode6_token_count_sum > 0) {
+                    std::cout << "    tokens(match+lit)    " << s.filter_lo_mode6_token_count_sum
+                              << " (" << s.filter_lo_mode6_match_tokens_sum << "+" << s.filter_lo_mode6_lit_tokens_sum << ")\n";
+                    double avg_match = (double)s.filter_lo_mode6_match_count_sum / (double)s.filter_lo_mode6_candidates;
+                    std::cout << "    avg_match_tokens       " << std::fixed << std::setprecision(1) << avg_match << "\n";
+                    if (s.filter_lo_mode6_dist_saved_bytes_sum > 0) {
+                        std::cout << "    dist_saved_bytes     " << s.filter_lo_mode6_dist_saved_bytes_sum << "\n";
+                    }
+                }
+                if (s.filter_lo_mode6_fallback_to_mode0 > 0 || s.filter_lo_mode6_fallback_to_mode5 > 0) {
+                    std::cout << "    fallback_to_mode0/5  " << s.filter_lo_mode6_fallback_to_mode0
+                              << "/" << s.filter_lo_mode6_fallback_to_mode5 << "\n";
+                }
+                if (s.filter_lo_mode6_malformed_input > 0) {
+                    std::cout << "    malformed_input      " << s.filter_lo_mode6_malformed_input << "\n";
+                }
             }
             if (s.filter_lo_mode2_reject_gate > 0 || s.filter_lo_mode4_reject_gate > 0) {
                 std::cout << "  rej_gate(mode2/4)      " << s.filter_lo_mode2_reject_gate << "/" << s.filter_lo_mode4_reject_gate << "\n";
