@@ -455,6 +455,16 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
                           << s.filter_row_id_hist[4] << "/"
                           << s.filter_row_id_hist[5] << "\n";
             }
+            // LZCOST filter row selection telemetry (Phase 9X-3)
+            if (s.filter_rows_lzcost_eval_rows > 0) {
+                std::cout << "  lzcost_eval_rows       " << s.filter_rows_lzcost_eval_rows << "\n";
+                double avg_topk = (double)s.filter_rows_lzcost_topk_sum / (double)s.filter_rows_lzcost_eval_rows;
+                std::cout << "  lzcost_avg_topk        " << std::fixed << std::setprecision(2) << avg_topk << "\n";
+                if (s.filter_rows_lzcost_paeth_selected > 0 || s.filter_rows_lzcost_med_selected > 0) {
+                    std::cout << "  lzcost_paeth/med_sel   " << s.filter_rows_lzcost_paeth_selected
+                              << "/" << s.filter_rows_lzcost_med_selected << "\n";
+                }
+            }
         }
 
         double bt_bpb = (s.total_blocks > 0)

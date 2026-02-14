@@ -20,7 +20,7 @@ inline uint16_t zigzag_encode_val(int16_t val) {
     return (uint16_t)((val << 1) ^ (val >> 15));
 }
 
-enum class FilterRowCostModel : uint8_t { SAD = 0, BITS2 = 1, ENTROPY = 2 };
+enum class FilterRowCostModel : uint8_t { SAD = 0, BITS2 = 1, ENTROPY = 2, LZCOST = 3 };
 
 inline int parse_env_int(const char* key, int fallback, int min_v, int max_v) {
     const char* raw = std::getenv(key);
@@ -45,6 +45,10 @@ inline bool try_parse_cost_model_token(const char* raw, FilterRowCostModel& out)
     }
     if (std::strcmp(raw, "entropy") == 0 || std::strcmp(raw, "ENTROPY") == 0) {
         out = FilterRowCostModel::ENTROPY;
+        return true;
+    }
+    if (std::strcmp(raw, "lzcost") == 0 || std::strcmp(raw, "LZCOST") == 0) {
+        out = FilterRowCostModel::LZCOST;
         return true;
     }
     return false;
@@ -75,6 +79,71 @@ inline int entropy_hi_weight_permille_env() {
         "HKN_FILTER_ROWS_ENTROPY_HI_WEIGHT_PERMILLE", 350, 0, 2000
     );
     return kV;
+}
+
+// LZCOST configuration environment variables
+inline int lzcost_topk_env() {
+    static const int kV = parse_env_int("HKN_FILTER_ROWS_LZCOST_TOPK", 2, 1, 4);
+    return kV;
+}
+
+inline int lzcost_window_env() {
+    static const int kV = parse_env_int("HKN_FILTER_ROWS_LZCOST_WINDOW", 256, 64, 1024);
+    return kV;
+}
+
+inline bool lzcost_photo_only_env() {
+    static const int kV = parse_env_int("HKN_FILTER_ROWS_LZCOST_ENABLE_PHOTO_ONLY", 1, 0, 1);
+    return kV != 0;
+}
+
+// LZ cost estimation for a row of residuals
+// Uses uint8_t residuals (actual filter output), not int16_t
+inline uint32_t lzcost_estimate_row(
+    const uint8_t* row_residuals,
+    uint32_t width,
+    uint32_t window_size
+) {
+    if (width == 0) return 0;
+    const uint32_t eval_len = std::min(width, window_size);
+
+    uint32_t cost = 0;
+    uint32_t pos = 0;
+
+    // Simple LZ cost estimation: look for matches of len >= 3
+    // Cost: literal = 1, match = 4 (token overhead estimate)
+    while (pos < eval_len) {
+        // Look for longest match starting at pos
+        uint32_t best_len = 0;
+        uint32_t best_dist = 0;
+
+        // Search back in window for matches
+        const uint32_t search_start = (pos > window_size) ? (pos - window_size) : 0;
+        for (uint32_t back = search_start; back < pos; back++) {
+            uint32_t len = 0;
+            while (pos + len < eval_len &&
+                   row_residuals[back + len] == row_residuals[pos + len] &&
+                   len < 255) {
+                len++;
+            }
+            if (len >= 3 && len > best_len) {
+                best_len = len;
+                best_dist = pos - back;
+            }
+        }
+
+        if (best_len >= 3) {
+            // Match found: cost = match token (~4 bytes)
+            cost += 4;
+            pos += best_len;
+        } else {
+            // No match: literal cost = 1
+            cost += 1;
+            pos++;
+        }
+    }
+
+    return cost;
 }
 
 inline double log2_count_cached(uint32_t v) {
@@ -255,6 +324,151 @@ inline void build_filter_rows_and_residuals(
                     if (cost_fp < best_cost_fp) {
                         best_cost_fp = cost_fp;
                         best_f = f;
+                    }
+                }
+            } else if (cost_model == FilterRowCostModel::LZCOST) {
+                // Check if we should only enable for PHOTO profile
+                if (!lzcost_photo_only_env() || profile_id == lossless_mode_select::PROFILE_PHOTO) {
+                    if (stats) stats->filter_rows_lzcost_eval_rows++;
+
+                    // Stage 1: coarse ranking by BITS2 proxy to select top-K
+                    std::array<int64_t, 8> coarse_scores{};
+                    coarse_scores.fill(std::numeric_limits<int64_t>::max());
+                    for (int ci = 0; ci < candidate_count; ci++) {
+                        const int f = candidate_filters[ci];
+                        int64_t sum = 0;
+                        for (uint32_t x = 0; x < pad_w; x++) {
+                            const int bx_col = (int)(x / 8);
+                            if (block_types[(size_t)by_row * (size_t)nx + (size_t)bx_col] !=
+                                FileHeader::BlockType::DCT) {
+                                continue;
+                            }
+                            const int16_t orig = padded[(size_t)y * (size_t)pad_w + (size_t)x];
+                            const int16_t a = (x > 0)
+                                ? padded[(size_t)y * (size_t)pad_w + (size_t)(x - 1)]
+                                : 0;
+                            const int16_t b = (y > 0)
+                                ? padded[(size_t)(y - 1) * (size_t)pad_w + (size_t)x]
+                                : 0;
+                            const int16_t c = (x > 0 && y > 0)
+                                ? padded[(size_t)(y - 1) * (size_t)pad_w + (size_t)(x - 1)]
+                                : 0;
+                            const int diff = (int)orig - (int)predict(f, a, b, c);
+                            sum += lossless_mode_select::estimate_filter_symbol_bits2_fast(
+                                fast_abs(diff), bits_lut
+                            );
+                        }
+                        coarse_scores[f] = sum;
+                    }
+
+                    const int topk = std::min(candidate_count, lzcost_topk_env());
+                    if (stats) stats->filter_rows_lzcost_topk_sum += topk;
+
+                    // Select top-K filters
+                    std::array<int, 8> eval_filters{};
+                    int eval_count = 0;
+                    std::array<uint8_t, 8> selected{};
+                    selected.fill(0);
+                    for (int k = 0; k < topk; k++) {
+                        int best_idx = -1;
+                        for (int ci = 0; ci < candidate_count; ci++) {
+                            const int f = candidate_filters[ci];
+                            if (selected[f]) continue;
+                            if (best_idx < 0 ||
+                                coarse_scores[f] < coarse_scores[best_idx] ||
+                                (coarse_scores[f] == coarse_scores[best_idx] && f < best_idx)) {
+                                best_idx = f;
+                            }
+                        }
+                        if (best_idx >= 0) {
+                            selected[best_idx] = 1;
+                            eval_filters[eval_count++] = best_idx;
+                        }
+                    }
+
+                    // Stage 2: LZ cost evaluation on top-K only
+                    const int window_size = lzcost_window_env();
+                    uint32_t best_lz_cost = std::numeric_limits<uint32_t>::max();
+                    int best_lz_f = eval_count > 0 ? eval_filters[0] : 0;
+
+                    for (int ei = 0; ei < eval_count; ei++) {
+                        const int f = eval_filters[ei];
+
+                        // Generate residual row for this filter
+                        std::vector<uint8_t> row_residuals;
+                        row_residuals.reserve(pad_w);
+                        for (uint32_t x = 0; x < pad_w; x++) {
+                            const int bx_col = (int)(x / 8);
+                            if (block_types[(size_t)by_row * (size_t)nx + (size_t)bx_col] !=
+                                FileHeader::BlockType::DCT) {
+                                continue;
+                            }
+                            const int16_t orig = padded[(size_t)y * (size_t)pad_w + (size_t)x];
+                            const int16_t a = (x > 0)
+                                ? padded[(size_t)y * (size_t)pad_w + (size_t)(x - 1)]
+                                : 0;
+                            const int16_t b = (y > 0)
+                                ? padded[(size_t)(y - 1) * (size_t)pad_w + (size_t)x]
+                                : 0;
+                            const int16_t c = (x > 0 && y > 0)
+                                ? padded[(size_t)(y - 1) * (size_t)pad_w + (size_t)(x - 1)]
+                                : 0;
+                            const int16_t pred = predict(f, a, b, c);
+                            // Store residual as uint8_t (wrapped)
+                            row_residuals.push_back(static_cast<uint8_t>(orig - pred));
+                        }
+
+                        // Estimate LZ cost
+                        const uint32_t lz_cost = lzcost_estimate_row(
+                            row_residuals.data(),
+                            static_cast<uint32_t>(row_residuals.size()),
+                            window_size
+                        );
+
+                        // Tie-break: prefer lower filter ID (deterministic)
+                        if (lz_cost < best_lz_cost ||
+                            (lz_cost == best_lz_cost && f < best_lz_f)) {
+                            best_lz_cost = lz_cost;
+                            best_lz_f = f;
+                        }
+                    }
+
+                    best_f = best_lz_f;
+                    if (stats) {
+                        if (best_f == 4) stats->filter_rows_lzcost_paeth_selected++;
+                        if (best_f == 5) stats->filter_rows_lzcost_med_selected++;
+                    }
+                } else {
+                    // For non-PHOTO profiles when PHOTO_ONLY=1, fall back to BITS2
+                    int64_t best_sum = std::numeric_limits<int64_t>::max();
+                    for (int ci = 0; ci < candidate_count; ci++) {
+                        const int f = candidate_filters[ci];
+                        int64_t sum = 0;
+                        for (uint32_t x = 0; x < pad_w; x++) {
+                            const int bx_col = (int)(x / 8);
+                            if (block_types[(size_t)by_row * (size_t)nx + (size_t)bx_col] !=
+                                FileHeader::BlockType::DCT) {
+                                continue;
+                            }
+                            const int16_t orig = padded[(size_t)y * (size_t)pad_w + (size_t)x];
+                            const int16_t a = (x > 0)
+                                ? padded[(size_t)y * (size_t)pad_w + (size_t)(x - 1)]
+                                : 0;
+                            const int16_t b = (y > 0)
+                                ? padded[(size_t)(y - 1) * (size_t)pad_w + (size_t)x]
+                                : 0;
+                            const int16_t c = (x > 0 && y > 0)
+                                ? padded[(size_t)(y - 1) * (size_t)pad_w + (size_t)(x - 1)]
+                                : 0;
+                            const int diff = (int)orig - (int)predict(f, a, b, c);
+                            sum += lossless_mode_select::estimate_filter_symbol_bits2_fast(
+                                fast_abs(diff), bits_lut
+                            );
+                        }
+                        if (sum < best_sum) {
+                            best_sum = sum;
+                            best_f = f;
+                        }
                     }
                 }
             } else {

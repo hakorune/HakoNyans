@@ -39,6 +39,13 @@ struct LosslessModeDebugStats {
     uint64_t filter_rows_with_pixels;
     uint64_t filter_row_id_hist[8];
 
+    // LZCOST filter row selection telemetry (Phase 9X-3)
+    uint64_t filter_rows_lzcost_eval_rows;
+    uint64_t filter_rows_lzcost_topk_sum;
+    uint64_t filter_rows_lzcost_paeth_selected;
+    uint64_t filter_rows_lzcost_med_selected;
+    uint64_t filter_rows_lzcost_ns;
+
     uint64_t tile4_rejected_by_copy;
     uint64_t tile4_rejected_by_palette;
     uint64_t tile4_rejected_by_filter;
