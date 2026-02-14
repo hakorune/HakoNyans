@@ -1530,3 +1530,15 @@ ChatGPTとの議論で「いいところどり」方針が確定。
 - `lossless_natural_route.h`: 834行 → 67行
 - `lossless_natural_route_lz_impl.h`: 783行 → 5行
 - 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
+
+## 2026-02-14 ソース分割（bench_bit_accounting lossless report）
+
+実装:
+- [x] `bench/bench_bit_accounting_lossless_report.cpp` を集約化
+- [x] テキスト出力を分離: `bench/bench_bit_accounting_lossless_text_report.inc`
+- [x] JSON出力を分離: `bench/bench_bit_accounting_lossless_json_report.inc`
+
+結果:
+- `bench/bench_bit_accounting_lossless_report.cpp`: 817行 → 16行
+- `bench_bit_accounting` ターゲット build PASS
+- 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
