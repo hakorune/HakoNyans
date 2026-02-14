@@ -56,6 +56,8 @@ struct LosslessDecodeDebugStats {
     uint64_t plane_filter_lo_mode4_count;
     uint64_t plane_filter_lo_mode5_count;
     uint64_t plane_filter_lo_mode6_count;
+    uint64_t plane_filter_lo_mode7_count;
+    uint64_t plane_filter_lo_mode8_count;
     uint64_t plane_filter_lo_mode_invalid_count;
     uint64_t plane_filter_lo_mode5_shared_cdf_count;
     uint64_t plane_filter_lo_mode5_legacy_cdf_count;
@@ -67,6 +69,7 @@ struct LosslessDecodeDebugStats {
     uint64_t plane_filter_lo_mode4_nonempty_ctx_sum;
     uint64_t plane_filter_lo_mode4_parallel_ctx_tiles;
     uint64_t plane_filter_lo_mode4_sequential_ctx_tiles;
+    uint64_t plane_filter_lo_mode7_shared_ctx_sum;
     uint64_t plane_filter_lo_decode_rans_ns;
     uint64_t plane_filter_lo_decode_shared_rans_ns;
     uint64_t plane_filter_lo_tilelz_decompress_ns;

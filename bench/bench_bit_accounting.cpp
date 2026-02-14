@@ -4,6 +4,7 @@
 #include <string>
 #include <cstring>
 #include <algorithm>
+#include <sstream>
 
 #include "../src/codec/encode.h"
 #include "../src/codec/headers.h"
@@ -638,17 +639,20 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
     // Filter lo diagnostics (Phase 9o / 9p / 9q / 9u-next / 9x)
     {
         uint64_t flo_total = s.filter_lo_mode0 + s.filter_lo_mode1 + s.filter_lo_mode2 +
-                             s.filter_lo_mode3 + s.filter_lo_mode4 + s.filter_lo_mode5 + s.filter_lo_mode6;
+                             s.filter_lo_mode3 + s.filter_lo_mode4 + s.filter_lo_mode5 +
+                             s.filter_lo_mode6 + s.filter_lo_mode7 + s.filter_lo_mode8;
         if (flo_total > 0) {
             std::cout << "\n  Filter lo diagnostics\n";
-            std::cout << "  filter_lo_mode0/1/2/3/4/5/6  "
+            std::cout << "  filter_lo_mode0/1/2/3/4/5/6/7/8 "
                       << s.filter_lo_mode0 << "/"
                       << s.filter_lo_mode1 << "/"
                       << s.filter_lo_mode2 << "/"
                       << s.filter_lo_mode3 << "/"
                       << s.filter_lo_mode4 << "/"
                       << s.filter_lo_mode5 << "/"
-                      << s.filter_lo_mode6 << "\n";
+                      << s.filter_lo_mode6 << "/"
+                      << s.filter_lo_mode7 << "/"
+                      << s.filter_lo_mode8 << "\n";
             if (s.filter_lo_raw_bytes_sum > 0) {
                 double savings = 100.0 * (1.0 - (double)s.filter_lo_compressed_bytes_sum / (double)s.filter_lo_raw_bytes_sum);
                 std::cout << "  filter_lo_bytes        raw=" << s.filter_lo_raw_bytes_sum
@@ -738,6 +742,39 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
                 if (s.filter_lo_mode6_malformed_input > 0) {
                     std::cout << "    malformed_input      " << s.filter_lo_mode6_malformed_input << "\n";
                 }
+            }
+            if (s.filter_lo_mode7 > 0 && s.filter_lo_mode7_saved_bytes_sum > 0) {
+                std::cout << "  mode7_saved_bytes      " << s.filter_lo_mode7_saved_bytes_sum << "\n";
+            }
+            if (s.filter_lo_mode7_candidates > 0) {
+                std::cout << "  mode7_candidates       " << s.filter_lo_mode7_candidates << "\n";
+                std::cout << "    rej_gate/rej_best    " << s.filter_lo_mode7_reject_gate
+                          << "/" << s.filter_lo_mode7_reject_best << "\n";
+                double avg_wrap = (double)s.filter_lo_mode7_wrapped_bytes_sum /
+                                  (double)s.filter_lo_mode7_candidates;
+                double avg_leg  = (double)s.filter_lo_mode7_legacy_bytes_sum /
+                                  (double)s.filter_lo_mode7_candidates;
+                double avg_ctx  = (double)s.filter_lo_mode7_shared_ctx_sum /
+                                  (double)s.filter_lo_mode7_candidates;
+                std::cout << "    avg_bytes(Wrap/Leg)  " << std::fixed << std::setprecision(1)
+                          << avg_wrap << " / " << avg_leg << "\n";
+                std::cout << "    avg_shared_ctx       " << std::fixed << std::setprecision(2)
+                          << avg_ctx << "\n";
+            }
+            if (s.filter_lo_mode8 > 0 && s.filter_lo_mode8_saved_bytes_sum > 0) {
+                std::cout << "  mode8_saved_bytes      " << s.filter_lo_mode8_saved_bytes_sum << "\n";
+            }
+            if (s.filter_lo_mode8_candidates > 0) {
+                std::cout << "  mode8_candidates       " << s.filter_lo_mode8_candidates << "\n";
+                std::cout << "    rej_gate/rej_best    " << s.filter_lo_mode8_reject_gate
+                          << "/" << s.filter_lo_mode8_reject_best << "\n";
+                std::cout << "    ctx_sel(L/D/LZ)      " << s.filter_lo_mode8_ctx_legacy_sum << "/"
+                          << s.filter_lo_mode8_ctx_delta_sum << "/"
+                          << s.filter_lo_mode8_ctx_lz_sum << "\n";
+                double avg_wrap = (double)s.filter_lo_mode8_wrapped_bytes_sum /
+                                  (double)s.filter_lo_mode8_candidates;
+                std::cout << "    avg_wrapped_bytes    " << std::fixed << std::setprecision(1)
+                          << avg_wrap << "\n";
             }
             if (s.filter_lo_mode2_reject_gate > 0 || s.filter_lo_mode4_reject_gate > 0) {
                 std::cout << "  rej_gate(mode2/4)      " << s.filter_lo_mode2_reject_gate << "/" << s.filter_lo_mode4_reject_gate << "\n";
@@ -922,9 +959,153 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
     }
 }
 
+static double ratio_or_zero(uint64_t num, uint64_t den) {
+    return (den > 0) ? (double)num / (double)den : 0.0;
+}
+
+static void print_lossless_json(
+    const std::string& image_path,
+    int width,
+    int height,
+    const Accounting& a,
+    const GrayscaleEncoder::LosslessModeDebugStats& s
+) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(6);
+    oss << "{\n";
+    oss << "  \"image\": {\n";
+    oss << "    \"path\": \"" << image_path << "\",\n";
+    oss << "    \"width\": " << width << ",\n";
+    oss << "    \"height\": " << height << "\n";
+    oss << "  },\n";
+
+    oss << "  \"lossless_accounting\": {\n";
+    oss << "    \"total_file\": " << a.total_file << ",\n";
+    oss << "    \"file_header\": " << a.file_header << ",\n";
+    oss << "    \"chunk_dir\": " << a.chunk_dir << ",\n";
+    oss << "    \"tile_header\": " << a.tile_header << ",\n";
+    oss << "    \"filter_ids\": " << a.filter_ids << ",\n";
+    oss << "    \"filter_lo\": " << a.filter_lo << ",\n";
+    oss << "    \"filter_hi\": " << a.filter_hi << ",\n";
+    oss << "    \"block_types\": " << a.block_types << ",\n";
+    oss << "    \"palette\": " << a.palette << ",\n";
+    oss << "    \"copy\": " << a.copy << ",\n";
+    oss << "    \"tile4\": " << a.tile4 << ",\n";
+    oss << "    \"screen_index\": " << a.screen_index << ",\n";
+    oss << "    \"natural_row\": " << a.natural_row << ",\n";
+    oss << "    \"unknown\": " << a.unknown << ",\n";
+    oss << "    \"filter_lo_share\": " << ratio_or_zero(a.filter_lo, a.total_file) << ",\n";
+    oss << "    \"filter_hi_share\": " << ratio_or_zero(a.filter_hi, a.total_file) << ",\n";
+    oss << "    \"block_types_share\": " << ratio_or_zero(a.block_types, a.total_file) << "\n";
+    oss << "  },\n";
+
+    const uint64_t flo_total =
+        s.filter_lo_mode0 + s.filter_lo_mode1 + s.filter_lo_mode2 +
+        s.filter_lo_mode3 + s.filter_lo_mode4 + s.filter_lo_mode5 +
+        s.filter_lo_mode6 + s.filter_lo_mode7 + s.filter_lo_mode8;
+    const uint64_t fhi_total = s.filter_hi_sparse_count + s.filter_hi_dense_count;
+    const uint64_t route_total = s.screen_candidate_count + s.natural_row_candidate_count;
+    const uint64_t lzcost_rows = s.filter_rows_lzcost_rows_considered;
+    const uint64_t lzcost_rejected = s.filter_rows_lzcost_rows_rejected_margin;
+
+    oss << "  \"mode_stats\": {\n";
+    oss << "    \"total_blocks\": " << s.total_blocks << ",\n";
+    oss << "    \"selected\": {\n";
+    oss << "      \"tile4\": " << s.tile4_selected << ",\n";
+    oss << "      \"copy\": " << s.copy_selected << ",\n";
+    oss << "      \"palette\": " << s.palette_selected << ",\n";
+    oss << "      \"filter\": " << s.filter_selected << "\n";
+    oss << "    },\n";
+    oss << "    \"streams\": {\n";
+    oss << "      \"block_types_bytes\": " << s.block_types_bytes_sum << ",\n";
+    oss << "      \"filter_ids_raw_bytes\": " << s.filter_ids_raw_bytes_sum << ",\n";
+    oss << "      \"filter_ids_compressed_bytes\": " << s.filter_ids_compressed_bytes_sum << ",\n";
+    oss << "      \"filter_lo_raw_bytes\": " << s.filter_lo_raw_bytes_sum << ",\n";
+    oss << "      \"filter_lo_compressed_bytes\": " << s.filter_lo_compressed_bytes_sum << ",\n";
+    oss << "      \"filter_hi_raw_bytes\": " << s.filter_hi_raw_bytes_sum << ",\n";
+    oss << "      \"filter_hi_compressed_bytes\": " << s.filter_hi_compressed_bytes_sum << ",\n";
+    oss << "      \"filter_hi_sparse_count\": " << s.filter_hi_sparse_count << ",\n";
+    oss << "      \"filter_hi_dense_count\": " << s.filter_hi_dense_count << "\n";
+    oss << "    },\n";
+    oss << "    \"filter_lo_modes\": {\n";
+    oss << "      \"mode0\": " << s.filter_lo_mode0 << ",\n";
+    oss << "      \"mode1\": " << s.filter_lo_mode1 << ",\n";
+    oss << "      \"mode2\": " << s.filter_lo_mode2 << ",\n";
+    oss << "      \"mode3\": " << s.filter_lo_mode3 << ",\n";
+    oss << "      \"mode4\": " << s.filter_lo_mode4 << ",\n";
+    oss << "      \"mode5\": " << s.filter_lo_mode5 << ",\n";
+    oss << "      \"mode6\": " << s.filter_lo_mode6 << ",\n";
+    oss << "      \"mode7\": " << s.filter_lo_mode7 << ",\n";
+    oss << "      \"mode8\": " << s.filter_lo_mode8 << ",\n";
+    oss << "      \"total\": " << flo_total << "\n";
+    oss << "    },\n";
+    oss << "    \"mode5\": {\n";
+    oss << "      \"candidates\": " << s.filter_lo_mode5_candidates << ",\n";
+    oss << "      \"reject_gate\": " << s.filter_lo_mode5_reject_gate << ",\n";
+    oss << "      \"reject_best\": " << s.filter_lo_mode5_reject_best << ",\n";
+    oss << "      \"avg_candidate_bytes\": " << ratio_or_zero(s.filter_lo_mode5_candidate_bytes_sum, s.filter_lo_mode5_candidates) << ",\n";
+    oss << "      \"avg_wrapped_bytes\": " << ratio_or_zero(s.filter_lo_mode5_wrapped_bytes_sum, s.filter_lo_mode5_candidates) << ",\n";
+    oss << "      \"avg_legacy_bytes\": " << ratio_or_zero(s.filter_lo_mode5_legacy_bytes_sum, s.filter_lo_mode5_candidates) << "\n";
+    oss << "    },\n";
+    oss << "    \"mode7\": {\n";
+    oss << "      \"candidates\": " << s.filter_lo_mode7_candidates << ",\n";
+    oss << "      \"reject_gate\": " << s.filter_lo_mode7_reject_gate << ",\n";
+    oss << "      \"reject_best\": " << s.filter_lo_mode7_reject_best << ",\n";
+    oss << "      \"avg_wrapped_bytes\": " << ratio_or_zero(s.filter_lo_mode7_wrapped_bytes_sum, s.filter_lo_mode7_candidates) << ",\n";
+    oss << "      \"avg_legacy_bytes\": " << ratio_or_zero(s.filter_lo_mode7_legacy_bytes_sum, s.filter_lo_mode7_candidates) << ",\n";
+    oss << "      \"avg_shared_ctx\": " << ratio_or_zero(s.filter_lo_mode7_shared_ctx_sum, s.filter_lo_mode7_candidates) << "\n";
+    oss << "    },\n";
+    oss << "    \"mode8\": {\n";
+    oss << "      \"candidates\": " << s.filter_lo_mode8_candidates << ",\n";
+    oss << "      \"reject_gate\": " << s.filter_lo_mode8_reject_gate << ",\n";
+    oss << "      \"reject_best\": " << s.filter_lo_mode8_reject_best << ",\n";
+    oss << "      \"avg_wrapped_bytes\": " << ratio_or_zero(s.filter_lo_mode8_wrapped_bytes_sum, s.filter_lo_mode8_candidates) << ",\n";
+    oss << "      \"ctx_legacy_sum\": " << s.filter_lo_mode8_ctx_legacy_sum << ",\n";
+    oss << "      \"ctx_delta_sum\": " << s.filter_lo_mode8_ctx_delta_sum << ",\n";
+    oss << "      \"ctx_lz_sum\": " << s.filter_lo_mode8_ctx_lz_sum << "\n";
+    oss << "    },\n";
+    oss << "    \"route\": {\n";
+    oss << "      \"screen_candidates\": " << s.screen_candidate_count << ",\n";
+    oss << "      \"screen_selected\": " << s.screen_selected_count << ",\n";
+    oss << "      \"screen_rejected_pre_gate\": " << s.screen_rejected_pre_gate << ",\n";
+    oss << "      \"screen_rejected_cost_gate\": " << s.screen_rejected_cost_gate << ",\n";
+    oss << "      \"natural_candidates\": " << s.natural_row_candidate_count << ",\n";
+    oss << "      \"natural_selected\": " << s.natural_row_selected_count << ",\n";
+    oss << "      \"natural_rejected_cost_gate\": " << s.natural_row_rejected_cost_gate << ",\n";
+    oss << "      \"route_policy_skipped\": " << s.route_compete_policy_skip_count << ",\n";
+    oss << "      \"route_candidate_total\": " << route_total << "\n";
+    oss << "    },\n";
+    oss << "    \"lzcost\": {\n";
+    oss << "      \"rows_considered\": " << s.filter_rows_lzcost_rows_considered << ",\n";
+    oss << "      \"rows_adopted\": " << s.filter_rows_lzcost_rows_adopted << ",\n";
+    oss << "      \"rows_rejected_margin\": " << s.filter_rows_lzcost_rows_rejected_margin << ",\n";
+    oss << "      \"adopt_rate\": " << ratio_or_zero(s.filter_rows_lzcost_rows_adopted, lzcost_rows) << ",\n";
+    oss << "      \"reject_rate\": " << ratio_or_zero(lzcost_rejected, lzcost_rows) << ",\n";
+    oss << "      \"base_cost_sum\": " << s.filter_rows_lzcost_base_cost_sum << ",\n";
+    oss << "      \"best_cost_sum\": " << s.filter_rows_lzcost_best_cost_sum << "\n";
+    oss << "    },\n";
+    oss << "    \"profile\": {\n";
+    oss << "      \"ui_tiles\": " << s.profile_ui_tiles << ",\n";
+    oss << "      \"anime_tiles\": " << s.profile_anime_tiles << ",\n";
+    oss << "      \"photo_tiles\": " << s.profile_photo_tiles << ",\n";
+    oss << "      \"classifier_evals\": " << s.class_eval_count << "\n";
+    oss << "    },\n";
+    oss << "    \"derived\": {\n";
+    oss << "      \"filter_lo_compression_ratio\": " << ratio_or_zero(s.filter_lo_compressed_bytes_sum, s.filter_lo_raw_bytes_sum) << ",\n";
+    oss << "      \"filter_hi_compression_ratio\": " << ratio_or_zero(s.filter_hi_compressed_bytes_sum, s.filter_hi_raw_bytes_sum) << ",\n";
+    oss << "      \"filter_ids_compression_ratio\": " << ratio_or_zero(s.filter_ids_compressed_bytes_sum, s.filter_ids_raw_bytes_sum) << ",\n";
+    oss << "      \"filter_hi_sparse_ratio\": " << ratio_or_zero(s.filter_hi_sparse_count, fhi_total) << "\n";
+    oss << "    }\n";
+    oss << "  }\n";
+    oss << "}\n";
+    std::cout << oss.str();
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <image.ppm> [--quality Q] [--lossless] [--lossy]\n";
+        std::cerr << "Usage: " << argv[0]
+                  << " <image.ppm> [--quality Q] [--lossless] [--lossy] [--json]"
+                  << " [--preset fast|balanced|max]\n";
         return 1;
     }
 
@@ -932,6 +1113,8 @@ int main(int argc, char** argv) {
     int quality = 75;
     bool do_lossless = true;
     bool do_lossy = true;
+    bool json_output = false;
+    GrayscaleEncoder::LosslessPreset lossless_preset = GrayscaleEncoder::LosslessPreset::BALANCED;
 
     for (int i = 2; i < argc; i++) {
         std::string arg = argv[i];
@@ -943,24 +1126,53 @@ int main(int argc, char** argv) {
         } else if (arg == "--lossy") {
             do_lossless = false;
             do_lossy = true;
+        } else if (arg == "--json") {
+            json_output = true;
+        } else if (arg == "--preset" && i + 1 < argc) {
+            std::string preset = argv[++i];
+            if (preset == "fast") {
+                lossless_preset = GrayscaleEncoder::LosslessPreset::FAST;
+            } else if (preset == "balanced") {
+                lossless_preset = GrayscaleEncoder::LosslessPreset::BALANCED;
+            } else if (preset == "max") {
+                lossless_preset = GrayscaleEncoder::LosslessPreset::MAX;
+            } else {
+                std::cerr << "Invalid --preset value: " << preset
+                          << " (expected fast|balanced|max)\n";
+                return 1;
+            }
         }
+    }
+    if (json_output && !do_lossless) {
+        std::cerr << "--json currently supports --lossless output.\n";
+        return 1;
     }
 
     auto ppm = load_ppm(path);
-    std::cout << "Image: " << path << " (" << ppm.width << "x" << ppm.height << ")\n";
+    if (!json_output) {
+        std::cout << "Image: " << path << " (" << ppm.width << "x" << ppm.height << ")\n";
+    }
 
     if (do_lossless) {
-        auto hkn = GrayscaleEncoder::encode_color_lossless(ppm.rgb_data.data(), ppm.width, ppm.height);
+        auto hkn = GrayscaleEncoder::encode_color_lossless(
+            ppm.rgb_data.data(), ppm.width, ppm.height, lossless_preset
+        );
         auto mode_stats = GrayscaleEncoder::get_lossless_mode_debug_stats();
         auto a = analyze_file(hkn);
-        print_accounting("Lossless", a, true);
-        print_lossless_mode_stats(mode_stats);
+        if (json_output) {
+            print_lossless_json(path, ppm.width, ppm.height, a, mode_stats);
+        } else {
+            print_accounting("Lossless", a, true);
+            print_lossless_mode_stats(mode_stats);
+        }
     }
 
     if (do_lossy) {
         auto hkn = GrayscaleEncoder::encode_color(ppm.rgb_data.data(), ppm.width, ppm.height, (uint8_t)quality, true, true, false);
         auto a = analyze_file(hkn);
-        print_accounting("Lossy (Q=" + std::to_string(quality) + ")", a, false);
+        if (!json_output) {
+            print_accounting("Lossy (Q=" + std::to_string(quality) + ")", a, false);
+        }
     }
 
     return 0;

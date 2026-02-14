@@ -39,6 +39,20 @@ struct Mode6RuntimeParams {
     int vs_lz_permille;
 };
 
+// Mode7 runtime parameters (env-configurable)
+struct Mode7RuntimeParams {
+    int gain_permille;
+    int min_ctx_bytes;
+    int vs_mode4_permille;
+};
+
+// Mode8 runtime parameters (env-configurable)
+struct Mode8RuntimeParams {
+    int gain_permille;
+    int min_ctx_bytes;
+    int vs_mode4_permille;
+};
+
 struct LzProbeRuntimeParams {
     int min_raw_bytes;
     int sample_bytes;
@@ -93,6 +107,36 @@ inline const Mode6RuntimeParams& get_mode6_runtime_params() {
 
 inline bool get_mode6_enable() {
     return parse_env_int("HKN_FILTER_LO_MODE6_ENABLE", 0, 0, 1) != 0;
+}
+
+inline const Mode7RuntimeParams& get_mode7_runtime_params() {
+    static const Mode7RuntimeParams params = []() {
+        Mode7RuntimeParams p;
+        p.gain_permille = parse_env_int("HKN_FILTER_LO_MODE7_GAIN_PERMILLE", 990, 900, 1100);
+        p.min_ctx_bytes = parse_env_int("HKN_FILTER_LO_MODE7_MIN_CTX_BYTES", 4096, 0, 1 << 20);
+        p.vs_mode4_permille = parse_env_int("HKN_FILTER_LO_MODE7_VS_MODE4_PERMILLE", 1000, 900, 1200);
+        return p;
+    }();
+    return params;
+}
+
+inline bool get_mode7_enable() {
+    return parse_env_int("HKN_FILTER_LO_MODE7_ENABLE", 1, 0, 1) != 0;
+}
+
+inline const Mode8RuntimeParams& get_mode8_runtime_params() {
+    static const Mode8RuntimeParams params = []() {
+        Mode8RuntimeParams p;
+        p.gain_permille = parse_env_int("HKN_FILTER_LO_MODE8_GAIN_PERMILLE", 995, 900, 1100);
+        p.min_ctx_bytes = parse_env_int("HKN_FILTER_LO_MODE8_MIN_CTX_BYTES", 2048, 0, 8192);
+        p.vs_mode4_permille = parse_env_int("HKN_FILTER_LO_MODE8_VS_MODE4_PERMILLE", 1000, 900, 1200);
+        return p;
+    }();
+    return params;
+}
+
+inline bool get_mode8_enable() {
+    return parse_env_int("HKN_FILTER_LO_MODE8_ENABLE", 0, 0, 1) != 0;
 }
 
 inline const LzProbeRuntimeParams& get_lz_probe_runtime_params() {
@@ -450,6 +494,7 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
 
     // Mode6 runtime parameters (env-configurable)
     const auto& mode6_params = get_mode6_runtime_params();
+    const auto& mode7_params = get_mode7_runtime_params();
 
     std::vector<uint8_t> delta_bytes(lo_bytes.size());
     delta_bytes[0] = lo_bytes[0];
@@ -677,6 +722,13 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
 
     std::vector<std::vector<uint8_t>> mode4_streams(6);
     std::vector<uint32_t> mode4_ctx_raw_counts(6, 0);
+    std::vector<std::vector<uint8_t>> mode7_streams(6);
+    std::vector<uint32_t> mode7_ctx_raw_counts(6, 0);
+    uint32_t mode7_shared_mask = 0;
+    // Mode8 output variables (declared here for use in output stage)
+    std::vector<std::vector<uint8_t>> mode8_output_streams;
+    std::vector<uint8_t> mode8_output_codec_ids;
+    std::vector<uint32_t> mode8_output_ctx_raw_counts;
 
     const bool enable_mode3_mode4 = ((profile_code == 1 || profile_code == 2) && lo_bytes.size() > 256);
     if (enable_mode3_mode4) {
@@ -870,13 +922,170 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
             if (mode4_sz < best_size) {
                 best_size = mode4_sz;
                 best_mode = 4;
-                mode4_streams = std::move(ctx_streams);
-                mode4_ctx_raw_counts = std::move(ctx_raw_counts);
+                mode4_streams = ctx_streams;
+                mode4_ctx_raw_counts = ctx_raw_counts;
             }
         } else if (nonempty_ctx >= 2) {
             if (stats) stats->filter_lo_mode4_reject_gate++;
         }
         if (stats) stats->filter_lo_mode4_eval_ns += ns_since(t_mode4_eval0, Clock::now());
+
+        // Mode7: context-split wrapper with per-context coder selection.
+        // Each context chooses smaller of: legacy adaptive CDF vs shared LZ CDF.
+        const bool mode7_enable = get_mode7_enable();
+        if (mode7_enable && !mode4_aborted && nonempty_ctx >= 2) {
+            if (stats) stats->filter_lo_mode7_candidates++;
+            const auto t_mode7_eval0 = Clock::now();
+
+            std::vector<std::vector<uint8_t>> mode7_candidate_streams = ctx_streams;
+            std::vector<uint32_t> mode7_candidate_ctx_raw_counts = ctx_raw_counts;
+            uint32_t mode7_candidate_shared_mask = 0;
+            uint64_t mode7_shared_ctx_count = 0;
+            size_t mode7_sz = 1 + 1 + 4 + 4 + 6 * 4;
+
+            for (int k = 0; k < 6; k++) {
+                if (lo_ctx[k].empty()) continue;
+                auto& selected_stream = mode7_candidate_streams[k];
+                if (lo_ctx[k].size() >= (size_t)mode7_params.min_ctx_bytes) {
+                    auto shared_stream = encode_byte_stream_shared_lz(lo_ctx[k]);
+                    if (shared_stream.size() < selected_stream.size()) {
+                        selected_stream = std::move(shared_stream);
+                        mode7_candidate_shared_mask |= (1u << k);
+                        mode7_shared_ctx_count++;
+                    }
+                }
+                mode7_sz += selected_stream.size();
+            }
+
+            if (stats) {
+                stats->filter_lo_mode7_eval_ns += ns_since(t_mode7_eval0, Clock::now());
+                stats->filter_lo_mode7_wrapped_bytes_sum += mode7_sz;
+                stats->filter_lo_mode7_legacy_bytes_sum += legacy_size;
+                stats->filter_lo_mode7_shared_ctx_sum += mode7_shared_ctx_count;
+            }
+
+            const bool mode7_better_than_legacy =
+                (mode7_sz * 1000 <= legacy_size * (size_t)mode7_params.gain_permille);
+            const bool mode7_better_than_mode4 =
+                (mode4_sz != std::numeric_limits<size_t>::max()) &&
+                (mode7_sz * 1000 <= mode4_sz * (size_t)mode7_params.vs_mode4_permille);
+
+            if (mode7_better_than_legacy && mode7_better_than_mode4) {
+                if (mode7_sz < best_size) {
+                    best_size = mode7_sz;
+                    best_mode = 7;
+                    mode7_streams = std::move(mode7_candidate_streams);
+                    mode7_ctx_raw_counts = std::move(mode7_candidate_ctx_raw_counts);
+                    mode7_shared_mask = mode7_candidate_shared_mask;
+                } else {
+                    if (stats) stats->filter_lo_mode7_reject_best++;
+                }
+            } else {
+                if (stats) stats->filter_lo_mode7_reject_gate++;
+            }
+        }
+
+        // Mode8: context-split wrapper with per-context hybrid codec selection.
+        // Each context chooses smallest of: legacy rANS / delta+rANS / LZ+rANS(shared).
+        const bool mode8_enable = get_mode8_enable();
+        const bool mode4_valid = !mode4_aborted && nonempty_ctx >= 2;
+        if (mode8_enable && mode4_valid) {
+            if (stats) stats->filter_lo_mode8_candidates++;
+            const auto t_mode8_eval0 = Clock::now();
+            const auto& mode8_params = get_mode8_runtime_params();
+
+            std::vector<std::vector<uint8_t>> mode8_streams(6);
+            std::vector<uint8_t> mode8_codec_ids(6, 255);  // 0=legacy, 1=delta, 2=lz, 255=empty
+            std::vector<uint32_t> mode8_ctx_raw_counts = ctx_raw_counts;
+            uint64_t mode8_ctx_legacy = 0, mode8_ctx_delta = 0, mode8_ctx_lz = 0;
+            size_t mode8_sz = 1 + 1 + 4 + 6 + 6 * 4;  // header + codec_ids + lens
+            bool mode8_aborted = false;
+
+            for (int k = 0; k < 6 && !mode8_aborted; k++) {
+                if (lo_ctx[k].empty()) {
+                    mode8_codec_ids[k] = 255;
+                    continue;
+                }
+
+                // Candidate 0: legacy rANS
+                auto legacy_stream = encode_byte_stream(lo_ctx[k]);
+                size_t best_ctx_sz = legacy_stream.size();
+                uint8_t best_codec = 0;
+
+                // Candidate 1: delta + rANS
+                std::vector<uint8_t> delta_data(lo_ctx[k].size());
+                delta_data[0] = lo_ctx[k][0];
+                for (size_t i = 1; i < lo_ctx[k].size(); i++) {
+                    delta_data[i] = (uint8_t)(lo_ctx[k][i] - lo_ctx[k][i - 1]);
+                }
+                auto delta_stream = encode_byte_stream(delta_data);
+                if (delta_stream.size() < best_ctx_sz) {
+                    best_ctx_sz = delta_stream.size();
+                    best_codec = 1;
+                    mode8_streams[k] = std::move(delta_stream);
+                } else {
+                    mode8_streams[k] = std::move(legacy_stream);
+                }
+
+                // Candidate 2: LZ + rANS(shared) - only for larger contexts
+                if (lo_ctx[k].size() >= (size_t)mode8_params.min_ctx_bytes) {
+                    auto ctx_lz = compress_lz(lo_ctx[k]);
+                    if (!ctx_lz.empty()) {
+                        auto lz_stream = encode_byte_stream_shared_lz(ctx_lz);
+                        if (lz_stream.size() < best_ctx_sz) {
+                            best_ctx_sz = lz_stream.size();
+                            best_codec = 2;
+                            mode8_streams[k] = std::move(lz_stream);
+                        }
+                    }
+                }
+
+                mode8_codec_ids[k] = best_codec;
+                mode8_sz += best_ctx_sz;
+
+                // Track codec selection stats
+                if (best_codec == 0) mode8_ctx_legacy++;
+                else if (best_codec == 1) mode8_ctx_delta++;
+                else if (best_codec == 2) mode8_ctx_lz++;
+
+                // Early abort if size exceeds limits
+                if (mode8_sz > best_size) {
+                    mode8_aborted = true;
+                }
+            }
+
+            if (stats) {
+                stats->filter_lo_mode8_eval_ns += ns_since(t_mode8_eval0, Clock::now());
+                if (!mode8_aborted) {
+                    stats->filter_lo_mode8_wrapped_bytes_sum += mode8_sz;
+                    stats->filter_lo_mode8_ctx_legacy_sum += mode8_ctx_legacy;
+                    stats->filter_lo_mode8_ctx_delta_sum += mode8_ctx_delta;
+                    stats->filter_lo_mode8_ctx_lz_sum += mode8_ctx_lz;
+                }
+            }
+
+            if (!mode8_aborted) {
+                const bool mode8_better_than_legacy =
+                    (mode8_sz * 1000 <= legacy_size * (size_t)mode8_params.gain_permille);
+                const bool mode8_better_than_mode4 =
+                    (mode8_sz * 1000 <= mode4_sz * (size_t)mode8_params.vs_mode4_permille);
+
+                if (mode8_better_than_legacy && mode8_better_than_mode4) {
+                    if (mode8_sz < best_size) {
+                        best_size = mode8_sz;
+                        best_mode = 8;
+                        // Store mode8 streams for final output
+                        mode8_output_streams = std::move(mode8_streams);
+                        mode8_output_codec_ids = std::move(mode8_codec_ids);
+                        mode8_output_ctx_raw_counts = std::move(mode8_ctx_raw_counts);
+                    } else {
+                        if (stats) stats->filter_lo_mode8_reject_best++;
+                    }
+                } else {
+                    if (stats) stats->filter_lo_mode8_reject_gate++;
+                }
+            }
+        }
     }
 
     std::vector<uint8_t> lo_stream;
@@ -942,6 +1151,84 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
             for (int k = 0; k < 6; k++) {
                 stats->filter_lo_ctx_bytes_sum[k] += mode4_ctx_raw_counts[k];
                 if (mode4_ctx_raw_counts[k] > 0) nonempty_ctx++;
+            }
+            if (nonempty_ctx > 0) {
+                stats->filter_lo_ctx_nonempty_tiles++;
+            }
+        }
+    } else if (best_mode == 7) {
+        lo_stream.clear();
+        lo_stream.push_back(FileHeader::WRAPPER_MAGIC_FILTER_LO);
+        lo_stream.push_back(7);
+        uint32_t rc = (uint32_t)lo_bytes.size();
+        lo_stream.push_back((uint8_t)(rc & 0xFF));
+        lo_stream.push_back((uint8_t)((rc >> 8) & 0xFF));
+        lo_stream.push_back((uint8_t)((rc >> 16) & 0xFF));
+        lo_stream.push_back((uint8_t)((rc >> 24) & 0xFF));
+        lo_stream.push_back((uint8_t)(mode7_shared_mask & 0xFF));
+        lo_stream.push_back((uint8_t)((mode7_shared_mask >> 8) & 0xFF));
+        lo_stream.push_back((uint8_t)((mode7_shared_mask >> 16) & 0xFF));
+        lo_stream.push_back((uint8_t)((mode7_shared_mask >> 24) & 0xFF));
+        for (int k = 0; k < 6; k++) {
+            uint32_t len = (uint32_t)mode7_streams[k].size();
+            lo_stream.push_back((uint8_t)(len & 0xFF));
+            lo_stream.push_back((uint8_t)((len >> 8) & 0xFF));
+            lo_stream.push_back((uint8_t)((len >> 16) & 0xFF));
+            lo_stream.push_back((uint8_t)((len >> 24) & 0xFF));
+        }
+        for (int k = 0; k < 6; k++) {
+            lo_stream.insert(lo_stream.end(), mode7_streams[k].begin(), mode7_streams[k].end());
+        }
+        if (stats) {
+            stats->filter_lo_mode7++;
+            if (lo_legacy.size() > lo_stream.size()) {
+                stats->filter_lo_mode7_saved_bytes_sum +=
+                    (uint64_t)(lo_legacy.size() - lo_stream.size());
+            }
+            int nonempty_ctx = 0;
+            for (int k = 0; k < 6; k++) {
+                stats->filter_lo_ctx_bytes_sum[k] += mode7_ctx_raw_counts[k];
+                if (mode7_ctx_raw_counts[k] > 0) nonempty_ctx++;
+            }
+            if (nonempty_ctx > 0) {
+                stats->filter_lo_ctx_nonempty_tiles++;
+            }
+        }
+    } else if (best_mode == 8) {
+        lo_stream.clear();
+        lo_stream.push_back(FileHeader::WRAPPER_MAGIC_FILTER_LO);
+        lo_stream.push_back(8);
+        uint32_t rc = (uint32_t)lo_bytes.size();
+        lo_stream.push_back((uint8_t)(rc & 0xFF));
+        lo_stream.push_back((uint8_t)((rc >> 8) & 0xFF));
+        lo_stream.push_back((uint8_t)((rc >> 16) & 0xFF));
+        lo_stream.push_back((uint8_t)((rc >> 24) & 0xFF));
+        // Write ctx_codec_ids[6]
+        for (int k = 0; k < 6; k++) {
+            lo_stream.push_back(mode8_output_codec_ids[k]);
+        }
+        // Write lens[6]
+        for (int k = 0; k < 6; k++) {
+            uint32_t len = (uint32_t)mode8_output_streams[k].size();
+            lo_stream.push_back((uint8_t)(len & 0xFF));
+            lo_stream.push_back((uint8_t)((len >> 8) & 0xFF));
+            lo_stream.push_back((uint8_t)((len >> 16) & 0xFF));
+            lo_stream.push_back((uint8_t)((len >> 24) & 0xFF));
+        }
+        // Write ctx streams
+        for (int k = 0; k < 6; k++) {
+            lo_stream.insert(lo_stream.end(), mode8_output_streams[k].begin(), mode8_output_streams[k].end());
+        }
+        if (stats) {
+            stats->filter_lo_mode8++;
+            if (lo_legacy.size() > lo_stream.size()) {
+                stats->filter_lo_mode8_saved_bytes_sum +=
+                    (uint64_t)(lo_legacy.size() - lo_stream.size());
+            }
+            int nonempty_ctx = 0;
+            for (int k = 0; k < 6; k++) {
+                stats->filter_lo_ctx_bytes_sum[k] += mode8_output_ctx_raw_counts[k];
+                if (mode8_output_ctx_raw_counts[k] > 0) nonempty_ctx++;
             }
             if (nonempty_ctx > 0) {
                 stats->filter_lo_ctx_nonempty_tiles++;

@@ -1256,64 +1256,29 @@ ctest --test-dir build --output-on-failure
 
 ---
 
-## 2026-02-14 次タスク（Photo decode SIMD化）
+## 2026-02-14 現在目標（Phase 9X）
 
-目的:
-- `balanced` は非回帰固定のまま維持
-- `max` / `fast_nat` で圧縮寄り実験を進め、`kodim03` と `nature_*` の負け幅を縮小
-- no-go は必ず `docs/archive/` へ保存して履歴を残す
+詳細は `docs/PHASE9X_CURRENT_GOALS.md` を正本とする。
 
-固定ゲート（毎回）:
-- [ ] `ctest --test-dir build --output-on-failure` 17/17 PASS
-- [ ] `balanced` fixed6: `total HKN bytes <= 2,977,544`
-- [ ] `balanced` fixed6: `median PNG/HKN >= 0.2610`
-- [ ] `balanced` fixed6: `Enc(ms)` / `Dec(ms)` 非回帰
+優先順:
+1. `hd_01` ワースト救済（中央値底上げ）
+2. Photo decode 高速化（30ms目標）
+3. Kodak (`kodim01-03`) 圧縮差の段階的縮小
 
-実装・評価の順序:
-1. [x] 観測強化（先に現状確定）
-   - `kodim03 / kodim01 / nature_01 / hd_01` の `bench_bit_accounting --lossless` を再取得
-   - `filter_lo` の `mode0..mode5` 候補・reject理由・候補サイズ差をCSV/ログ化
-   - Result: kodim03 で mode5_candidates=3 あるが全て rej_gate（Wrap 257k > Leg 148k）
-2. [x] Mode5 のレーン別チューニング導入
-   - ✅ `lossless_filter_lo_codec.h` に env 変数実装
-   - `HKN_FILTER_LO_MODE5_GAIN_PERMILLE` (default: 995)
-   - `HKN_FILTER_LO_MODE5_MIN_RAW_BYTES` (default: 2048)
-   - `HKN_FILTER_LO_MODE5_MIN_LZ_BYTES` (default: 1024)
-   - `HKN_FILTER_LO_MODE5_VS_LZ_PERMILLE` (default: 990)
-   - 既存 bitstream 互換を維持（デコーダ変更なし）
-3. [x] Mode5 スイープ（`max` レーン限定）
-   - 探索軸: gain=[990,995,1000], min_raw=[256,512,1024], min_lz=[64,128,256]
-   - Result: 全27組み合わせで同一結果（kodim03=369844）
-   - 原因: Mode5 wrapped (257k) > legacy (148k) なので正しく採用されない
-4. [ ] Promote 判定
-   - kodim03 改善なし → Mode5 パラメータ調整では解決不可
-   - 別アプローチが必要（LZ品質向上 or フィルタ改善）
-5. [x] ドキュメント整理
-   - ✅ 結果記録: `docs/archive/2026-02-14_mode5_sweep_kodim03_results.md`
-6. [x] `filter_rows` 実験（`bits2`/`force-paeth`）A/B
-   - 実装:
-     - `src/codec/lossless_filter_rows.h`
-       - `HKN_FILTER_ROWS_COST_MODEL=sad|bits2`
-       - `HKN_FILTER_ROWS_FORCE_FILTER_ID=-1..7`（`4`=Paeth強制）
-     - `tests/test_lossless_round2.cpp`
-       - env制御の回帰テストを追加（force-paeth / bits2差分 / bits2 roundtrip）
-   - 検証:
-     - build + `ctest` 17/17 PASS
-     - fixed6 (`balanced`, threads=1, taskset) A/B
-       - runs=3:
-         - baseline total `2,977,418`
-         - bits2 total `2,969,742`（`-7,676`）
-         - force-paeth total `3,158,179`（大幅悪化）
-       - runs=5再確認:
-         - bits2 は size改善維持だが Enc/Dec 悪化（gate未達）
-   - 判定:
-     - force-paeth: no-go（実験用のみ）
-     - bits2: 圧縮優先レーン候補（balanced既定昇格は保留）
-   - 記録:
-     - `docs/archive/2026-02-14_filter_rows_bits2_forcepaeth_ab.md`
+運用ルール:
+- `balanced` は常に非回帰ガード
+- `max` で圧縮実験を進める
+- no-go は必ず `docs/archive/` に保存
 
-参照指示書:
-- `docs/PHASE9W_KODIM03_MODE5_SWEEP_INSTRUCTIONS.md`
+進捗（P1観測）:
+- [x] `bench_bit_accounting` に `--json` / `--preset` を追加（機械可読の観測出力）
+- [x] `tools/observe_lossless_hotspots.py` を追加（fixed6結果と内訳の統合レポート）
+- [x] `hd_01` 観測レポートを作成: `docs/archive/2026-02-14_hd01_hotspot_report.md`
+- [x] `filter_lo mode7`（context毎 legacy/shared CDF 切替）を実装・検証
+  - 結果: 圧縮改善なし（`avg_shared_ctx=0.00`）、no-go記録
+  - 記録: `docs/archive/2026-02-14_mode7_mixed_ctx_cdf_trial.md`
+- [x] `filter_lo` モード運用基準を固定（昇格条件・no-go運用）
+  - `docs/LOSSLESS_FLOW_MAP.md` / `docs/PHASE9X_CURRENT_GOALS.md`
 
 ---
 

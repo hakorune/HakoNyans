@@ -72,5 +72,25 @@ Telemetry:
 - CSV (`bench/bench_png_compare.cpp`):
   - `hkn_enc_lo_lz_probe_*`
 
+## Filter Lo Mode Lifecycle
+Source:
+- `src/codec/lossless_filter_lo_codec.h`
+- `src/codec/lossless_filter_lo_decode.h`
+
+Policy:
+1. New `filter_lo` wrapper modes are added as experiment-only first.
+2. Default lane (`balanced`) must stay non-regression.
+3. Promotion to default requires all conditions:
+- selected on fixed6 (`selected_count > 0`)
+- fixed6 `total_hkn_bytes` improves vs baseline
+- fixed6 `median(PNG/HKN)` non-regression
+- `ctest` full pass and malformed decode tests pass
+4. If not promoted, keep decode compatibility but keep encode path opt-in/off by default.
+5. Every no-go trial must be archived under `docs/archive/` with parameters and verdict.
+
+Current status (Phase 9X):
+- Active in fixed6: modes `0/1/2/3/4/5`
+- Experimental no-go: modes `6/7` (kept for compatibility and observation)
+
 ## Usage Rule
 When changing behavior in these source files, update this map in the same commit.

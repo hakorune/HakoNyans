@@ -33,7 +33,7 @@ struct FileHeader {
     uint8_t  reserved[16];  // 将来拡張用
     
     static constexpr uint32_t MAGIC = 0x484B4E00;       // 'HKN\0'
-    static constexpr uint16_t VERSION = 0x0017;         // v0.23 (filter_lo mode6 v17 type-bitpack + len-split)
+    static constexpr uint16_t VERSION = 0x0019;         // v0.25 (filter_lo mode8 per-context hybrid codec)
     static constexpr uint16_t MIN_SUPPORTED_VERSION = 0x0003;
     static constexpr uint16_t VERSION_BAND_GROUP_CDF = 0x0004;
     static constexpr uint16_t VERSION_TILE_MATCH4 = 0x0005;
@@ -55,6 +55,8 @@ struct FileHeader {
     static constexpr uint16_t VERSION_FILTER_LO_LZ_TOKEN_RANS = 0x0015;  // Mode 6: LZ token separation
     static constexpr uint16_t VERSION_FILTER_LO_LZ_TOKEN_RANS_V2 = 0x0016;  // Mode 6 compact: dist only for MATCH tokens
     static constexpr uint16_t VERSION_FILTER_LO_LZ_TOKEN_RANS_V3 = 0x0017;  // Mode 6 v17: type bitpack + len split
+    static constexpr uint16_t VERSION_FILTER_LO_CTX_MIXED_CDF = 0x0018;  // Mode 7: per-context legacy/shared CDF
+    static constexpr uint16_t VERSION_FILTER_LO_CTX_HYBRID_CODEC = 0x0019;  // Mode 8: per-context hybrid codec selection
 
     enum class BlockType : uint8_t {
         DCT = 0,
