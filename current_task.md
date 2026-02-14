@@ -1516,3 +1516,17 @@ ChatGPTとの議論で「いいところどり」方針が確定。
 結果:
 - `encode_lossless_impl.h`: 913行 → 4行
 - 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
+
+## 2026-02-14 ソース分割（natural_route / lz_impl）
+
+実装:
+- [x] `src/codec/lossless_natural_route.h` を集約ヘッダー化
+- [x] `src/codec/lossless_natural_route_detail_impl.inc` を追加
+- [x] `src/codec/lossless_natural_route_encode_padded_impl.inc` を追加
+- [x] `src/codec/lossless_natural_route_lz_impl.h` を集約ヘッダー化
+- [x] `src/codec/lossless_natural_route_lz_config.inc` / `src/codec/lossless_natural_route_lz_optparse.inc` / `src/codec/lossless_natural_route_lz_compress.inc` を追加
+
+結果:
+- `lossless_natural_route.h`: 834行 → 67行
+- `lossless_natural_route_lz_impl.h`: 783行 → 5行
+- 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
