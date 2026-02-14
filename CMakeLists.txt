@@ -161,7 +161,12 @@ if(HAKONYANS_BUILD_BENCH)
   target_link_libraries(bench_png_compare PRIVATE ${PNG_LIBRARIES} pthread)
 
   # Bit accounting benchmark (Phase 9)
-  add_executable(bench_bit_accounting bench/bench_bit_accounting.cpp)
+  add_executable(
+    bench_bit_accounting
+    bench/bench_bit_accounting.cpp
+    bench/bench_bit_accounting_common.cpp
+    bench/bench_bit_accounting_lossless_report.cpp
+  )
   target_compile_options(bench_bit_accounting PRIVATE -O3 -march=native)
   target_link_libraries(bench_bit_accounting PRIVATE pthread)
 
