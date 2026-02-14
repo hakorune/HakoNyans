@@ -5,6 +5,7 @@
 #include "../platform/thread_budget.h"
 #include "../platform/thread_pool.h"
 #include <algorithm>
+#include <cmath>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -30,6 +31,12 @@ struct Mode5RuntimeParams {
     int vs_lz_permille;
 };
 
+struct LzProbeRuntimeParams {
+    int min_raw_bytes;
+    int sample_bytes;
+    int threshold_permille;
+};
+
 inline int parse_env_int(const char* key, int fallback, int min_v, int max_v) {
     const char* raw = std::getenv(key);
     if (!raw || raw[0] == '\0') return fallback;
@@ -41,6 +48,17 @@ inline int parse_env_int(const char* key, int fallback, int min_v, int max_v) {
     return (int)v;
 }
 
+inline double parse_env_double(const char* key, double fallback, double min_v, double max_v) {
+    const char* raw = std::getenv(key);
+    if (!raw || raw[0] == '\0') return fallback;
+    char* end = nullptr;
+    errno = 0;
+    double v = std::strtod(raw, &end);
+    if (errno != 0 || end == raw || *end != '\0') return fallback;
+    if (!(v >= min_v && v <= max_v)) return fallback;
+    return v;
+}
+
 inline const Mode5RuntimeParams& get_mode5_runtime_params() {
     static const Mode5RuntimeParams params = []() {
         Mode5RuntimeParams p;
@@ -48,6 +66,25 @@ inline const Mode5RuntimeParams& get_mode5_runtime_params() {
         p.min_raw_bytes = parse_env_int("HKN_FILTER_LO_MODE5_MIN_RAW_BYTES", 2048, 0, 8192);
         p.min_lz_bytes = parse_env_int("HKN_FILTER_LO_MODE5_MIN_LZ_BYTES", 1024, 0, 4096);
         p.vs_lz_permille = parse_env_int("HKN_FILTER_LO_MODE5_VS_LZ_PERMILLE", 990, 900, 1100);
+        return p;
+    }();
+    return params;
+}
+
+inline const LzProbeRuntimeParams& get_lz_probe_runtime_params() {
+    static const LzProbeRuntimeParams params = []() {
+        LzProbeRuntimeParams p;
+        p.min_raw_bytes = parse_env_int("HKN_FILTER_LO_LZ_PROBE_MIN_RAW_BYTES", 4096, 0, 1 << 20);
+        p.sample_bytes = parse_env_int("HKN_FILTER_LO_LZ_PROBE_SAMPLE_BYTES", 4096, 256, 1 << 20);
+        const int threshold_permille_override = parse_env_int(
+            "HKN_FILTER_LO_LZ_PROBE_THRESHOLD_PERMILLE", -1, -1, 2000
+        );
+        if (threshold_permille_override >= 0) {
+            p.threshold_permille = threshold_permille_override;
+        } else {
+            const double t = parse_env_double("HKN_FILTER_LO_LZ_PROBE_THRESHOLD", 1.03, 0.50, 2.00);
+            p.threshold_permille = (int)std::lround(t * 1000.0);
+        }
         return p;
     }();
     return params;
@@ -66,7 +103,8 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
     LosslessModeDebugStats* stats,
     EncodeByteStreamFn&& encode_byte_stream,
     EncodeByteStreamSharedLzFn&& encode_byte_stream_shared_lz,
-    CompressLzFn&& compress_lz
+    CompressLzFn&& compress_lz,
+    bool enable_lz_probe = false
 ) {
     ThreadPool& worker_pool = lo_codec_worker_pool();
     if (lo_bytes.empty()) return {};
@@ -87,16 +125,34 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
     std::future<std::vector<uint8_t>> fut_legacy;
     std::future<std::vector<uint8_t>> fut_lz;
 
+    // DOC: docs/LOSSLESS_FLOW_MAP.md#filter-lo-lz-probe
+    bool evaluate_lz = true;
+    if (enable_lz_probe) {
+        const auto& probe = get_lz_probe_runtime_params();
+        if (lo_bytes.size() >= (size_t)probe.min_raw_bytes) {
+            const size_t probe_n = std::min(lo_bytes.size(), (size_t)probe.sample_bytes);
+            std::vector<uint8_t> sample(lo_bytes.begin(), lo_bytes.begin() + probe_n);
+            auto sample_lz = compress_lz(sample);
+            const size_t sample_wrapped = 6 + sample_lz.size();
+            if ((uint64_t)sample_wrapped * 1000ull >
+                (uint64_t)probe_n * (uint64_t)probe.threshold_permille) {
+                evaluate_lz = false;
+            }
+        }
+    }
+
     Clock::time_point t_mode2_eval0 = Clock::now();
     if (allow_parallel_base) {
         fut_legacy = worker_pool.submit([&]() {
             thread_budget::ScopedParallelRegion guard;
             return encode_byte_stream(lo_bytes);
         });
-        fut_lz = worker_pool.submit([&]() {
-            thread_budget::ScopedParallelRegion guard;
-            return compress_lz(lo_bytes);
-        });
+        if (evaluate_lz) {
+            fut_lz = worker_pool.submit([&]() {
+                thread_budget::ScopedParallelRegion guard;
+                return compress_lz(lo_bytes);
+            });
+        }
     } else {
         lo_legacy = encode_byte_stream(lo_bytes);
     }
@@ -119,20 +175,29 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
 
     if (allow_parallel_base) {
         lo_legacy = fut_legacy.get();
-        lo_lz = fut_lz.get();
+        if (evaluate_lz) {
+            lo_lz = fut_lz.get();
+        }
     } else {
-        lo_lz = compress_lz(lo_bytes);
+        if (evaluate_lz) {
+            lo_lz = compress_lz(lo_bytes);
+        }
     }
     if (stats) {
         stats->filter_lo_mode2_eval_ns += ns_since(t_mode2_eval0, Clock::now());
     }
 
     size_t legacy_size = lo_legacy.size();
-    size_t lz_wrapped = 6 + lo_lz.size();
+    size_t lz_wrapped = std::numeric_limits<size_t>::max();
+    if (evaluate_lz) {
+        lz_wrapped = 6 + lo_lz.size();
+    }
 
     std::vector<uint8_t> lo_lz_rans;
     size_t lz_rans_wrapped = std::numeric_limits<size_t>::max();
-    if (lo_bytes.size() >= (size_t)mode5_params.min_raw_bytes && lo_lz.size() >= (size_t)mode5_params.min_lz_bytes) {
+    if (evaluate_lz &&
+        lo_bytes.size() >= (size_t)mode5_params.min_raw_bytes &&
+        lo_lz.size() >= (size_t)mode5_params.min_lz_bytes) {
         if (stats) stats->filter_lo_mode5_candidates++;
         const auto t_mode5_eval0 = Clock::now();
         lo_lz_rans = encode_byte_stream_shared_lz(lo_lz);
@@ -155,7 +220,8 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
         }
     }
 
-    if (lz_wrapped * 1000 <= legacy_size * kFilterLoModeWrapperGainPermilleDefault) {
+    if (evaluate_lz &&
+        lz_wrapped * 1000 <= legacy_size * kFilterLoModeWrapperGainPermilleDefault) {
         if (stats) stats->filter_lo_mode2_candidate_bytes_sum += lz_wrapped;
         if (lz_wrapped < best_size) {
             best_size = lz_wrapped;

@@ -33,16 +33,36 @@ inline int parse_env_int(const char* key, int fallback, int min_v, int max_v) {
     return (int)v;
 }
 
-inline FilterRowCostModel parse_cost_model_env() {
-    const char* raw = std::getenv("HKN_FILTER_ROWS_COST_MODEL");
-    if (!raw || raw[0] == '\0') return FilterRowCostModel::SAD;
+inline bool try_parse_cost_model_token(const char* raw, FilterRowCostModel& out) {
+    if (!raw || raw[0] == '\0') return false;
+    if (std::strcmp(raw, "sad") == 0 || std::strcmp(raw, "SAD") == 0) {
+        out = FilterRowCostModel::SAD;
+        return true;
+    }
     if (std::strcmp(raw, "bits2") == 0 || std::strcmp(raw, "BITS2") == 0) {
-        return FilterRowCostModel::BITS2;
+        out = FilterRowCostModel::BITS2;
+        return true;
     }
     if (std::strcmp(raw, "entropy") == 0 || std::strcmp(raw, "ENTROPY") == 0) {
-        return FilterRowCostModel::ENTROPY;
+        out = FilterRowCostModel::ENTROPY;
+        return true;
     }
-    return FilterRowCostModel::SAD;
+    return false;
+}
+
+inline bool try_parse_cost_model_env(FilterRowCostModel& out) {
+    const char* raw = std::getenv("HKN_FILTER_ROWS_COST_MODEL");
+    return try_parse_cost_model_token(raw, out);
+}
+
+inline FilterRowCostModel resolve_cost_model(
+    FilterRowCostModel preset_default
+) {
+    FilterRowCostModel env_model = preset_default;
+    if (try_parse_cost_model_env(env_model)) {
+        return env_model;
+    }
+    return preset_default;
 }
 
 inline int entropy_topk_env() {
@@ -92,12 +112,15 @@ inline void build_filter_rows_and_residuals(
     int profile_id,
     LosslessModeDebugStats* stats,
     std::vector<uint8_t>& filter_ids,
-    std::vector<int16_t>& filter_residuals
+    std::vector<int16_t>& filter_residuals,
+    FilterRowCostModel preset_cost_model = FilterRowCostModel::SAD
 ) {
     filter_ids.assign(pad_h, 0);
     filter_residuals.clear();
     const int force_filter_id = parse_env_int("HKN_FILTER_ROWS_FORCE_FILTER_ID", -1, -1, 7);
-    const FilterRowCostModel cost_model = parse_cost_model_env();
+    // DOC: docs/LOSSLESS_FLOW_MAP.md#filter-row-selection
+    // Preset decides the default model. Env can override for experiment runs.
+    const FilterRowCostModel cost_model = resolve_cost_model(preset_cost_model);
     const auto& bits_lut = lossless_mode_select::filter_symbol_bits2_lut(profile_id);
     auto fast_abs = [](int v) -> int { return (v < 0) ? -v : v; };
 

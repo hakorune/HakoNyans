@@ -1419,3 +1419,36 @@ ChatGPTとの議論で「いいところどり」方針が確定。
 
 記録:
 - `docs/archive/2026-02-14_filter_rows_entropy_stage1_ab.md`
+
+---
+
+## 2026-02-14 レーン結線 + LZプローブ導入
+
+実装:
+- [x] `src/codec/encode.h`
+  - presetごとに `filter_row_cost_model` と `filter_lo_lz_probe_enable` を明示
+  - `fast`: SAD + probe on
+  - `balanced`: SAD + probe off
+  - `max`: ENTROPY + probe on
+- [x] `src/codec/lossless_filter_rows.h`
+  - preset default + env override の解決ロジックを導入
+- [x] `src/codec/lossless_filter_lo_codec.h`
+  - LZプローブ（サンプル圧縮比判定）を導入
+  - env:
+    - `HKN_FILTER_LO_LZ_PROBE_MIN_RAW_BYTES`
+    - `HKN_FILTER_LO_LZ_PROBE_SAMPLE_BYTES`
+    - `HKN_FILTER_LO_LZ_PROBE_THRESHOLD`
+    - `HKN_FILTER_LO_LZ_PROBE_THRESHOLD_PERMILLE`
+- [x] ソース↔ドキュメント結線
+  - `docs/LOSSLESS_FLOW_MAP.md` を追加
+  - 主要実装箇所に `DOC:` コメント追加
+
+検証:
+- [x] build + `ctest` 17/17 PASS
+- [x] fixed6 smoke (`runs=1`)
+  - balanced total `2,977,418`（SAD維持）
+  - max total `2,954,276`（圧縮寄り）
+  - balanced + env entropy total `2,954,069`（env override有効確認）
+
+記録:
+- `docs/archive/2026-02-14_preset_lane_binding_and_lz_probe.md`
