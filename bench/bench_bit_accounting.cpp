@@ -617,19 +617,20 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
         }
     }
 
-    // Filter lo diagnostics (Phase 9o / 9p / 9q / 9u-next)
+    // Filter lo diagnostics (Phase 9o / 9p / 9q / 9u-next / 9x)
     {
         uint64_t flo_total = s.filter_lo_mode0 + s.filter_lo_mode1 + s.filter_lo_mode2 +
-                             s.filter_lo_mode3 + s.filter_lo_mode4 + s.filter_lo_mode5;
+                             s.filter_lo_mode3 + s.filter_lo_mode4 + s.filter_lo_mode5 + s.filter_lo_mode6;
         if (flo_total > 0) {
             std::cout << "\n  Filter lo diagnostics\n";
-            std::cout << "  filter_lo_mode0/1/2/3/4/5  "
+            std::cout << "  filter_lo_mode0/1/2/3/4/5/6  "
                       << s.filter_lo_mode0 << "/"
                       << s.filter_lo_mode1 << "/"
                       << s.filter_lo_mode2 << "/"
                       << s.filter_lo_mode3 << "/"
                       << s.filter_lo_mode4 << "/"
-                      << s.filter_lo_mode5 << "\n";
+                      << s.filter_lo_mode5 << "/"
+                      << s.filter_lo_mode6 << "\n";
             if (s.filter_lo_raw_bytes_sum > 0) {
                 double savings = 100.0 * (1.0 - (double)s.filter_lo_compressed_bytes_sum / (double)s.filter_lo_raw_bytes_sum);
                 std::cout << "  filter_lo_bytes        raw=" << s.filter_lo_raw_bytes_sum
@@ -673,6 +674,18 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
                 double avg_cand = (double)s.filter_lo_mode5_candidate_bytes_sum / (double)s.filter_lo_mode5_candidates;
                 double avg_wrap = (double)s.filter_lo_mode5_wrapped_bytes_sum / (double)s.filter_lo_mode5_candidates;
                 double avg_leg  = (double)s.filter_lo_mode5_legacy_bytes_sum / (double)s.filter_lo_mode5_candidates;
+                std::cout << "    avg_bytes(LZ/Wrap/Leg) " << std::fixed << std::setprecision(1)
+                          << avg_cand << " / " << avg_wrap << " / " << avg_leg << "\n";
+            }
+            if (s.filter_lo_mode6 > 0 && s.filter_lo_mode6_saved_bytes_sum > 0) {
+                std::cout << "  mode6_saved_bytes      " << s.filter_lo_mode6_saved_bytes_sum << "\n";
+            }
+            if (s.filter_lo_mode6_candidates > 0) {
+                std::cout << "  mode6_candidates       " << s.filter_lo_mode6_candidates << "\n";
+                std::cout << "    rej_gate/rej_best    " << s.filter_lo_mode6_reject_gate << "/" << s.filter_lo_mode6_reject_best << "\n";
+                double avg_cand = (double)s.filter_lo_mode6_candidate_bytes_sum / (double)s.filter_lo_mode6_candidates;
+                double avg_wrap = (double)s.filter_lo_mode6_wrapped_bytes_sum / (double)s.filter_lo_mode6_candidates;
+                double avg_leg  = (double)s.filter_lo_mode6_legacy_bytes_sum / (double)s.filter_lo_mode6_candidates;
                 std::cout << "    avg_bytes(LZ/Wrap/Leg) " << std::fixed << std::setprecision(1)
                           << avg_cand << " / " << avg_wrap << " / " << avg_leg << "\n";
             }

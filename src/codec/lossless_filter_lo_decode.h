@@ -23,6 +23,7 @@ inline std::vector<uint8_t> decode_filter_lo_stream(
     uint32_t pad_h,
     int nx,
     bool use_shared_lz_cdf,
+    bool allow_mode6,
     DecodeByteStreamFn&& decode_byte_stream,
     DecodeByteStreamSharedLzFn&& decode_byte_stream_shared_lz,
     DecompressLzFn&& decompress_lz,
@@ -95,6 +96,123 @@ inline std::vector<uint8_t> decode_filter_lo_stream(
             } else {
                 lo_bytes.assign(raw_count, 0);
                 if (stats) stats->plane_filter_lo_fallback_zero_fill_count++;
+            }
+        } else if (lo_mode == 6 && allow_mode6 && payload_size >= 24) {
+            if (stats) stats->plane_filter_lo_mode6_count++;
+            uint32_t token_count = (uint32_t)payload[0]
+                                 | ((uint32_t)payload[1] << 8)
+                                 | ((uint32_t)payload[2] << 16)
+                                 | ((uint32_t)payload[3] << 24);
+            uint32_t type_sz = (uint32_t)payload[4]
+                             | ((uint32_t)payload[5] << 8)
+                             | ((uint32_t)payload[6] << 16)
+                             | ((uint32_t)payload[7] << 24);
+            uint32_t len_sz = (uint32_t)payload[8]
+                            | ((uint32_t)payload[9] << 8)
+                            | ((uint32_t)payload[10] << 16)
+                            | ((uint32_t)payload[11] << 24);
+            uint32_t dist_lo_sz = (uint32_t)payload[12]
+                                | ((uint32_t)payload[13] << 8)
+                                | ((uint32_t)payload[14] << 16)
+                                | ((uint32_t)payload[15] << 24);
+            uint32_t dist_hi_sz = (uint32_t)payload[16]
+                                | ((uint32_t)payload[17] << 8)
+                                | ((uint32_t)payload[18] << 16)
+                                | ((uint32_t)payload[19] << 24);
+            uint32_t lit_sz = (uint32_t)payload[20]
+                            | ((uint32_t)payload[21] << 8)
+                            | ((uint32_t)payload[22] << 16)
+                            | ((uint32_t)payload[23] << 24);
+
+            constexpr size_t total_header = 24;
+            bool sizes_ok = (payload_size >= total_header);
+            size_t remain = sizes_ok ? (payload_size - total_header) : 0;
+            auto consume = [&](uint32_t sz) {
+                if (!sizes_ok) return;
+                if ((size_t)sz > remain) {
+                    sizes_ok = false;
+                    return;
+                }
+                remain -= (size_t)sz;
+            };
+            consume(type_sz);
+            consume(len_sz);
+            consume(dist_lo_sz);
+            consume(dist_hi_sz);
+            consume(lit_sz);
+            if (sizes_ok && remain != 0) sizes_ok = false;
+
+            if (!sizes_ok) {
+                lo_bytes.assign(raw_count, 0);
+                if (stats) stats->plane_filter_lo_fallback_zero_fill_count++;
+            } else {
+                const uint8_t* type_ptr = payload + total_header;
+                const uint8_t* len_ptr = type_ptr + type_sz;
+                const uint8_t* dist_lo_ptr = len_ptr + len_sz;
+                const uint8_t* dist_hi_ptr = dist_lo_ptr + dist_lo_sz;
+                const uint8_t* lit_ptr = dist_hi_ptr + dist_hi_sz;
+
+                std::vector<uint8_t> type_stream, len_stream, dist_lo_stream, dist_hi_stream, lit_stream;
+                if (use_shared_lz_cdf) {
+                    if (stats) stats->plane_filter_lo_mode6_shared_cdf_count++;
+                    type_stream = timed_decode_shared_rans(type_ptr, type_sz, token_count);
+                    len_stream = timed_decode_shared_rans(len_ptr, len_sz, token_count);
+                    dist_lo_stream = timed_decode_shared_rans(dist_lo_ptr, dist_lo_sz, token_count);
+                    dist_hi_stream = timed_decode_shared_rans(dist_hi_ptr, dist_hi_sz, token_count);
+                    lit_stream = timed_decode_shared_rans(lit_ptr, lit_sz, 0);
+                } else {
+                    if (stats) stats->plane_filter_lo_mode6_legacy_cdf_count++;
+                    type_stream = timed_decode_rans(type_ptr, type_sz, token_count);
+                    len_stream = timed_decode_rans(len_ptr, len_sz, token_count);
+                    dist_lo_stream = timed_decode_rans(dist_lo_ptr, dist_lo_sz, token_count);
+                    dist_hi_stream = timed_decode_rans(dist_hi_ptr, dist_hi_sz, token_count);
+                    lit_stream = timed_decode_rans(lit_ptr, lit_sz, 0);
+                }
+
+                // Reconstruct TileLZ byte stream from tokens
+                std::vector<uint8_t> lz_payload;
+                lz_payload.reserve(type_stream.size() * 4 + lit_stream.size());
+                size_t lit_pos = 0;
+                bool reconstruct_ok =
+                    (type_stream.size() == token_count) &&
+                    (len_stream.size() == token_count) &&
+                    (dist_lo_stream.size() == token_count) &&
+                    (dist_hi_stream.size() == token_count);
+                for (size_t i = 0; i < type_stream.size() && reconstruct_ok; i++) {
+                    uint8_t type = (i < type_stream.size()) ? type_stream[i] : 0;
+                    uint8_t len = (i < len_stream.size()) ? len_stream[i] : 0;
+
+                    if (type == 0) { // LITRUN
+                        lz_payload.push_back(0);
+                        lz_payload.push_back(len);
+                        if (lit_pos + len > lit_stream.size()) {
+                            reconstruct_ok = false;
+                            break;
+                        }
+                        lz_payload.insert(lz_payload.end(), lit_stream.data() + lit_pos, lit_stream.data() + lit_pos + len);
+                        lit_pos += len;
+                    } else if (type == 1) { // MATCH
+                        uint8_t dlo = (i < dist_lo_stream.size()) ? dist_lo_stream[i] : 0;
+                        uint8_t dhi = (i < dist_hi_stream.size()) ? dist_hi_stream[i] : 0;
+                        lz_payload.push_back(1);
+                        lz_payload.push_back(len);
+                        lz_payload.push_back(dlo);
+                        lz_payload.push_back(dhi);
+                    } else {
+                        reconstruct_ok = false;
+                    }
+                }
+
+                if (reconstruct_ok && lit_pos == lit_stream.size() && !lz_payload.empty()) {
+                    lo_bytes = timed_decompress_lz(lz_payload.data(), lz_payload.size(), raw_count);
+                    if (lo_bytes.size() != raw_count) {
+                        lo_bytes.assign(raw_count, 0);
+                        if (stats) stats->plane_filter_lo_fallback_zero_fill_count++;
+                    }
+                } else {
+                    lo_bytes.assign(raw_count, 0);
+                    if (stats) stats->plane_filter_lo_fallback_zero_fill_count++;
+                }
             }
         } else if (lo_mode == 3 && payload_size >= 4) {
             if (stats) stats->plane_filter_lo_mode3_count++;

@@ -141,6 +141,8 @@ struct LosslessModeDebugStats {
     uint64_t filter_lo_mode4_saved_bytes_sum;
     uint64_t filter_lo_mode5;
     uint64_t filter_lo_mode5_saved_bytes_sum;
+    uint64_t filter_lo_mode6;
+    uint64_t filter_lo_mode6_saved_bytes_sum;
     uint64_t filter_lo_ctx_nonempty_tiles;
     uint64_t filter_lo_ctx_bytes_sum[6];
 
@@ -149,15 +151,25 @@ struct LosslessModeDebugStats {
     uint64_t filter_lo_mode5_candidates;
     uint64_t filter_lo_mode5_reject_gate;
     uint64_t filter_lo_mode5_reject_best;
+    uint64_t filter_lo_mode6_candidates;
+    uint64_t filter_lo_mode6_reject_gate;
+    uint64_t filter_lo_mode6_reject_best;
     uint64_t filter_lo_mode2_candidate_bytes_sum;
     uint64_t filter_lo_mode4_candidate_bytes_sum;
     uint64_t filter_lo_mode5_candidate_bytes_sum;
     uint64_t filter_lo_mode5_wrapped_bytes_sum;
     uint64_t filter_lo_mode5_legacy_bytes_sum;
+    uint64_t filter_lo_mode6_candidate_bytes_sum;
+    uint64_t filter_lo_mode6_wrapped_bytes_sum;
+    uint64_t filter_lo_mode6_legacy_bytes_sum;
     uint64_t filter_lo_mode2_eval_ns;
     uint64_t filter_lo_mode3_eval_ns;
     uint64_t filter_lo_mode4_eval_ns;
     uint64_t filter_lo_mode5_eval_ns;
+    uint64_t filter_lo_mode6_eval_ns;
+    uint64_t filter_lo_mode6_fallback_to_mode0;
+    uint64_t filter_lo_mode6_fallback_to_mode5;
+    uint64_t filter_lo_mode6_malformed_input;
     uint64_t filter_lo_lz_probe_enabled;
     uint64_t filter_lo_lz_probe_checked;
     uint64_t filter_lo_lz_probe_pass;
