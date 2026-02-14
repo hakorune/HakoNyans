@@ -1698,3 +1698,29 @@ ChatGPTとの議論で「いいところどり」方針が確定。
 - `lossless_plane_decode_core.h`: 595行 → 39行
 - 全体 build PASS（`cmake --build build -j8`）
 - 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
+
+## 2026-02-14 ソース分割（lossless_block_classifier）
+
+実装:
+- [x] `src/codec/lossless_block_classifier.h` を関数内セクション分割
+- [x] 評価セットアップ/評価ラムダを分離: `src/codec/lossless_block_classifier_eval_setup.inc`
+- [x] 並列評価実行部を分離: `src/codec/lossless_block_classifier_eval_parallel.inc`
+- [x] モード選択/統計更新部を分離: `src/codec/lossless_block_classifier_eval_select.inc`
+
+結果:
+- `lossless_block_classifier.h`: 549行 → 81行
+- 全体 build PASS（`cmake --build build -j8`）
+- 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
+
+## 2026-02-14 ソース分割（copy）
+
+実装:
+- [x] `src/codec/copy.h` を関数内セクション分割
+- [x] copy stream encode を分離: `src/codec/copy_codec_encode_copy_stream.inc`
+- [x] copy stream decode を分離: `src/codec/copy_codec_decode_copy_stream.inc`
+- [x] IntraBC search/calc を分離: `src/codec/copy_intra_bc_search.inc`, `src/codec/copy_intra_bc_calc_sad.inc`
+
+結果:
+- `copy.h`: 442行 → 136行
+- 全体 build PASS（`cmake --build build -j8`）
+- 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
