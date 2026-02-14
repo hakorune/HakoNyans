@@ -1581,3 +1581,16 @@ ChatGPTとの議論で「いいところどり」方針が確定。
 - `decode_api_impl.h`: 615行 → 9行
 - 全体 build PASS（`cmake --build build -j8`）
 - 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
+
+## 2026-02-14 ソース分割（encode_lossless_routes_impl）
+
+実装:
+- [x] `src/codec/encode_lossless_routes_impl.h` を集約ヘッダー化
+- [x] 設定/閾値/プリセットを分離: `src/codec/encode_lossless_routes_tuning_impl.inc`
+- [x] 補助ルート関数を分離: `src/codec/encode_lossless_routes_helpers_impl.inc`
+- [x] plane本体エンコードを分離: `src/codec/encode_lossless_routes_plane_impl.inc`
+
+結果:
+- `encode_lossless_routes_impl.h`: 613行 → 3行
+- 全体 build PASS（`cmake --build build -j8`）
+- 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
