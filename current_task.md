@@ -1225,3 +1225,102 @@ ctest --test-dir build --output-on-failure
      - vs strategy1 baseline:
        - size: `-1,795 B`
        - Enc(ms): `+108.317 ms`
+
+---
+
+## 2026-02-14 次タスク（kodim03/Photo救済 + レーン分離）
+
+目的:
+- `balanced` は非回帰固定のまま維持
+- `max` / `fast_nat` で圧縮寄り実験を進め、`kodim03` と `nature_*` の負け幅を縮小
+- no-go は必ず `docs/archive/` へ保存して履歴を残す
+
+固定ゲート（毎回）:
+- [ ] `ctest --test-dir build --output-on-failure` 17/17 PASS
+- [ ] `balanced` fixed6: `total HKN bytes <= 2,977,544`
+- [ ] `balanced` fixed6: `median PNG/HKN >= 0.2610`
+- [ ] `balanced` fixed6: `Enc(ms)` / `Dec(ms)` 非回帰
+
+実装・評価の順序:
+1. [x] 観測強化（先に現状確定）
+   - `kodim03 / kodim01 / nature_01 / hd_01` の `bench_bit_accounting --lossless` を再取得
+   - `filter_lo` の `mode0..mode5` 候補・reject理由・候補サイズ差をCSV/ログ化
+   - Result: kodim03 で mode5_candidates=3 あるが全て rej_gate（Wrap 257k > Leg 148k）
+2. [x] Mode5 のレーン別チューニング導入
+   - ✅ `lossless_filter_lo_codec.h` に env 変数実装
+   - `HKN_FILTER_LO_MODE5_GAIN_PERMILLE` (default: 995)
+   - `HKN_FILTER_LO_MODE5_MIN_RAW_BYTES` (default: 2048)
+   - `HKN_FILTER_LO_MODE5_MIN_LZ_BYTES` (default: 1024)
+   - `HKN_FILTER_LO_MODE5_VS_LZ_PERMILLE` (default: 990)
+   - 既存 bitstream 互換を維持（デコーダ変更なし）
+3. [x] Mode5 スイープ（`max` レーン限定）
+   - 探索軸: gain=[990,995,1000], min_raw=[256,512,1024], min_lz=[64,128,256]
+   - Result: 全27組み合わせで同一結果（kodim03=369844）
+   - 原因: Mode5 wrapped (257k) > legacy (148k) なので正しく採用されない
+4. [ ] Promote 判定
+   - kodim03 改善なし → Mode5 パラメータ調整では解決不可
+   - 別アプローチが必要（LZ品質向上 or フィルタ改善）
+5. [x] ドキュメント整理
+   - ✅ 結果記録: `docs/archive/2026-02-14_mode5_sweep_kodim03_results.md`
+6. [x] `filter_rows` 実験（`bits2`/`force-paeth`）A/B
+   - 実装:
+     - `src/codec/lossless_filter_rows.h`
+       - `HKN_FILTER_ROWS_COST_MODEL=sad|bits2`
+       - `HKN_FILTER_ROWS_FORCE_FILTER_ID=-1..7`（`4`=Paeth強制）
+     - `tests/test_lossless_round2.cpp`
+       - env制御の回帰テストを追加（force-paeth / bits2差分 / bits2 roundtrip）
+   - 検証:
+     - build + `ctest` 17/17 PASS
+     - fixed6 (`balanced`, threads=1, taskset) A/B
+       - runs=3:
+         - baseline total `2,977,418`
+         - bits2 total `2,969,742`（`-7,676`）
+         - force-paeth total `3,158,179`（大幅悪化）
+       - runs=5再確認:
+         - bits2 は size改善維持だが Enc/Dec 悪化（gate未達）
+   - 判定:
+     - force-paeth: no-go（実験用のみ）
+     - bits2: 圧縮優先レーン候補（balanced既定昇格は保留）
+   - 記録:
+     - `docs/archive/2026-02-14_filter_rows_bits2_forcepaeth_ab.md`
+
+参照指示書:
+- `docs/PHASE9W_KODIM03_MODE5_SWEEP_INSTRUCTIONS.md`
+
+---
+
+## 2026-02-14 TileLZ 強化（opt-in化）結果
+
+目的:
+- `TileLZ` の hash-chain + lazy 探索を導入しつつ、`balanced` 回帰を防ぐ
+
+実施:
+- [x] `src/codec/lz_tile.h` に hash-chain/lazy 探索を追加
+- [x] 旧シンプル探索を保持
+- [x] env パラメータを追加
+  - `HKN_TILELZ_CHAIN_DEPTH` (0..128)
+  - `HKN_TILELZ_WINDOW_SIZE` (1024..65535)
+  - `HKN_TILELZ_NICE_LENGTH` (3..255)
+  - `HKN_TILELZ_MATCH_STRATEGY` (0=greedy, 1=lazy1)
+- [x] デフォルトを `depth=0, strategy=0`（opt-in有効化方式）に設定
+
+検証:
+- [x] build + `ctest` 17/17 PASS
+- [x] fixed6 (`balanced`, single-core, runs=3) A/B 計測
+  - default (`depth=0, strategy=0`):
+    - total bytes `2,977,418`
+    - median PNG/HKN `0.2610`
+    - median Enc `213.150 ms`
+    - median Dec `13.080 ms`
+  - opt-in (`depth=1, strategy=1`):
+    - total bytes `2,977,193` (`-225B`)
+    - median PNG/HKN `0.2658`
+    - median Enc `222.870 ms`（`+9.720 ms`）
+    - median Dec `13.119 ms`（`+0.039 ms`）
+
+判定:
+- `balanced` 既定には昇格しない（速度効率不足）
+- hash-chain/lazy は `max/検証` 向け opt-in として継続
+
+記録:
+- `docs/archive/2026-02-14_tilelz_chain_optin_ab.md`
