@@ -176,6 +176,12 @@ struct LosslessModeDebugStats {
     uint64_t filter_lo_mode6_token_count_sum;
     uint64_t filter_lo_mode6_match_count_sum;
     uint64_t filter_lo_mode6_dist_saved_bytes_sum;
+    // Mode6 v0x0017 telemetry (Phase 9X-2)
+    uint64_t filter_lo_mode6_v17_selected;
+    uint64_t filter_lo_mode6_typebits_raw_bytes_sum;
+    uint64_t filter_lo_mode6_typebits_enc_bytes_sum;
+    uint64_t filter_lo_mode6_lit_len_bytes_sum;
+    uint64_t filter_lo_mode6_match_len_bytes_sum;
     uint64_t filter_lo_lz_probe_enabled;
     uint64_t filter_lo_lz_probe_checked;
     uint64_t filter_lo_lz_probe_pass;

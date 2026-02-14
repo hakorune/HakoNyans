@@ -240,6 +240,93 @@ inline bool parse_tilelz_to_tokens_compact(
     return true;
 }
 
+// Mode6 v0x0017 (type bitpack + len split): Parse TileLZ output into token streams.
+// type_bits: packed bits (0=LITRUN, 1=MATCH)
+// lit_len: LIT token lengths only
+// match_len: MATCH token lengths only
+// dist_lo/dist_hi: MATCH distances only
+// Returns true if parsing succeeded.
+// lit_token_count_out: number of LIT tokens
+// match_count_out: number of MATCH tokens
+inline bool parse_tilelz_to_tokens_v17(
+    const std::vector<uint8_t>& lz_bytes,
+    std::vector<uint8_t>& type_bits,
+    std::vector<uint8_t>& lit_len,
+    std::vector<uint8_t>& match_len,
+    std::vector<uint8_t>& dist_lo_stream,
+    std::vector<uint8_t>& dist_hi_stream,
+    std::vector<uint8_t>& lit_stream,
+    uint32_t& token_count_out,
+    uint32_t& lit_token_count_out,
+    uint32_t& match_count_out
+) {
+    type_bits.clear();
+    lit_len.clear();
+    match_len.clear();
+    dist_lo_stream.clear();
+    dist_hi_stream.clear();
+    lit_stream.clear();
+    token_count_out = 0;
+    lit_token_count_out = 0;
+    match_count_out = 0;
+
+    size_t pos = 0;
+    const size_t sz = lz_bytes.size();
+
+    while (pos < sz) {
+        if (pos >= sz) break;
+        uint8_t tag = lz_bytes[pos++];
+
+        if (tag == 0) { // LITRUN
+            if (pos >= sz) return false;
+            uint8_t len = lz_bytes[pos++];
+            if (len == 0) continue;
+            if (pos + len > sz) return false;
+
+            // Pack type bit: 0 = LITRUN
+            size_t bit_idx = token_count_out;
+            size_t byte_idx = bit_idx / 8;
+            size_t bit_pos = bit_idx % 8;
+            if (byte_idx >= type_bits.size()) {
+                type_bits.push_back(0);
+            }
+            // Bit 0 = LITRUN (no need to set, already 0)
+
+            lit_len.push_back(len);
+            lit_stream.insert(lit_stream.end(), lz_bytes.data() + pos, lz_bytes.data() + pos + len);
+            pos += len;
+            token_count_out++;
+            lit_token_count_out++;
+        } else if (tag == 1) { // MATCH
+            if (pos >= sz) return false;
+            uint8_t len = lz_bytes[pos++];
+            if (pos + 2 > sz) return false;
+            uint8_t dist_lo = lz_bytes[pos++];
+            uint8_t dist_hi = lz_bytes[pos++];
+
+            // Pack type bit: 1 = MATCH
+            size_t bit_idx = token_count_out;
+            size_t byte_idx = bit_idx / 8;
+            size_t bit_pos = bit_idx % 8;
+            if (byte_idx >= type_bits.size()) {
+                type_bits.push_back(0);
+            }
+            type_bits[byte_idx] |= (1 << bit_pos);
+
+            match_len.push_back(len);
+            dist_lo_stream.push_back(dist_lo);
+            dist_hi_stream.push_back(dist_hi);
+            token_count_out++;
+            match_count_out++;
+        } else {
+            // Unknown tag
+            return false;
+        }
+    }
+
+    return true;
+}
+
 // Reconstruct TileLZ byte stream from token streams (for verification/testing).
 inline std::vector<uint8_t> reconstruct_tilelz_from_tokens(
     const std::vector<uint8_t>& type_stream,
@@ -460,69 +547,92 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
         if (stats) stats->filter_lo_mode6_candidates++;
         const auto t_mode6_eval0 = Clock::now();
 
-        std::vector<uint8_t> type_stream, len_stream, dist_lo_stream, dist_hi_stream, lit_stream;
+        // Mode6 v0x0017: type bitpack + len split
+        std::vector<uint8_t> type_bits, lit_len, match_len, dist_lo_stream, dist_hi_stream, lit_stream;
+        uint32_t mode6_lit_token_count = 0;
         uint32_t mode6_match_count = 0;
-        mode6_parse_ok = parse_tilelz_to_tokens_compact(
-            lo_lz, type_stream, len_stream, dist_lo_stream, dist_hi_stream, lit_stream, mode6_token_count, mode6_match_count
+        mode6_parse_ok = parse_tilelz_to_tokens_v17(
+            lo_lz, type_bits, lit_len, match_len, dist_lo_stream, dist_hi_stream, lit_stream,
+            mode6_token_count, mode6_lit_token_count, mode6_match_count
         );
 
         if (mode6_parse_ok) {
-            auto type_enc = encode_byte_stream_shared_lz(type_stream);
-            auto len_enc = encode_byte_stream_shared_lz(len_stream);
-            auto dist_lo_enc = encode_byte_stream_shared_lz(dist_lo_stream);
-            auto dist_hi_enc = encode_byte_stream_shared_lz(dist_hi_stream);
-            auto lit_enc = encode_byte_stream_shared_lz(lit_stream);
+            // Sanity check: token_count == lit_token_count + match_count
+            if (mode6_token_count != mode6_lit_token_count + mode6_match_count) {
+                mode6_parse_ok = false;
+                if (stats) stats->filter_lo_mode6_malformed_input++;
+            } else {
+                auto type_bits_enc = encode_byte_stream_shared_lz(type_bits);
+                auto lit_len_enc = encode_byte_stream_shared_lz(lit_len);
+                auto match_len_enc = encode_byte_stream_shared_lz(match_len);
+                auto dist_lo_enc = encode_byte_stream_shared_lz(dist_lo_stream);
+                auto dist_hi_enc = encode_byte_stream_shared_lz(dist_hi_stream);
+                auto lit_enc = encode_byte_stream_shared_lz(lit_stream);
 
-            // Payload v0x0016 (compact): [magic=0xAB][mode=6][raw_count][token_count][match_count][type_sz][len_sz][dist_lo_sz][dist_hi_sz][lit_sz][type_enc][len_enc][dist_lo_enc][dist_hi_enc][lit_enc]
-            // Header: 2 + 4 + 4 + 4 + 4*5 = 2 + 4 + 4 + 4 + 20 = 34 bytes minimum
-            size_t header_size = 2 + 4 + 4 + 4 + 4 * 5; // magic+mode + raw_count + token_count + match_count + 5 stream sizes
-            mode6_wrapped = header_size + type_enc.size() + len_enc.size() + dist_lo_enc.size()
-                            + dist_hi_enc.size() + lit_enc.size();
+                // Payload v0x0017: [magic=0xAB][mode=6][raw_count][token_count][match_count][lit_token_count]
+                //                  [type_bits_sz][lit_len_sz][match_len_sz][dist_lo_sz][dist_hi_sz][lit_sz]
+                //                  [type_bits_enc][lit_len_enc][match_len_enc][dist_lo_enc][dist_hi_enc][lit_enc]
+                // Header: 2 + 4 + 4 + 4 + 4 + 4*6 = 2 + 16 + 24 = 42 bytes minimum
+                size_t header_size = 2 + 4 + 4 + 4 + 4 + 4 * 6; // magic+mode + raw_count + token_count + match_count + lit_token_count + 6 stream sizes
+                mode6_wrapped = header_size + type_bits_enc.size() + lit_len_enc.size() + match_len_enc.size()
+                                + dist_lo_enc.size() + dist_hi_enc.size() + lit_enc.size();
 
-            if (mode6_wrapped < best_size) {
-                lo_mode6_encoded.clear();
-                lo_mode6_encoded.reserve(mode6_wrapped);
-                lo_mode6_encoded.push_back(FileHeader::WRAPPER_MAGIC_FILTER_LO);
-                lo_mode6_encoded.push_back(6);
-                uint32_t rc = (uint32_t)lo_bytes.size();
-                lo_mode6_encoded.push_back((uint8_t)(rc & 0xFF));
-                lo_mode6_encoded.push_back((uint8_t)((rc >> 8) & 0xFF));
-                lo_mode6_encoded.push_back((uint8_t)((rc >> 16) & 0xFF));
-                lo_mode6_encoded.push_back((uint8_t)((rc >> 24) & 0xFF));
-                lo_mode6_encoded.push_back((uint8_t)(mode6_token_count & 0xFF));
-                lo_mode6_encoded.push_back((uint8_t)((mode6_token_count >> 8) & 0xFF));
-                lo_mode6_encoded.push_back((uint8_t)((mode6_token_count >> 16) & 0xFF));
-                lo_mode6_encoded.push_back((uint8_t)((mode6_token_count >> 24) & 0xFF));
-                lo_mode6_encoded.push_back((uint8_t)(mode6_match_count & 0xFF));
-                lo_mode6_encoded.push_back((uint8_t)((mode6_match_count >> 8) & 0xFF));
-                lo_mode6_encoded.push_back((uint8_t)((mode6_match_count >> 16) & 0xFF));
-                lo_mode6_encoded.push_back((uint8_t)((mode6_match_count >> 24) & 0xFF));
-                auto push_size = [&](size_t sz) {
-                    lo_mode6_encoded.push_back((uint8_t)(sz & 0xFF));
-                    lo_mode6_encoded.push_back((uint8_t)((sz >> 8) & 0xFF));
-                    lo_mode6_encoded.push_back((uint8_t)((sz >> 16) & 0xFF));
-                    lo_mode6_encoded.push_back((uint8_t)((sz >> 24) & 0xFF));
-                };
-                push_size(type_enc.size());
-                push_size(len_enc.size());
-                push_size(dist_lo_enc.size());
-                push_size(dist_hi_enc.size());
-                push_size(lit_enc.size());
-                lo_mode6_encoded.insert(lo_mode6_encoded.end(), type_enc.begin(), type_enc.end());
-                lo_mode6_encoded.insert(lo_mode6_encoded.end(), len_enc.begin(), len_enc.end());
-                lo_mode6_encoded.insert(lo_mode6_encoded.end(), dist_lo_enc.begin(), dist_lo_enc.end());
-                lo_mode6_encoded.insert(lo_mode6_encoded.end(), dist_hi_enc.begin(), dist_hi_enc.end());
-                lo_mode6_encoded.insert(lo_mode6_encoded.end(), lit_enc.begin(), lit_enc.end());
-            }
+                if (mode6_wrapped < best_size) {
+                    lo_mode6_encoded.clear();
+                    lo_mode6_encoded.reserve(mode6_wrapped);
+                    lo_mode6_encoded.push_back(FileHeader::WRAPPER_MAGIC_FILTER_LO);
+                    lo_mode6_encoded.push_back(6);
+                    uint32_t rc = (uint32_t)lo_bytes.size();
+                    lo_mode6_encoded.push_back((uint8_t)(rc & 0xFF));
+                    lo_mode6_encoded.push_back((uint8_t)((rc >> 8) & 0xFF));
+                    lo_mode6_encoded.push_back((uint8_t)((rc >> 16) & 0xFF));
+                    lo_mode6_encoded.push_back((uint8_t)((rc >> 24) & 0xFF));
+                    lo_mode6_encoded.push_back((uint8_t)(mode6_token_count & 0xFF));
+                    lo_mode6_encoded.push_back((uint8_t)((mode6_token_count >> 8) & 0xFF));
+                    lo_mode6_encoded.push_back((uint8_t)((mode6_token_count >> 16) & 0xFF));
+                    lo_mode6_encoded.push_back((uint8_t)((mode6_token_count >> 24) & 0xFF));
+                    lo_mode6_encoded.push_back((uint8_t)(mode6_match_count & 0xFF));
+                    lo_mode6_encoded.push_back((uint8_t)((mode6_match_count >> 8) & 0xFF));
+                    lo_mode6_encoded.push_back((uint8_t)((mode6_match_count >> 16) & 0xFF));
+                    lo_mode6_encoded.push_back((uint8_t)((mode6_match_count >> 24) & 0xFF));
+                    lo_mode6_encoded.push_back((uint8_t)(mode6_lit_token_count & 0xFF));
+                    lo_mode6_encoded.push_back((uint8_t)((mode6_lit_token_count >> 8) & 0xFF));
+                    lo_mode6_encoded.push_back((uint8_t)((mode6_lit_token_count >> 16) & 0xFF));
+                    lo_mode6_encoded.push_back((uint8_t)((mode6_lit_token_count >> 24) & 0xFF));
+                    auto push_size = [&](size_t sz) {
+                        lo_mode6_encoded.push_back((uint8_t)(sz & 0xFF));
+                        lo_mode6_encoded.push_back((uint8_t)((sz >> 8) & 0xFF));
+                        lo_mode6_encoded.push_back((uint8_t)((sz >> 16) & 0xFF));
+                        lo_mode6_encoded.push_back((uint8_t)((sz >> 24) & 0xFF));
+                    };
+                    push_size(type_bits_enc.size());
+                    push_size(lit_len_enc.size());
+                    push_size(match_len_enc.size());
+                    push_size(dist_lo_enc.size());
+                    push_size(dist_hi_enc.size());
+                    push_size(lit_enc.size());
+                    lo_mode6_encoded.insert(lo_mode6_encoded.end(), type_bits_enc.begin(), type_bits_enc.end());
+                    lo_mode6_encoded.insert(lo_mode6_encoded.end(), lit_len_enc.begin(), lit_len_enc.end());
+                    lo_mode6_encoded.insert(lo_mode6_encoded.end(), match_len_enc.begin(), match_len_enc.end());
+                    lo_mode6_encoded.insert(lo_mode6_encoded.end(), dist_lo_enc.begin(), dist_lo_enc.end());
+                    lo_mode6_encoded.insert(lo_mode6_encoded.end(), dist_hi_enc.begin(), dist_hi_enc.end());
+                    lo_mode6_encoded.insert(lo_mode6_encoded.end(), lit_enc.begin(), lit_enc.end());
+                }
 
-            if (stats) {
-                stats->filter_lo_mode6_match_tokens_sum += mode6_match_count;
-                stats->filter_lo_mode6_lit_tokens_sum += (mode6_token_count - mode6_match_count);
-                stats->filter_lo_mode6_token_count_sum += mode6_token_count;
-                stats->filter_lo_mode6_match_count_sum += mode6_match_count;
-                // Calculate dist bytes saved by compact format vs legacy
-                uint64_t dist_saved = (uint64_t)(mode6_token_count - mode6_match_count) * 2; // 2 bytes per LITRUN token
-                stats->filter_lo_mode6_dist_saved_bytes_sum += dist_saved;
+                if (stats) {
+                    stats->filter_lo_mode6_match_tokens_sum += mode6_match_count;
+                    stats->filter_lo_mode6_lit_tokens_sum += mode6_lit_token_count;
+                    stats->filter_lo_mode6_token_count_sum += mode6_token_count;
+                    stats->filter_lo_mode6_match_count_sum += mode6_match_count;
+                    // Calculate dist bytes saved by compact format vs legacy
+                    uint64_t dist_saved = (uint64_t)mode6_lit_token_count * 2; // 2 bytes per LIT token
+                    stats->filter_lo_mode6_dist_saved_bytes_sum += dist_saved;
+                    // v0x0017 specific counters
+                    stats->filter_lo_mode6_typebits_raw_bytes_sum += type_bits.size();
+                    stats->filter_lo_mode6_typebits_enc_bytes_sum += type_bits_enc.size();
+                    stats->filter_lo_mode6_lit_len_bytes_sum += lit_len_enc.size();
+                    stats->filter_lo_mode6_match_len_bytes_sum += match_len_enc.size();
+                }
             }
         } else {
             if (stats) stats->filter_lo_mode6_malformed_input++;
@@ -546,6 +656,7 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
             if (mode6_wrapped < best_size) {
                 best_size = mode6_wrapped;
                 best_mode = 6;
+                if (stats) stats->filter_lo_mode6_v17_selected++;
             } else {
                 if (stats) stats->filter_lo_mode6_reject_best++;
             }

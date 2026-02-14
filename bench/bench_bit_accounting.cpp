@@ -698,6 +698,21 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
                         std::cout << "    dist_saved_bytes     " << s.filter_lo_mode6_dist_saved_bytes_sum << "\n";
                     }
                 }
+                // Mode6 v0x0017 telemetry (Phase 9X-2)
+                if (s.filter_lo_mode6_v17_selected > 0) {
+                    std::cout << "    v17_selected         " << s.filter_lo_mode6_v17_selected << "\n";
+                    if (s.filter_lo_mode6_typebits_raw_bytes_sum > 0) {
+                        double typebits_ratio = (double)s.filter_lo_mode6_typebits_enc_bytes_sum /
+                                                (double)s.filter_lo_mode6_typebits_raw_bytes_sum;
+                        std::cout << "    typebits raw/enc     " << s.filter_lo_mode6_typebits_raw_bytes_sum
+                                  << "/" << s.filter_lo_mode6_typebits_enc_bytes_sum
+                                  << " (ratio=" << std::fixed << std::setprecision(3) << typebits_ratio << ")\n";
+                    }
+                    if (s.filter_lo_mode6_lit_len_bytes_sum > 0 || s.filter_lo_mode6_match_len_bytes_sum > 0) {
+                        std::cout << "    lit_len/match_len    " << s.filter_lo_mode6_lit_len_bytes_sum
+                                  << "/" << s.filter_lo_mode6_match_len_bytes_sum << "\n";
+                    }
+                }
                 if (s.filter_lo_mode6_fallback_to_mode0 > 0 || s.filter_lo_mode6_fallback_to_mode5 > 0) {
                     std::cout << "    fallback_to_mode0/5  " << s.filter_lo_mode6_fallback_to_mode0
                               << "/" << s.filter_lo_mode6_fallback_to_mode5 << "\n";
