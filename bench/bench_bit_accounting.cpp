@@ -455,7 +455,7 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
                           << s.filter_row_id_hist[4] << "/"
                           << s.filter_row_id_hist[5] << "\n";
             }
-            // LZCOST filter row selection telemetry (Phase 9X-3)
+            // LZCOST filter row selection telemetry (Phase 9X-3/4)
             if (s.filter_rows_lzcost_eval_rows > 0) {
                 std::cout << "  lzcost_eval_rows       " << s.filter_rows_lzcost_eval_rows << "\n";
                 double avg_topk = (double)s.filter_rows_lzcost_topk_sum / (double)s.filter_rows_lzcost_eval_rows;
@@ -463,6 +463,14 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
                 if (s.filter_rows_lzcost_paeth_selected > 0 || s.filter_rows_lzcost_med_selected > 0) {
                     std::cout << "  lzcost_paeth/med_sel   " << s.filter_rows_lzcost_paeth_selected
                               << "/" << s.filter_rows_lzcost_med_selected << "\n";
+                }
+                std::cout << "  lzcost_adopt/reject    " << s.filter_rows_lzcost_rows_adopted
+                          << "/" << s.filter_rows_lzcost_rows_rejected_margin << " (gate)\n";
+                if (s.filter_rows_lzcost_rows_adopted > 0) {
+                    double avg_base = (double)s.filter_rows_lzcost_base_cost_sum / (double)s.filter_rows_lzcost_rows_adopted;
+                    double avg_best = (double)s.filter_rows_lzcost_best_cost_sum / (double)s.filter_rows_lzcost_rows_adopted;
+                    double gain = 100.0 * (avg_base - avg_best) / std::max(1.0, avg_base);
+                    std::cout << "  lzcost_avg_gain        " << std::fixed << std::setprecision(2) << gain << "%\n";
                 }
             }
         }

@@ -543,92 +543,15 @@ inline std::vector<int16_t> decode_plane_lossless(
                 constexpr size_t kRun = 8;
                 if (residual_idx + kRun <= residual_size) {
                     const int16_t* const rs = filter_residuals.data() + residual_idx;
-                    switch (ftype) {
-                        case 0: {
-                            std::memcpy(dst, rs, kRun * sizeof(int16_t));
-                            break;
-                        }
-                        case 1: {
-                            int16_t left = (x_base > 0) ? dst[-1] : 0;
-                            for (size_t px = 0; px < kRun; px++) {
-                                left = (int16_t)(left + rs[px]);
-                                dst[px] = left;
-                            }
-                            break;
-                        }
-                        case 2: {
-                            if (up) {
-                                for (size_t px = 0; px < kRun; px++) {
-                                    dst[px] = (int16_t)(up[px] + rs[px]);
-                                }
-                            } else {
-                                std::memcpy(dst, rs, kRun * sizeof(int16_t));
-                            }
-                            break;
-                        }
-                        case 3: {
-                            int16_t left = (x_base > 0) ? dst[-1] : 0;
-                            for (size_t px = 0; px < kRun; px++) {
-                                const int16_t b = up ? up[px] : 0;
-                                const int16_t pred = (int16_t)(((int)left + (int)b) / 2);
-                                const int16_t cur = (int16_t)(pred + rs[px]);
-                                dst[px] = cur;
-                                left = cur;
-                            }
-                            break;
-                        }
-                        case 4: {
-                            int16_t left = (x_base > 0) ? dst[-1] : 0;
-                            int16_t up_left = (up && x_base > 0) ? up[-1] : 0;
-                            for (size_t px = 0; px < kRun; px++) {
-                                const int16_t b = up ? up[px] : 0;
-                                const int16_t pred = LosslessFilter::paeth_predictor(left, b, up_left);
-                                const int16_t cur = (int16_t)(pred + rs[px]);
-                                dst[px] = cur;
-                                left = cur;
-                                up_left = b;
-                            }
-                            break;
-                        }
-                        case 5: {
-                            int16_t left = (x_base > 0) ? dst[-1] : 0;
-                            int16_t up_left = (up && x_base > 0) ? up[-1] : 0;
-                            for (size_t px = 0; px < kRun; px++) {
-                                const int16_t b = up ? up[px] : 0;
-                                const int16_t pred = LosslessFilter::med_predictor(left, b, up_left);
-                                const int16_t cur = (int16_t)(pred + rs[px]);
-                                dst[px] = cur;
-                                left = cur;
-                                up_left = b;
-                            }
-                            break;
-                        }
-                        case 6: {
-                            int16_t left = (x_base > 0) ? dst[-1] : 0;
-                            for (size_t px = 0; px < kRun; px++) {
-                                const int16_t b = up ? up[px] : 0;
-                                const int16_t pred = (int16_t)(((int)left * 3 + (int)b) / 4);
-                                const int16_t cur = (int16_t)(pred + rs[px]);
-                                dst[px] = cur;
-                                left = cur;
-                            }
-                            break;
-                        }
-                        case 7: {
-                            int16_t left = (x_base > 0) ? dst[-1] : 0;
-                            for (size_t px = 0; px < kRun; px++) {
-                                const int16_t b = up ? up[px] : 0;
-                                const int16_t pred = (int16_t)(((int)left + (int)b * 3) / 4);
-                                const int16_t cur = (int16_t)(pred + rs[px]);
-                                dst[px] = cur;
-                                left = cur;
-                            }
-                            break;
-                        }
-                        default: {
-                            std::memcpy(dst, rs, kRun * sizeof(int16_t));
-                            break;
-                        }
+                    int16_t left = (x_base > 0) ? dst[-1] : 0;
+                    int16_t up_left = (up && x_base > 0) ? up[-1] : 0;
+                    for (size_t px = 0; px < kRun; px++) {
+                        const int16_t b = up ? up[px] : 0;
+                        const int16_t pred = LosslessFilter::predict(ftype, left, b, up_left);
+                        const int16_t cur = (int16_t)((uint16_t)pred + (uint16_t)rs[px]);
+                        dst[px] = cur;
+                        left = cur;
+                        up_left = b;
                     }
                     residual_idx += kRun;
                     if (perf_stats) perf_stats->plane_recon_residual_consumed += kRun;
@@ -641,20 +564,10 @@ inline std::vector<int16_t> decode_plane_lossless(
                     const int16_t a = (x > 0) ? padded[pos - 1] : 0;
                     const int16_t b = (y > 0) ? padded[up_row_base + (size_t)x] : 0;
                     const int16_t c = (x > 0 && y > 0) ? padded[up_row_base + (size_t)(x - 1)] : 0;
-                    int16_t pred = 0;
-                    switch (ftype) {
-                        case 0: pred = 0; break;
-                        case 1: pred = a; break;
-                        case 2: pred = b; break;
-                        case 3: pred = (int16_t)(((int)a + (int)b) / 2); break;
-                        case 4: pred = LosslessFilter::paeth_predictor(a, b, c); break;
-                        case 5: pred = LosslessFilter::med_predictor(a, b, c); break;
-                        case 6: pred = (int16_t)(((int)a * 3 + (int)b) / 4); break;
-                        case 7: pred = (int16_t)(((int)a + (int)b * 3) / 4); break;
-                        default: pred = 0; break;
-                    }
+                    int16_t pred = LosslessFilter::predict(ftype, a, b, c);
                     if (residual_idx < residual_size) {
-                        padded[pos] = filter_residuals[residual_idx++] + pred;
+                        int16_t actual_residual = filter_residuals[residual_idx++];
+                        padded[pos] = (int16_t)((uint16_t)pred + (uint16_t)actual_residual);
                         if (perf_stats) perf_stats->plane_recon_residual_consumed++;
                     } else if (perf_stats) {
                         perf_stats->plane_recon_residual_missing++;

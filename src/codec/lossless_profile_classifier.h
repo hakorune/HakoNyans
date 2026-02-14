@@ -17,6 +17,12 @@ inline Profile classify(
     uint32_t height,
     LosslessModeDebugStats* stats
 ) {
+    if (const char* env = std::getenv("HKN_FORCE_LOSSLESS_PROFILE")) {
+        int v = std::atoi(env);
+        if (v == 0) return Profile::UI;
+        if (v == 1) return Profile::ANIME;
+        if (v == 2) return Profile::PHOTO;
+    }
     if (!y_plane || width == 0 || height == 0) return Profile::PHOTO;
 
     const int bx = (int)((width + 7) / 8);

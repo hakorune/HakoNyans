@@ -1226,9 +1226,37 @@ ctest --test-dir build --output-on-failure
        - size: `-1,795 B`
        - Enc(ms): `+108.317 ms`
 
+### Phase 9x: LZCOST「安全ゲート化」+ スイープ ✅ 完了 (2026-02-14)
+**目標**: lzcost の回帰を止め、勝てる行だけ採用する安全ゲートを導入
+
+- [x] **安全ゲート実装** — `lossless_filter_rows.h`
+  - BITS2 (baseline) と LZCOST (candidate) のコスト比較
+  - マージン条件: `lzcost_best * 1000 <= lzcost_base * margin_permille`
+  - 最小行長ゲート: 64画素以上
+  - フォールバック: ゲート不成立時、元の `ENTROPY` (Photo) / `BITS2` (Anime) に戻る
+- [x] **観測強化**
+  - `filter_rows_lzcost_rows_considered/adopted/rejected` カウンタ追加
+  - `bench_bit_accounting` / `bench_png_compare` 表示拡張
+- [x] **パラメーター・スイープ**
+  - `margin`: 980, 990, 995, 1000
+  - `topk`: 2, 3
+- [x] **検証結果** (fixed 6, preset=max, runs=3 再測定):
+  - baseline (off): `2,956,913 bytes`
+  - `m995, k3`: `2,955,258 bytes` (**-1,655 B**, 現行ベスト)
+  - `m990, k3`: `2,955,616 bytes` (**-1,297 B**)
+  - `m980, k3`: `2,956,155 bytes` (**-758 B**, roundtrip PASS)
+  - `m1000, k3`: `2,956,975 bytes` (**+62 B**, 非推奨)
+- [x] **デフォルト設定**
+  - `lzcost_topk` を 3 に変更
+  - `lzcost_margin_permille` を 995 に設定（圧縮率と安全性の両立）
+- [x] **デバッグ機能の追加**
+  - `HKN_FORCE_LOSSLESS_PROFILE` (0=UI, 1=ANIME, 2=PHOTO) によるプロファイル強制機能を追加。検証・テスト効率を向上。
+
+**分析**: `ENTROPY` へのフォールバックを正しく実装したことで、`nature_01` 等の回帰を完全に阻止しつつ、`kodim03` での LZCOST 利得を抽出することに成功。
+
 ---
 
-## 2026-02-14 次タスク（kodim03/Photo救済 + レーン分離）
+## 2026-02-14 次タスク（Photo decode SIMD化）
 
 目的:
 - `balanced` は非回帰固定のまま維持

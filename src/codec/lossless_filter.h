@@ -59,7 +59,21 @@ public:
     static inline int16_t med_predictor(int16_t a, int16_t b, int16_t c) {
         if (c >= std::max(a, b)) return std::min(a, b);
         if (c <= std::min(a, b)) return std::max(a, b);
-        return a + b - c;
+        return (int16_t)((uint16_t)a + (uint16_t)b - (uint16_t)c);
+    }
+
+    static inline int16_t predict(uint8_t ftype, int16_t a, int16_t b, int16_t c) {
+        switch (ftype) {
+            case FILTER_NONE:       return 0;
+            case FILTER_SUB:        return a;
+            case FILTER_UP:         return b;
+            case FILTER_AVERAGE:    return (int16_t)(((int)a + (int)b) / 2);
+            case FILTER_PAETH:      return paeth_predictor(a, b, c);
+            case FILTER_MED:        return med_predictor(a, b, c);
+            case FILTER_WEIGHTED_A: return (int16_t)(((int)a * 3 + (int)b) / 4);
+            case FILTER_WEIGHTED_B: return (int16_t)(((int)a + (int)b * 3) / 4);
+            default:                return 0;
+        }
     }
 
     /**
