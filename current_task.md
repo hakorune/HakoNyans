@@ -1555,3 +1555,15 @@ ChatGPTとの議論で「いいところどり」方針が確定。
 - `palette.h`: 695行 → 5行
 - `bench_bit_accounting` / `bench_png_compare` build PASS
 - 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
+
+## 2026-02-14 ソース分割（bench_png_compare main）
+
+実装:
+- [x] `bench/bench_png_compare.cpp` を集約化
+- [x] 深掘り集計を分離: `bench/bench_png_compare_main_breakdown.inc`
+- [x] baseline差分出力を分離: `bench/bench_png_compare_main_abdiff.inc`
+
+結果:
+- `bench_png_compare.cpp`: 688行 → 154行
+- `bench_png_compare` build PASS
+- 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
