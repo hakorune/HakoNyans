@@ -1542,3 +1542,16 @@ ChatGPTとの議論で「いいところどり」方針が確定。
 - `bench/bench_bit_accounting_lossless_report.cpp`: 817行 → 16行
 - `bench_bit_accounting` ターゲット build PASS
 - 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
+
+## 2026-02-14 ソース分割（palette）
+
+実装:
+- [x] `src/codec/palette.h` を後方互換ラッパ化
+- [x] `src/codec/palette_types.h` を追加（`Palette` 定義）
+- [x] `src/codec/palette_extractor.h` を追加（`PaletteExtractor`）
+- [x] `src/codec/palette_codec.h` を追加（`PaletteCodec`）
+
+結果:
+- `palette.h`: 695行 → 5行
+- `bench_bit_accounting` / `bench_png_compare` build PASS
+- 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
