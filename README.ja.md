@@ -15,6 +15,13 @@ HakoNyans は、実用的なデコード速度とモジュール設計（箱理�
 - ロスレス写真カテゴリの改善（予測器・モード選択最適化）
 - 圧縮率を上げつつデコード遅延を安定維持
 
+## Dev Challenge スナップショット（ロスレス）
+![Artoria 横並び比較](docs/assets/devchallenge_2026_01_21/fig12_artoria_compare_row_web.jpg)
+
+![ロスレス勝ちケース: nature_01](docs/assets/devchallenge_2026_01_21/fig14_lossless_win_nature01_row_web.jpg)
+
+![ロスレス負けケース: hd_01](docs/assets/devchallenge_2026_01_21/fig15_lossless_lose_hd01_row_web.jpg)
+
 ## ビルド
 ```bash
 mkdir -p build
@@ -27,6 +34,9 @@ cmake --build . -j
 ```bash
 # エンコード (PPM -> HKN)
 ./hakonyans encode input.ppm output.hkn [quality]
+
+# ロスレスエンコード (PPM -> HKN, preset: fast|balanced|max)
+./hakonyans encode-lossless input.ppm output.hkn [preset]
 
 # デコード (HKN -> PPM)
 ./hakonyans decode input.hkn output.ppm

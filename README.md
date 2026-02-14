@@ -15,6 +15,13 @@ HakoNyans is an experimental image codec focused on practical decode speed, modu
 - Better photo performance in lossless mode (predictor and mode selection)
 - Keep decode latency stable while improving compression ratio
 
+## Dev Challenge Snapshot (Lossless)
+![Artoria side-by-side compare](docs/assets/devchallenge_2026_01_21/fig12_artoria_compare_row_web.jpg)
+
+![Lossless win case: nature_01](docs/assets/devchallenge_2026_01_21/fig14_lossless_win_nature01_row_web.jpg)
+
+![Lossless lose case: hd_01](docs/assets/devchallenge_2026_01_21/fig15_lossless_lose_hd01_row_web.jpg)
+
 ## Build
 ```bash
 mkdir -p build
@@ -27,6 +34,9 @@ cmake --build . -j
 ```bash
 # Encode (PPM -> HKN)
 ./hakonyans encode input.ppm output.hkn [quality]
+
+# Encode lossless (PPM -> HKN, preset: fast|balanced|max)
+./hakonyans encode-lossless input.ppm output.hkn [preset]
 
 # Decode (HKN -> PPM)
 ./hakonyans decode input.hkn output.ppm

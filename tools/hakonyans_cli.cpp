@@ -4,6 +4,7 @@
 #include <string>
 #include <chrono>
 #include <stdexcept>
+#include <cctype>
 #include "../src/codec/encode.h"
 #include "../src/codec/decode.h"
 
@@ -13,7 +14,7 @@ using namespace hakonyans;
 void skip_ppm_comments(std::ifstream& f) {
     char c;
     while (f.get(c)) {
-        if (isspace(c)) continue;
+        if (std::isspace(static_cast<unsigned char>(c))) continue;
         if (c == '#') { while (f.get(c) && c != '\n'); continue; }
         f.unget(); break;
     }
@@ -45,9 +46,30 @@ void print_usage() {
     std::cout << "HakoNyans CLI v0.4 (Phase 7c)\n"
               << "Usage:\n"
               << "  hakonyans encode <in.ppm> <out.hkn> [quality] [subsampling: 0=444, 1=420] [cfl: 0, 1] [screen_prof: 0, 1]\n"
+              << "  hakonyans encode-lossless <in.ppm> <out.hkn> [preset: fast|balanced|max]\n"
               << "  hakonyans decode <in.hkn> <out.ppm>\n"
               << "  hakonyans info <in.hkn>\n"
               << "  hakonyans compare <in.ppm> <out_dir> - encode with/without screen profile and compare\n";
+}
+
+bool parse_lossless_preset(const std::string& raw, GrayscaleEncoder::LosslessPreset& out) {
+    std::string s = raw;
+    for (char& ch : s) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    if (s == "fast" || s == "0") {
+        out = GrayscaleEncoder::LosslessPreset::FAST;
+        return true;
+    }
+    if (s == "balanced" || s == "1") {
+        out = GrayscaleEncoder::LosslessPreset::BALANCED;
+        return true;
+    }
+    if (s == "max" || s == "2") {
+        out = GrayscaleEncoder::LosslessPreset::MAX;
+        return true;
+    }
+    return false;
 }
 
 int main(int argc, char** argv) {
@@ -67,6 +89,41 @@ int main(int argc, char** argv) {
             auto end = std::chrono::high_resolution_clock::now();
             auto ms = std::chrono::duration<double, std::milli>(end - start).count();
             std::cout << "Encoded in " << ms << " ms (" << (w*h*3 / (ms/1000.0) / (1024*1024)) << " MiB/s)" << std::endl;
+            std::cout << "Saving to " << argv[3] << " (" << hkn.size() << " bytes)..." << std::endl;
+            std::ofstream out(argv[3], std::ios::binary);
+            out.write(reinterpret_cast<const char*>(hkn.data()), hkn.size());
+        } else if (cmd == "encode-lossless") {
+            if (argc < 4) { print_usage(); return 1; }
+            int w, h;
+            GrayscaleEncoder::LosslessPreset preset = GrayscaleEncoder::LosslessPreset::BALANCED;
+            if (argc > 4) {
+                if (std::string(argv[4]) == "--preset") {
+                    if (argc < 6) {
+                        throw std::runtime_error("Missing value for --preset (fast|balanced|max)");
+                    }
+                    if (!parse_lossless_preset(argv[5], preset)) {
+                        throw std::runtime_error("Invalid preset. Use fast|balanced|max");
+                    }
+                } else {
+                    if (!parse_lossless_preset(argv[4], preset)) {
+                        throw std::runtime_error("Invalid preset. Use fast|balanced|max");
+                    }
+                }
+            }
+
+            auto rgb = load_ppm_fixed(argv[2], w, h);
+            std::cout << "Lossless encoding (" << w << "x" << h
+                      << ", preset=" << GrayscaleEncoder::lossless_preset_name(preset)
+                      << ")..." << std::endl;
+            auto start = std::chrono::high_resolution_clock::now();
+            auto hkn = GrayscaleEncoder::encode_color_lossless(
+                rgb.data(), static_cast<uint32_t>(w), static_cast<uint32_t>(h), preset
+            );
+            auto end = std::chrono::high_resolution_clock::now();
+            auto ms = std::chrono::duration<double, std::milli>(end - start).count();
+            std::cout << "Encoded in " << ms << " ms ("
+                      << (w*h*3 / (ms/1000.0) / (1024*1024))
+                      << " MiB/s)" << std::endl;
             std::cout << "Saving to " << argv[3] << " (" << hkn.size() << " bytes)..." << std::endl;
             std::ofstream out(argv[3], std::ios::binary);
             out.write(reinterpret_cast<const char*>(hkn.data()), hkn.size());

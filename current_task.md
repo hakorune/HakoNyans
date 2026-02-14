@@ -133,7 +133,7 @@ NyANS-P（Parallel Interleaved rANS + P-Index）を中核エントロピーエ�
 - [x] マルチスレッドデコード統合テスト ✅
 
 #### Step 5.4: CLI + ベンチマーク ✅ 完了
-- [x] `tools/hakonyans_cli.cpp` — `hakonyans encode/decode/info` ✅
+- [x] `tools/hakonyans_cli.cpp` — `hakonyans encode/encode-lossless/decode/info` ✅
 - [x] `bench/bench_decode.cpp` — Full HD end-to-end（232 MiB/s）✅
 - [ ] libjpeg-turbo との速度比較（同 quality）← Phase 6
 - [ ] PSNR vs bpp カーブ（quality 1-100）← Phase 6
@@ -1723,4 +1723,16 @@ ChatGPTとの議論で「いいところどり」方針が確定。
 結果:
 - `copy.h`: 442行 → 136行
 - 全体 build PASS（`cmake --build build -j8`）
+- 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
+
+## 2026-02-15 CLI 機能追加（encode-lossless）
+
+実装:
+- [x] `tools/hakonyans_cli.cpp` に `encode-lossless` サブコマンドを追加
+- [x] ロスレス preset 指定を追加: `fast|balanced|max`（`--preset` 形式も対応）
+- [x] 既存 `encode` 引数仕様は非変更（後方互換維持）
+
+結果:
+- `./build/hakonyans encode-lossless test_images/anime/anime_sunset.ppm /tmp/hkn_cli_lossless_test.hkn max` 動作確認
+- `hakonyans info` で `Quality: 0` / `Flags: 1`（lossless）を確認
 - 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
