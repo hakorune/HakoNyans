@@ -1324,3 +1324,98 @@ ctest --test-dir build --output-on-failure
 
 記録:
 - `docs/archive/2026-02-14_tilelz_chain_optin_ab.md`
+
+---
+
+## 2026-02-14 ChatGPT協議結果: kodim03救済3段階計画
+
+ChatGPTとの議論で「いいところどり」方針が確定。
+
+### 現状の問題（再確認）
+- kodim03: HKN 370KB vs PNG 120KB（3倍）
+- 原因: MEDフィルタ選択（SADベース）+ LZ品質
+- TileLZ強化、Mode5調整だけでは限界
+
+### 3段階改善計画
+
+#### 段階1: フィルタ選択をエントロピー推定ベース化（maxレーン限定）
+- **目的**: SAD（絶対誤差和）から、圧縮後サイズ推定に変更
+- **対象**: `lossless_filter_rows.h` のコスト計算
+- **手法**:
+  - 各行で各フィルタの「残差エントロピー」を推定
+  - 最小エントロピーのフィルタを選択
+  - PNGはPaeth 99%、HKNはMED 98% → この差を縮める
+- **環境変数**: `HKN_FILTER_ROWS_COST_MODEL=entropy` (default: sad)
+- **検証**: kodim03でPaeth使用率が上がるか
+
+#### 段階2: LZ有効性プローブ（早期スキップ）
+- **目的**: LZが効かない画像（kodim03等）ではmode2/5をスキップ
+- **対象**: `lossless_filter_lo_codec.h`
+- **手法**:
+  - LZ圧縮前に「圧縮率予測」を実行
+  - 予測値が閾値未満ならLZ評価をスキップ
+  - エンコード速度向上も期待
+- **環境変数**: `HKN_FILTER_LO_LZ_PROBE_THRESHOLD` (default: 0.8)
+
+#### 段階3: Mode5トークン指向化（PNG方式導入）
+- **目的**: LZ出力（literal/len/dist）を別々に符号化
+- **対象**: `lossless_filter_lo_codec.h` Mode5実装
+- **手法**:
+  - 現在: LZバイナリ → rANS
+  - 改善: LZトークン分解 → literal用CDF/len用CDF/dist用CDF → rANS
+  - PNGの「動的ハフマン」に相当
+- **互換性**: bitstream変更が必要、v0x0012以降で検討
+
+### 実施順序と判断基準
+
+1. **段階1を優先**: インパクト大、リスク低い
+2. **段階1で改善確認できたら段階2へ**
+3. **段階3は長期的**: bitstream互換性考慮
+
+### 即座に始めるタスク
+
+- [ ] 段階1実装準備
+  - `lossless_filter_rows.h` のコストモデル調査
+  - エントロピー推定関数の実装方針
+  - env変数設計
+
+---
+
+## 2026-02-14 段階1実装結果（Entropy Stage1）
+
+実装:
+- [x] `src/codec/lossless_filter_rows.h`
+  - `HKN_FILTER_ROWS_COST_MODEL=entropy` を本格化
+  - Shannon entropy 推定（lo/hi ヒストグラム）を導入
+  - 2段評価（BITS2 coarse -> entropy精査）を導入
+  - 追加 env:
+    - `HKN_FILTER_ROWS_ENTROPY_TOPK` (default: 2)
+    - `HKN_FILTER_ROWS_ENTROPY_HI_WEIGHT_PERMILLE` (default: 350)
+- [x] `tests/test_lossless_round2.cpp`
+  - `test_filter_rows_entropy_differs_from_sad` 追加
+  - `test_filter_rows_entropy_env_roundtrip` 追加
+
+検証:
+- [x] build + `ctest` 17/17 PASS
+- [x] kodim03 単体（`bench_bit_accounting`）:
+  - SAD total `369,844` -> entropy total `369,747`（`-97`）
+  - row_hist(N/S/U/A/P/M): `0/3/5/0/19/1509` -> `0/3/13/0/24/1496`
+- [x] fixed6 (`balanced`, runs=3, single-core):
+  - SAD:
+    - total `2,977,418`
+    - median PNG/HKN `0.2610`
+    - median Enc `207.242 ms`
+    - median Dec `13.254 ms`
+  - entropy(stage1):
+    - total `2,954,069`（`-23,349`）
+    - median PNG/HKN `0.2609`（微減）
+    - median Enc `223.846 ms`（`+16.604 ms`）
+    - median Dec `13.193 ms`（`-0.061 ms`）
+
+判定:
+- 圧縮量（total bytes）は改善。
+- ただし `balanced` gate（median PNG/HKN `>= 0.2610`）を僅差で下回る。
+- `balanced` 既定昇格は保留。`max` / 圧縮優先レーン候補として継続評価。
+
+記録:
+- `docs/archive/2026-02-14_filter_rows_entropy_stage1_ab.md`

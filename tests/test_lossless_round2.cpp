@@ -428,6 +428,69 @@ void test_filter_rows_bits2_env_roundtrip() {
     PASS();
 }
 
+void test_filter_rows_entropy_differs_from_sad() {
+    TEST("Filter rows entropy cost differs from SAD");
+
+    const int W = 32, H = 32;
+    bool found_diff = false;
+
+    ScopedEnvVar force_filter("HKN_FILTER_ROWS_FORCE_FILTER_ID", "-1");
+    for (int seed = 1; seed <= 2048 && !found_diff; seed++) {
+        std::mt19937 rng(seed);
+        std::uniform_int_distribution<int> dist(-128, 127);
+        std::vector<int16_t> padded(W * H);
+        for (auto& v : padded) v = (int16_t)dist(rng);
+
+        std::vector<uint8_t> ids_sad, ids_entropy;
+        std::vector<int16_t> resid_sad, resid_entropy;
+        {
+            ScopedEnvVar cost_model("HKN_FILTER_ROWS_COST_MODEL", "sad");
+            build_filter_rows_all_dct(
+                padded, W, H, lossless_mode_select::PROFILE_PHOTO, ids_sad, resid_sad
+            );
+        }
+        {
+            ScopedEnvVar cost_model("HKN_FILTER_ROWS_COST_MODEL", "entropy");
+            build_filter_rows_all_dct(
+                padded, W, H, lossless_mode_select::PROFILE_PHOTO, ids_entropy, resid_entropy
+            );
+        }
+        if (ids_sad != ids_entropy) {
+            found_diff = true;
+        }
+    }
+
+    if (found_diff) {
+        PASS();
+    } else {
+        FAIL("No seed produced a SAD/ENTROPY filter selection difference");
+    }
+}
+
+void test_filter_rows_entropy_env_roundtrip() {
+    TEST("Filter rows entropy env roundtrip");
+
+    const int W = 64, H = 64;
+    std::mt19937 rng(24681357);
+    std::uniform_int_distribution<int> dist(0, 255);
+    std::vector<uint8_t> pixels(W * H * 3);
+    for (auto& v : pixels) v = (uint8_t)dist(rng);
+
+    std::vector<uint8_t> hkn;
+    {
+        ScopedEnvVar force_filter("HKN_FILTER_ROWS_FORCE_FILTER_ID", "-1");
+        ScopedEnvVar cost_model("HKN_FILTER_ROWS_COST_MODEL", "entropy");
+        hkn = GrayscaleEncoder::encode_color_lossless(pixels.data(), W, H);
+    }
+    int dw = 0, dh = 0;
+    auto decoded = GrayscaleDecoder::decode_color(hkn, dw, dh);
+    if (dw != W || dh != H || decoded != pixels) {
+        FAIL("entropy env roundtrip mismatch");
+        return;
+    }
+    PASS();
+}
+
 // ============================================================
 // Test 9: TILE_MATCH4 (4x4) Roundtrip
 // ============================================================
@@ -1952,6 +2015,8 @@ int main() {
     test_filter_rows_force_paeth_env();
     test_filter_rows_bits2_differs_from_sad();
     test_filter_rows_bits2_env_roundtrip();
+    test_filter_rows_entropy_differs_from_sad();
+    test_filter_rows_entropy_env_roundtrip();
     test_tile_match4_roundtrip();
     test_copy_mode3_long_runs();
     test_copy_mode3_mixed_runs();
