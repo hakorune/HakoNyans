@@ -1646,3 +1646,42 @@ ChatGPTとの議論で「いいところどり」方針が確定。
 - `lossless_filter_lo_codec.h`: 605行 → 48行
 - 全体 build PASS（`cmake --build build -j8`）
 - 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
+
+## 2026-02-14 ソース分割（lossless_round2_tests_mode6）
+
+実装:
+- [x] `tests/lossless_round2_tests_mode6.inc` を集約化
+- [x] lzcost/presetテストを分離: `tests/lossless_round2_tests_mode6_lzcost_preset.inc`
+- [x] v15/v16互換テストを分離: `tests/lossless_round2_tests_mode6_v15_v16.inc`
+- [x] v17テストを分離: `tests/lossless_round2_tests_mode6_v17.inc`
+
+結果:
+- `lossless_round2_tests_mode6.inc`: 495行 → 3行
+- 全体 build PASS（`cmake --build build -j8`）
+- 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
+
+## 2026-02-14 ソース分割（bench_bit_accounting text report 追加）
+
+実装:
+- [x] `bench/bench_bit_accounting_lossless_text_report.inc` を集約化
+- [x] 概況/選択統計を分離: `bench/bench_bit_accounting_lossless_text_report_overview.inc`
+- [x] filter_lo/screen診断を分離: `bench/bench_bit_accounting_lossless_text_report_filter_lo_screen.inc`
+- [x] route/profile診断を分離: `bench/bench_bit_accounting_lossless_text_report_route_profile.inc`
+
+結果:
+- `bench_bit_accounting_lossless_text_report.inc`: 661行 → 12行
+- `bench_bit_accounting` build PASS
+- 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
+
+## 2026-02-14 ソース分割（bench_png_compare_common）
+
+実装:
+- [x] `bench/bench_png_compare_common.h` を集約化
+- [x] 型定義を分離: `bench/bench_png_compare_common_types.inc`
+- [x] 引数処理を分離: `bench/bench_png_compare_common_args.inc`
+- [x] CSV入出力を分離: `bench/bench_png_compare_common_csv.inc`
+
+結果:
+- `bench_png_compare_common.h`: 529行 → 24行
+- `bench_png_compare` build PASS
+- 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
