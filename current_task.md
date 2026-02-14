@@ -1594,3 +1594,16 @@ ChatGPTとの議論で「いいところどり」方針が確定。
 - `encode_lossless_routes_impl.h`: 613行 → 3行
 - 全体 build PASS（`cmake --build build -j8`）
 - 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
+
+## 2026-02-14 ソース分割（bench_png_compare_runner）
+
+実装:
+- [x] `bench/bench_png_compare_runner.cpp` を集約化
+- [x] サンプル配列宣言を分離: `bench/bench_png_compare_runner_samples_decl.inc`
+- [x] 計測ループ収集を分離: `bench/bench_png_compare_runner_sample_collect.inc`
+- [x] 集計/行確定を分離: `bench/bench_png_compare_runner_row_finalize.inc`
+
+結果:
+- `bench_png_compare_runner.cpp`: 526行 → 37行
+- `bench_png_compare` build PASS
+- 17/17 テスト PASS（`ctest --test-dir build --output-on-failure`）
