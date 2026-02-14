@@ -679,6 +679,23 @@ static void print_lossless_mode_stats(const GrayscaleEncoder::LosslessModeDebugS
             if (s.filter_lo_mode2_reject_gate > 0 || s.filter_lo_mode4_reject_gate > 0) {
                 std::cout << "  rej_gate(mode2/4)      " << s.filter_lo_mode2_reject_gate << "/" << s.filter_lo_mode4_reject_gate << "\n";
             }
+            if (s.filter_lo_lz_probe_enabled > 0) {
+                std::cout << "  lz_probe enabled/chk/pass/skip "
+                          << s.filter_lo_lz_probe_enabled << "/"
+                          << s.filter_lo_lz_probe_checked << "/"
+                          << s.filter_lo_lz_probe_pass << "/"
+                          << s.filter_lo_lz_probe_skip << "\n";
+                if (s.filter_lo_lz_probe_sample_bytes_sum > 0) {
+                    double ratio = (double)s.filter_lo_lz_probe_sample_wrapped_bytes_sum /
+                                   (double)s.filter_lo_lz_probe_sample_bytes_sum;
+                    std::cout << "    probe_sample raw/lz/wrapped "
+                              << s.filter_lo_lz_probe_sample_bytes_sum << "/"
+                              << s.filter_lo_lz_probe_sample_lz_bytes_sum << "/"
+                              << s.filter_lo_lz_probe_sample_wrapped_bytes_sum
+                              << " (wrapped/raw=" << std::fixed << std::setprecision(3)
+                              << ratio << ")\n";
+                }
+            }
         }
 
     }

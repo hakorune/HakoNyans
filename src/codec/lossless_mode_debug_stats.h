@@ -158,6 +158,13 @@ struct LosslessModeDebugStats {
     uint64_t filter_lo_mode3_eval_ns;
     uint64_t filter_lo_mode4_eval_ns;
     uint64_t filter_lo_mode5_eval_ns;
+    uint64_t filter_lo_lz_probe_enabled;
+    uint64_t filter_lo_lz_probe_checked;
+    uint64_t filter_lo_lz_probe_pass;
+    uint64_t filter_lo_lz_probe_skip;
+    uint64_t filter_lo_lz_probe_sample_bytes_sum;
+    uint64_t filter_lo_lz_probe_sample_lz_bytes_sum;
+    uint64_t filter_lo_lz_probe_sample_wrapped_bytes_sum;
 
     uint64_t screen_candidate_count;
     uint64_t screen_selected_count;

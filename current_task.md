@@ -1452,3 +1452,45 @@ ChatGPTとの議論で「いいところどり」方針が確定。
 
 記録:
 - `docs/archive/2026-02-14_preset_lane_binding_and_lz_probe.md`
+
+---
+
+## 2026-02-14 LZ Probe観測強化 + スイープ結果
+
+実装:
+- [x] `src/codec/lossless_mode_debug_stats.h`
+  - `filter_lo_lz_probe_*` カウンターを追加
+- [x] `src/codec/lossless_filter_lo_codec.h`
+  - probe実行時の enabled/checked/pass/skip と sample bytes を計測
+- [x] `bench/bench_png_compare.cpp`
+  - CSV列に `hkn_enc_lo_lz_probe_*` を追加
+  - fixed6集計に probe 指標を表示
+- [x] `bench/bench_bit_accounting.cpp`
+  - `Filter lo diagnostics` に probe 指標を表示
+- [x] `tools/sweep_filter_lo_lz_probe.py`
+  - `threshold/sample/min_raw` の総当たり自動化を追加
+  - gate: `total_hkn_bytes <= baseline` かつ `median(PNG/HKN) >= baseline`
+
+検証:
+- [x] build + `ctest` 17/17 PASS
+- [x] fixed6 smoke
+  - `balanced` (`runs=1`): probe off を確認
+  - `max` (`runs=1`): probe counters がCSV/集計に出ることを確認
+- [x] `preset=max` probe sweep (`runs=1`, 36組)
+  - 全組み合わせで `total_hkn_bytes` 同一（`2,954,276`）
+  - gateは全件PASS
+  - 速度差は小さく、`runs=1` ではノイズ域
+- [x] 上位候補を `runs=3` で再測
+  - tuned (`th=980,sample=4096,min_raw=2048`) は baseline 比で
+    - total: `±0`
+    - median Enc: `+0.96 ms`（微悪化）
+    - median Dec: `+0.04 ms`
+
+判定:
+- probe パラメータ最適化は現状の固定6では有意改善なし。
+- 既定値据え置き（`threshold=1.03 / sample=4096 / min_raw=4096`）。
+- 以降は probe 自体より、`mode2 eval` と `filter_rows` 本体最適化を優先。
+
+記録:
+- `bench_results/phase9w_filter_lo_probe_sweep_max_runs1.csv`
+- `bench_results/phase9w_filter_lo_probe_sweep_top10_max_runs1.txt`

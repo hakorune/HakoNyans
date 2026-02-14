@@ -128,15 +128,25 @@ inline std::vector<uint8_t> encode_filter_lo_stream(
     // DOC: docs/LOSSLESS_FLOW_MAP.md#filter-lo-lz-probe
     bool evaluate_lz = true;
     if (enable_lz_probe) {
+        if (stats) stats->filter_lo_lz_probe_enabled++;
         const auto& probe = get_lz_probe_runtime_params();
         if (lo_bytes.size() >= (size_t)probe.min_raw_bytes) {
+            if (stats) stats->filter_lo_lz_probe_checked++;
             const size_t probe_n = std::min(lo_bytes.size(), (size_t)probe.sample_bytes);
             std::vector<uint8_t> sample(lo_bytes.begin(), lo_bytes.begin() + probe_n);
             auto sample_lz = compress_lz(sample);
             const size_t sample_wrapped = 6 + sample_lz.size();
+            if (stats) {
+                stats->filter_lo_lz_probe_sample_bytes_sum += probe_n;
+                stats->filter_lo_lz_probe_sample_lz_bytes_sum += sample_lz.size();
+                stats->filter_lo_lz_probe_sample_wrapped_bytes_sum += sample_wrapped;
+            }
             if ((uint64_t)sample_wrapped * 1000ull >
                 (uint64_t)probe_n * (uint64_t)probe.threshold_permille) {
                 evaluate_lz = false;
+                if (stats) stats->filter_lo_lz_probe_skip++;
+            } else {
+                if (stats) stats->filter_lo_lz_probe_pass++;
             }
         }
     }

@@ -60,5 +60,17 @@ Probe knobs:
 - `HKN_FILTER_LO_LZ_PROBE_THRESHOLD` (float)
 - `HKN_FILTER_LO_LZ_PROBE_THRESHOLD_PERMILLE` (int override)
 
+Telemetry:
+- Encode stats (`src/codec/lossless_mode_debug_stats.h`):
+  - `filter_lo_lz_probe_enabled`
+  - `filter_lo_lz_probe_checked`
+  - `filter_lo_lz_probe_pass`
+  - `filter_lo_lz_probe_skip`
+  - `filter_lo_lz_probe_sample_bytes_sum`
+  - `filter_lo_lz_probe_sample_lz_bytes_sum`
+  - `filter_lo_lz_probe_sample_wrapped_bytes_sum`
+- CSV (`bench/bench_png_compare.cpp`):
+  - `hkn_enc_lo_lz_probe_*`
+
 ## Usage Rule
 When changing behavior in these source files, update this map in the same commit.
